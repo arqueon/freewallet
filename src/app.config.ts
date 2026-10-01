@@ -159,6 +159,12 @@ export const WALLET_STANDARD_COLLECTIONS: Array<{
   // whose Resources are the connected apps' private seeds, and
   // `wallet-activity`, whose Resources are the account's grant history).
   shareable: boolean
+  // Whether any App Connect or interaction-URL grant may name the collection,
+  // read-only or otherwise. Projected verbatim from the spec. It is
+  // independent of `shareable`: `public-credentials` is not shareable yet is
+  // grantable, and `app-connections` is neither, since its Resources are the
+  // connected apps' private seeds.
+  grantable: boolean
   // How the collection's cipher mints a document id, from the collection spec:
   // 'content' (content-addressed, immutable) or 'random' (the mutable stable-id
   // head model -- `contacts`). Only meaningful on an encrypted collection; the
@@ -183,6 +189,7 @@ export const WALLET_STANDARD_COLLECTIONS: Array<{
       encryption: { scheme: 'edv' as const }
     }),
     shareable: spec.shareable,
+    grantable: spec.grantable,
     idDerivation: spec.idDerivation
   }
 })
@@ -291,11 +298,19 @@ export const PASSKEY_RP_ID = env.VITE_PASSKEY_RP_ID || undefined
 // recipient rotation skips them), and the storage browser's grouping -- so a
 // future system collection cannot be added to one of those and silently missed
 // by the others.
-export const SYSTEM_COLLECTIONS: Array<{ id: string; name: string }> =
-  WALLET_SPACE_SYSTEM_SPECS.map(({ collectionId, name }) => ({
-    id: collectionId,
-    name
-  }))
+//
+// `grantable` is projected verbatim from the spec, as on the standard
+// collections: `key-map` and `unlock-methods` are never grantable, while `id`
+// stays readable by a grantee.
+export const SYSTEM_COLLECTIONS: Array<{
+  id: string
+  name: string
+  grantable: boolean
+}> = WALLET_SPACE_SYSTEM_SPECS.map(({ collectionId, name, grantable }) => ({
+  id: collectionId,
+  name,
+  grantable
+}))
 
 /**
  * Whether a collection id names a protected wallet collection: a standard

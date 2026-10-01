@@ -90,11 +90,7 @@
  * than read-only grants.
  */
 import type { Session } from '@/types/auth'
-import {
-  APP_CONNECTIONS_COLLECTION,
-  KEY_MAP_COLLECTION,
-  UNLOCK_METHODS_COLLECTION
-} from '@interop/wallet-core/space'
+import { WALLET_SPACE_PROVISION_ROSTER } from '@interop/wallet-core/space'
 import {
   clampGrantExpires,
   GENERATION_DELEGATION_TTL_MS
@@ -203,46 +199,43 @@ function includesWrite(allowedActions: string[]): boolean {
 }
 
 /**
- * The collections no grant may ever name, whatever the descriptor form and
- * whatever actions it asks for. `app-connections` holds one app-key credential
- * per connected app, each carrying that app's private seed in
- * `credentialSubject.seed`. `resolveInvocationTarget` checks the resolved
- * collection id against this list once, after every descriptor form, so a
- * grant naming one of these collections is unsatisfiable rather than merely
- * read-only. That also keeps `app-connections` out of `provisionFor`'s
- * recipient roster, since an unsatisfiable grant never reaches provisioning.
- * Confidentiality of the seeds rests elsewhere, on the epoch roster: the
- * Resources are EDV envelopes, and a grantee is not an epoch recipient, so it
- * decrypts nothing.
+ * Whether a collection id names a collection no grant may ever name, whatever
+ * the descriptor form and whatever actions it asks for: a wallet Space roster
+ * entry (`WALLET_SPACE_PROVISION_ROSTER`, the synced feeds plus the system
+ * collections) that declares `grantable: false`. An id the roster does not
+ * list stays grantable, since a requester-provisioned collection is not a
+ * roster entry.
  *
- * `key-map` is plaintext on the server. Its user key roster
- * (`user-key.jsonl`) carries a passphrase credential's derived key-agreement
- * key beside a wrap of the user key, so a read of it is an offline
- * passphrase-guessing oracle. It also holds the KMS key map and the
- * user-typed client labels. `unlock-methods` is the account's credential
- * registry. Neither is any third party's business to read.
+ * Today that is three collections. `app-connections` holds one app-key
+ * credential per connected app, each carrying that app's private seed in
+ * `credentialSubject.seed`. `key-map` is plaintext on the server. Its user key
+ * roster (`user-key.jsonl`) carries a passphrase credential's derived
+ * key-agreement key beside a wrap of the user key, so a read of it is an
+ * offline passphrase-guessing oracle. `unlock-methods` is the account's
+ * credential registry. Neither is any third party's business to read.
  *
- * Deliberately an explicit membership list rather than a roster-derived rule.
- * The roster's `shareable: false` cannot stand in for it -- `public-credentials`
- * is also `shareable: false` and is a perfectly ordinary grant target -- and
- * `encryption && !shareable` would be a coincidence of today's roster rather
- * than a statement about what the collection holds.
- */
-const NEVER_GRANTABLE_COLLECTION_IDS: readonly string[] = [
-  APP_CONNECTIONS_COLLECTION,
-  KEY_MAP_COLLECTION.id,
-  UNLOCK_METHODS_COLLECTION.id
-]
-
-/**
- * Whether a collection id names a collection no grant may target
- * ({@link NEVER_GRANTABLE_COLLECTION_IDS}).
+ * `resolveInvocationTarget` checks the resolved collection id once, after
+ * every descriptor form, so a grant naming one of these collections is
+ * unsatisfiable rather than merely read-only. That also keeps
+ * `app-connections` out of `provisionFor`'s recipient roster, since an
+ * unsatisfiable grant never reaches provisioning. Confidentiality of the seeds
+ * rests elsewhere, on the epoch roster: the Resources are EDV envelopes, and a
+ * grantee is not an epoch recipient, so it decrypts nothing.
+ *
+ * The roster's `shareable` and `encryption` fields cannot stand in for this
+ * policy. `public-credentials` is also `shareable: false` and is an ordinary
+ * grant target, and `encryption && !shareable` would be a coincidence of
+ * today's roster rather than a statement about what the collection holds. So
+ * the policy reads the roster's dedicated `grantable` field, and a new roster
+ * entry is never grantable only by its own declaration.
  *
  * @param collectionId {string | undefined}
  * @returns {boolean}
  */
 function isNeverGrantableCollection(collectionId: string | undefined): boolean {
-  return !!collectionId && NEVER_GRANTABLE_COLLECTION_IDS.includes(collectionId)
+  return WALLET_SPACE_PROVISION_ROSTER.some(
+    spec => spec.collectionId === collectionId && !spec.grantable
+  )
 }
 
 /**
@@ -886,7 +879,8 @@ function classifySpaceTarget({
  *   `https://w3id.org/byoe#space` type: no grant reaches the whole Space.
  *
  * Whatever the form, a target resolving onto a never-grantable collection
- * ({@link NEVER_GRANTABLE_COLLECTION_IDS}) is unsatisfiable.
+ * (a roster entry declaring `grantable: false`, see
+ * {@link isNeverGrantableCollection}) is unsatisfiable.
  *
  * @param options {object}
  * @param options.descriptor {string | { type: string; name?: string }}

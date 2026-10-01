@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest'
 import {
   APP_CONNECTIONS_COLLECTION,
   KEY_MAP_COLLECTION,
-  UNLOCK_METHODS_COLLECTION
+  UNLOCK_METHODS_COLLECTION,
+  WALLET_SPACE_PROVISION_ROSTER
 } from '@interop/wallet-core/space'
 import { x25519RecipientFromDidKey } from '@interop/was-client/edv'
 import {
@@ -324,6 +325,28 @@ describe('never-grantable system collections', () => {
         expect(isSatisfiable(target), url).toBe(false)
       }
     }
+  })
+
+  it('refuses exactly the roster entries declaring grantable: false', () => {
+    const rosterIds = WALLET_SPACE_PROVISION_ROSTER.map(
+      spec => spec.collectionId
+    )
+    const refused = rosterIds.filter(name => {
+      const { target } = resolveGrant({
+        descriptor: {
+          ...DESCRIPTOR,
+          invocationTarget: `${SPACE.serverUrl}space/${SPACE.spaceId}/${name}/`
+        },
+        space: SPACE,
+        collections: existingCollectionsFrom(rosterIds.map(id => ({ id })))
+      })
+      return !isSatisfiable(target)
+    })
+    const declared = WALLET_SPACE_PROVISION_ROSTER.filter(
+      spec => !spec.grantable
+    ).map(spec => spec.collectionId)
+    expect(refused).toEqual(declared)
+    expect([...declared].sort()).toEqual([...NEVER].sort())
   })
 
   it('still grants a read of the id collection', () => {

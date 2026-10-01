@@ -73,7 +73,10 @@ spec), and a capability descriptor or URL naming it is unsatisfiable rather
 than merely read-only. So are `key-map` and `unlock-methods`. `key-map`'s
 user key roster carries a passphrase-derived key beside a wrap of the user
 key, so a read of it would be an offline guessing oracle, and
-`unlock-methods` is the account's credential registry. An idempotent
+`unlock-methods` is the account's credential registry. The refusal reads the
+roster rather than a list kept here: each of the three declares
+`grantable: false` on its roster spec, so a new roster entry is never
+grantable only by its own declaration. An idempotent
 login-time sweep deletes app-key credentials stranded in
 `private-credentials` and retracts app-key public copies left with no private
 credential behind them; the

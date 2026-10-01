@@ -140,6 +140,9 @@
 
 ### Changed
 
+- The never-grantable collections (`app-connections`, `key-map`,
+  `unlock-methods`) are now read from the wallet-core roster's `grantable`
+  field in place of a hardcoded list. Needs `@interop/wallet-core` 0.94.0.
 - The docs and JSDoc call the party a collection is provisioned for the
   requester, an app, service, or agent, in place of "the app", and no
   longer assume it has a Web origin. The App Connect spec defines the term

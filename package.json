@@ -41,7 +41,7 @@
     "@interop/logger": "^0.2.0",
     "@interop/security-document-loader": "^10.1.4",
     "@interop/social-core": "^0.8.1",
-    "@interop/space-archive": "^0.4.1",
+    "@interop/space-archive": "^0.5.0",
     "@interop/storage-core": "^0.23.1",
     "@interop/vc": "^11.0.11",
     "@interop/vc-display": "^0.1.0",
