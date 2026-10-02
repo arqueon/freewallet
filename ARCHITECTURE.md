@@ -95,7 +95,7 @@ src/session/        Session bootstrap and the account ceremonies -- the
                     pendingEnrollment.ts, pendingRetirement.ts,
                     registryReseal.ts, userKeySweep.ts, userKeyAdoption.ts,
                     userKeyCascade.ts, standingDelegationRefresh.ts,
-                    pointerHeal.ts, appKeySweep.ts, clientAnnexGc.ts,
+                    pointerHeal.ts, clientAnnexGc.ts,
                     credentialCoverage.ts, connectionWriters.ts (the
                     writer registration and the writer sweep)
   Menders           menders/ -- the mender registry: the invariant table,
@@ -216,8 +216,8 @@ ceremony that writes the unlock-methods registry awaits it at its own entry
 rather than racing them. It does not wait on the keystore promotion: the
 pointer heal fires that and the block's tail reports it, so no
 `registryReady` awaiter sits behind a KMS round trip. `session.mends`
-settles when the whole block has run -- the app-key sweep, the annex GC,
-and the keystore report included -- and behind any report the composition
+settles when the whole block has run -- the annex GC and the keystore
+report included -- and behind any report the composition
 fired beside the block (the did:web projection mend). It carries this
 login's mend report: one entry per invariant a mender reported, the routing
 entries first.
@@ -311,9 +311,8 @@ sync controller hands it to every push, which sends it as the WAS
 The in-memory strategy holds a per-visit label minted in tab memory, so a
 transient session cannot reveal the profile's. It declares no label today,
 since it runs no replication and remote-direct writes send no `Writer-Id` on
-any session kind. A remembered session's own remote-direct writes, the
-CHAPI popup's and the app-key sweep's public-copy retraction, go unlabeled
-too.
+any session kind. A remembered session's own remote-direct writes, such as
+the CHAPI popup's, go unlabeled too.
 
 An account-management ceremony binds to one of two kinds of account-ceremony
 context, resolved once from the live session. A remembered session resolves
@@ -507,11 +506,8 @@ once the private credential is gone nothing is left to retract with.
 Retraction of a live public copy is blocking, and one that cannot be
 retracted refuses the delete (`PublicCopyRetractionError`). The interactive
 delete decides on the local replica, so a credential with no local public
-copy deletes normally offline. The unattended app-key sweep has retraction
-consult the remote `public-credentials` collection too, the local replica
-being unable to prove a remote copy absent; an unreachable remote then
-refuses the delete. The delete dialog's "keep public copy" choice skips
-retraction entirely.
+copy deletes normally offline. The delete dialog's "keep public copy"
+choice skips retraction entirely.
 
 The world-readable share link a public copy gets
 (`WASRemoteStore.publicCredentialUrl`) is built with was-client's paths
@@ -844,9 +840,6 @@ Second, a residue whose only mender is a remembered login:
   pointer heal and reported from that block's tail. A mender could run from
   a transient visit instead, the keystore ensure not depending on the
   Space.
-- Stranded app keys after a last-client transition (invariant
-  `app-keys-live-only-in-app-connections`). The sweep that clears them runs
-  from the remembered-login chain alone.
 - A signup torn before its standard collections are provisioned, on an
   account that runs no remembered login (invariant
   `standard-collections-are-provisioned`). Whether the transient heal

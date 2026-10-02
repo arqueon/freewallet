@@ -17,8 +17,8 @@
  * backfill. The remembered block adds its own registrations around them (the
  * provisioning seed and the user key sweep ahead, the standing-delegation
  * and ladder-rung refreshes, the pointer heal, the generation-delegation
- * heal, then the app-key sweep, the annex GC and the keystore report); the
- * transient block adds the management-zcap refresh last.
+ * heal, then the annex GC and the keystore report); the transient block
+ * adds the management-zcap refresh last.
  */
 import type { MendOutcome } from '@interop/wallet-core/menders'
 import type { UserKeyRosterReadResult } from '@interop/wallet-core/keys'

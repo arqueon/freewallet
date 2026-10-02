@@ -618,8 +618,6 @@ function partyOf({
  * @param options.did {string}   the party's DID
  * @param options.grants {ConnectionGrant[]}   the party's grants
  * @param options.directory {object}   the listing the grants were read from
- * @param [options.collections] {Array<StorageCollection>}   the Space
- *   collection listing, when the caller has already read it
  * @param options.failureMessage {string}   the error a failed rotation throws
  * @returns {Promise<{ outcome: object; rotated: number }>}   the grant
  *   stage's outcome, plus the collections the rotation re-keyed
@@ -629,14 +627,12 @@ async function rotateThenRevokeGrants({
   did,
   grants,
   directory,
-  collections,
   failureMessage
 }: {
   storage: StorageManager
   did: string
   grants: ConnectionGrant[]
   directory: { listing: ConnectionsListing; spaceUrl?: string }
-  collections?: Awaited<ReturnType<StorageManager['listCollections']>>
   failureMessage: string
 }): Promise<{
   outcome: Awaited<ReturnType<StorageManager['revokeConnectionGrants']>>
@@ -645,8 +641,7 @@ async function rotateThenRevokeGrants({
   const rotation = await storage.revokeCollectionRecipients({
     did,
     grants,
-    directory,
-    ...(collections && { collections })
+    directory
   })
   const outcome = await storage.revokeConnectionGrants({
     grants,
@@ -659,59 +654,67 @@ async function rotateThenRevokeGrants({
 }
 
 /**
- * Retires an app's live authority on the WAS server: the sequence both the
- * interactive revoke ({@link revokeAppAccess}) and the login-time sweep of
- * stranded app keys run. The key rotation runs first: for each collection the
- * app's entry has a grant on, or whose `generator.id` names the app, it
- * appends a fresh epoch without the app's key and revokes that collection's
- * pull-axis grants with it. Then the remaining grants are revoked. See
+ * A revocation refused because the directory holds no entry for the party,
+ * so there is no grant record to revoke from.
+ */
+export class ConnectionEntryMissingError extends Error {
+  did: string
+
+  constructor({ did }: { did: string }) {
+    super(`The connections directory holds no entry for "${did}".`)
+    this.name = 'ConnectionEntryMissingError'
+    this.did = did
+  }
+}
+
+/**
+ * Retires an app's live authority on the WAS server: the first stage of the
+ * interactive revoke ({@link revokeAppAccess}). The key rotation runs first:
+ * for each collection the app's entry has a grant on, or whose
+ * `generator.id` names the app, it appends a fresh epoch without the app's
+ * key and revokes that collection's pull-axis grants with it. Then the
+ * remaining grants are revoked. See
  * {@link rotateThenRevokeGrants} for what a failure in either stage does. An
- * app with no entry (one that connected before the directory existed) has no
- * grant to revoke, and only its attributed collections are rotated.
+ * app with no entry throws {@link ConnectionEntryMissingError} before any
+ * stage runs.
  *
  * @param options {object}
  * @param options.storage {StorageManager}
  * @param options.subjectDid {string}   the app-key credential's subject DID
- * @param [options.directory] {object}   the directory listing, when the
- *   caller has already read it
- * @param [options.collections] {Array<StorageCollection>}   the Space
- *   collection listing, when the caller has already read it
- * @returns {Promise<{ outcome: object; rotated: number; entry?:
+ * @returns {Promise<{ outcome: object; rotated: number; entry:
  *   ConnectionEntry; handledZcapIds: string[] }>}   the grant stage's
  *   outcome, the collections the rotation re-keyed, the entry the grants
  *   were read from, and the ids of every grant this run handled
  */
 export async function revokeAppAuthority({
   storage,
-  subjectDid,
-  directory,
-  collections
+  subjectDid
 }: {
   storage: StorageManager
   subjectDid: string
-  directory?: { listing: ConnectionsListing; spaceUrl?: string }
-  collections?: Awaited<ReturnType<StorageManager['listCollections']>>
 }): Promise<{
   outcome: Awaited<ReturnType<StorageManager['revokeConnectionGrants']>>
   rotated: number
-  entry?: ConnectionEntry
+  entry: ConnectionEntry
   handledZcapIds: string[]
 }> {
-  const read = directory ?? (await storage.readConnectionsListing())
-  const { entry, grants } = partyOf({ directory: read, did: subjectDid })
+  const directory = await storage.readConnectionsListing()
+  const { entry, grants } = partyOf({ directory, did: subjectDid })
+  if (entry === undefined) {
+    throw new ConnectionEntryMissingError({ did: subjectDid })
+  }
   const { outcome, rotated } = await rotateThenRevokeGrants({
     storage,
     did: subjectDid,
     grants,
-    directory: read,
-    collections,
+    directory,
     failureMessage:
       'Could not rotate every collection off the app being disconnected.'
   })
   return {
     outcome,
     rotated,
-    ...(entry !== undefined && { entry }),
+    entry,
     handledZcapIds: grants.map(grant => grant.zcapId)
   }
 }
@@ -767,7 +770,7 @@ export async function revokeAppAccess({
   })
   // The key the entry names now, which a consent since the listing may have
   // re-pointed.
-  if (entry?.appKey !== undefined) {
+  if (entry.appKey !== undefined) {
     await storage.deleteAppKeyResource({
       appKey: entry.appKey,
       did: app.subjectDid

@@ -76,14 +76,15 @@ key, so a read of it would be an offline guessing oracle, and
 `unlock-methods` is the account's credential registry. The refusal reads the
 roster rather than a list kept here: each of the three declares
 `grantable: false` on its roster spec, so a new roster entry is never
-grantable only by its own declaration. An idempotent
-login-time sweep deletes app-key credentials stranded in
-`private-credentials` and retracts app-key public copies left with no private
-credential behind them; the
-affected app reconnects as a first run. A stranded key predates the
-`connections` directory and has no entry there, so the sweep revokes no
-grant for it. It rotates only the collections whose `generator.id` names the
-app, and the app's grants end at their own expiry.
+grantable only by its own declaration. An app-key credential stranded in
+`private-credentials` from before `app-connections` existed stays where it
+is, and so does any public copy of one. Such a key predates the
+`connections` directory and has no entry there, so deleting it would
+revoke none of the app's grants. The login-time sweep that deleted these
+keys is retired for that reason. A stranded key keeps both of
+`private-credentials`' exits open onto its seed, the public link and the
+share. Nothing tracks that residue: the mender registry declares no
+invariant for it, and the Applications page does not list such a key.
 
 Match and consent-preview candidates come from
 `StorageManager.listAppKeys()`, so ordinary credentials stay out of the

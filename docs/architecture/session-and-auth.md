@@ -371,9 +371,9 @@ At a remembered login the user key sweep, the re-seal repair, the
 torn-retirement repair, the bare-passkey rebuild, the registry backfill, the
 standing-delegation self-refresh, the ladder-rung refresh, the did:webvh
 pointer heal, and the generation-delegation self-heal run in that order as
-the block's registry-writing registrations; the app-key sweep, the annex
-GC, and the keystore report follow in its tail, the report last so the two
-sweeps do not queue behind the KMS round trip. A transient login runs
+the block's registry-writing registrations; the annex GC and the keystore
+report follow in its tail, the report last so the GC does not queue behind
+the KMS round trip. A transient login runs
 four of those passes on an ordered chain of its own: the re-seal repair, the
 torn-retirement repair, the bare-passkey rebuild, and the registry backfill.
 Each rides the visit's generation delegation and unwraps with the
@@ -416,8 +416,8 @@ account deletion, client disconnect, the forget ceremony, recovery-code
 issuance and revocation) awaits it at its own entry rather than racing those
 writes; so do update-key rotation, the Settings registry load, and the
 recovery-codes health check. `session.mends` settles when the whole block
-has run -- the app-key sweep, the annex GC, and the keystore report behind
-it included -- and behind any report the composition fired beside the block,
+has run -- the annex GC and the keystore report behind it included -- and
+behind any report the composition fired beside the block,
 which today is the transient login's did:web projection mend. It carries the
 login's mend report: one entry per invariant a mender reported, the routing
 entries this login fired first and the block's registrations after them. The
@@ -427,8 +427,7 @@ The CHAPI popup route is declared rather than guarded: each declaration
 carries a `when(route)` predicate, and the four shared passes, the
 generation-delegation heal, the management-zcap refresh, and the annex GC
 declare themselves off the popup. The standing-delegation refresh, the
-ladder-rung refresh, the pointer heal, and the app-key sweep keep running
-there.
+ladder-rung refresh and the pointer heal keep running there.
 
 Every registry PUT is also a compare-and-swap on the ETag of the fresh read
 it was based on, with a bounded re-read retry on a lost race. A concurrent

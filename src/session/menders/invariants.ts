@@ -401,18 +401,9 @@ const DECLARATIONS: ReadonlyArray<
     // The CHAPI popup stands this pass down: it writes no registry.
     when: (route: { popup: boolean }) => !route.popup
   },
-  // 20
-  // converger: `sweepStrandedAppKeys` (`src/session/appKeySweep.ts`).
-  {
-    id: 'app-keys-live-only-in-app-connections',
-    statement:
-      'No app-key credential remains in `private-credentials`, and no world-readable app-key copy stands with no private Resource behind it.',
-    standsOn: ['ladder-anchored', 'enrolled'],
-    authority: 'account',
-    triggers: ['remembered-login-chain'],
-    ceremonies: [],
-    evidence: ['served-body']
-  },
+  // 20. Retired 2026-10-01 with its converger, the login-time stranded
+  // app-key sweep, and struck from wallet-core's census. The number stays,
+  // so the rows below keep theirs.
   // 21
   // converger: `wipeStaleClientResidue` (`src/session/forget.ts`) plus the
   // one re-route on `StaleClientKeyRecordError`.

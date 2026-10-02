@@ -14,7 +14,7 @@
  * - `revokeAgentAccess` runs the same sequence with no app-key delete.
  * - `retireConnectionParty`, the wallet-client disconnect's and the forget's
  *   retirement, POSTs and rotates off any grants an entry carries first.
- * - `revokeAppAuthority` on a key with no entry revokes no grant.
+ * - `revokeAppAuthority` on a key with no entry throws before any stage.
  *
  * Every grant comes from the entry, so no history row is read on any path.
  * The entries are written through wallet-core's own upsert helpers over an
@@ -23,6 +23,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { ConnectionGrant } from '@interop/wallet-core/connections'
 import {
+  ConnectionEntryMissingError,
   deriveGrantsState,
   listConnectedAgents,
   listConnectedApps,
@@ -718,42 +719,18 @@ describe('retireConnectionParty', () => {
 })
 
 describe('revokeAppAuthority', () => {
-  it('revokes no grant for a key with no entry, and rotates its stamped collections', async () => {
+  it('throws for a key with no entry, rotating and revoking nothing', async () => {
     const storage = directoryStorage({ directory })
 
-    const result = await revokeAppAuthority({
-      storage: asStorageManager(storage),
-      subjectDid: APP_DID
-    })
+    await expect(
+      revokeAppAuthority({
+        storage: asStorageManager(storage),
+        subjectDid: APP_DID
+      })
+    ).rejects.toBeInstanceOf(ConnectionEntryMissingError)
 
-    expect(result.entry).toBeUndefined()
-    expect(result.handledZcapIds).toEqual([])
-    expect(storage.revokeCollectionRecipients).toHaveBeenCalledWith(
-      expect.objectContaining({ did: APP_DID, grants: [] })
-    )
-    expect(storage.revokeConnectionGrants).toHaveBeenCalledWith({
-      grants: [],
-      revokedByRotation: []
-    })
-  })
-
-  it('reads no listing when the caller hands one in', async () => {
-    await connectApp()
-    const storage = directoryStorage({ directory })
-    const directoryRead = await storage.readConnectionsListing()
-    storage.readConnectionsListing.mockClear()
-
-    const result = await revokeAppAuthority({
-      storage: asStorageManager(storage),
-      subjectDid: APP_DID,
-      directory: directoryRead,
-      collections: []
-    })
-
-    expect(storage.readConnectionsListing).not.toHaveBeenCalled()
-    expect(result.handledZcapIds).toEqual(['urn:zcap:one'])
-    expect(storage.revokeCollectionRecipients).toHaveBeenCalledWith(
-      expect.objectContaining({ directory: directoryRead, collections: [] })
-    )
+    expect(storage.revokeCollectionRecipients).not.toHaveBeenCalled()
+    expect(storage.revokeConnectionGrants).not.toHaveBeenCalled()
+    expect(directory.writes).toEqual([])
   })
 })

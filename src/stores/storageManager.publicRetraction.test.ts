@@ -1,17 +1,8 @@
 /**
- * Unit tests for the remote-aware retraction of a credential's world-readable
- * public copy (`StorageManager.retractPublicCopy`, the step
- * `deleteCredential` runs first) and for the union listing the login-time
- * app-key sweep's orphan pass reads (`listPublicCredentials`).
- *
- * The point of the remote probe is that the local `public-credentials` replica
- * cannot prove the ABSENCE of a remote copy: a freshly enrolled browser, or one
- * whose replication sits in retry backoff, has not pulled it yet. So with
- * `consultRemote` (the unattended app-key sweep's setting) the remote
- * collection is consulted, and a probe that cannot be answered refuses the
- * delete rather than deleting on the local replica's say-so. Without the
- * option (the interactive delete), or without a remote store at all, the path
- * is local-only, exactly as before.
+ * Unit tests for the retraction of a credential's world-readable public copy,
+ * the step `StorageManager.deleteCredential` runs first. The decision is the
+ * local replica's: a configured remote store is not consulted, so an offline
+ * delete of a credential with no local public copy keeps working.
  *
  * The manager runs over a real BrowserStore on memory RxDB, with a structural
  * fake `WASRemoteStore` behind the synced-resource surface.
@@ -21,11 +12,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import { getRxStorageMemory } from 'rxdb/plugins/storage-memory'
-import type { Json } from '@interop/was-sync'
 import { browserLocalSessionPersistence } from '@/session/persistence'
 import type { User } from '@/types/auth'
 import { BrowserStore } from './browserStore'
-import { PublicCopyRetractionError, StorageManager } from './storageManager'
+import { StorageManager } from './storageManager'
 import { generateVaultKeys } from '@/stores/testing/vaultKeys'
 import type { WASRemoteStore } from './wasRemoteStore'
 
@@ -54,35 +44,17 @@ function makeCredential(name: string): IVerifiableCredential {
 }
 
 /**
- * A structural fake `WASRemoteStore` over an in-memory `public-credentials`
- * map, recording the calls the retraction makes.
+ * A structural fake `WASRemoteStore` recording any synced-resource call the
+ * retraction makes to it. None is expected.
  *
- * @param options {object}
- * @param [options.resources] {Record<string, Json>}   the remote Resources, by
- *   cid
  * @returns {object}
  */
-function makeFakeRemote({
-  resources = {}
-}: {
-  resources?: Record<string, Json>
-} = {}) {
-  const held = new Map<string, Json>(Object.entries(resources))
-  const fake = {
+function makeFakeRemote() {
+  return {
     spaceId: 's-space',
-    listSyncedDocuments: vi.fn(async () =>
-      [...held].map(([id, data]) => ({ id, data }))
-    ),
-    getSyncedResource: vi.fn(async ({ resourceId }: { resourceId: string }) =>
-      held.get(resourceId)
-    ),
-    deleteSyncedResource: vi.fn(
-      async ({ resourceId }: { resourceId: string }) => {
-        held.delete(resourceId)
-      }
-    )
+    getSyncedResource: vi.fn(),
+    deleteSyncedResource: vi.fn()
   }
-  return { fake, held }
 }
 
 /**
@@ -118,61 +90,9 @@ async function makeStorage(
   })
 }
 
-describe('StorageManager.retractPublicCopy', () => {
-  it('deletes a remote public copy the local replica has not pulled', async () => {
-    const { fake, held } = makeFakeRemote({
-      resources: { 'cid-1': makeCredential('Alice') as unknown as Json }
-    })
-    const storage = await makeStorage(fake as unknown as WASRemoteStore)
-
-    await storage.retractPublicCopy({ cid: 'cid-1', consultRemote: true })
-
-    expect(fake.deleteSyncedResource).toHaveBeenCalledWith({
-      logicalKey: 'publicCredentials',
-      resourceId: 'cid-1'
-    })
-    expect(held.has('cid-1')).toBe(false)
-  })
-
-  it('refuses the delete when the remote probe throws', async () => {
-    const { fake } = makeFakeRemote()
-    fake.getSyncedResource.mockImplementationOnce(async () => {
-      throw new Error('offline')
-    })
-    const storage = await makeStorage(fake as unknown as WASRemoteStore)
-
-    await expect(
-      storage.retractPublicCopy({ cid: 'cid-1', consultRemote: true })
-    ).rejects.toThrow(PublicCopyRetractionError)
-    expect(fake.deleteSyncedResource).not.toHaveBeenCalled()
-  })
-
-  it('leaves a credential delete refused when the probe throws', async () => {
-    const { fake } = makeFakeRemote()
-    fake.getSyncedResource.mockImplementation(async () => {
-      throw new Error('offline')
-    })
-    const storage = await makeStorage(fake as unknown as WASRemoteStore)
-    const user: User = { id: 'did:key:z6MkTestUser', email: 'x@example.com' }
-    const credential = makeCredential('Bob')
-    await storage.addCredential({ credential, user })
-    const [{ cid }] = await storage.listCredentials()
-
-    await expect(
-      storage.deleteCredential({ cid, consultRemote: true })
-    ).rejects.toThrow(PublicCopyRetractionError)
-    expect(
-      (await storage.listCredentials()).map(credential => credential.cid)
-    ).toEqual([cid])
-  })
-
-  it('decides on the local replica alone without consultRemote', async () => {
-    const { fake } = makeFakeRemote({
-      resources: { 'cid-1': makeCredential('Alice') as unknown as Json }
-    })
-    fake.getSyncedResource.mockImplementation(async () => {
-      throw new Error('offline')
-    })
+describe('StorageManager.deleteCredential public-copy retraction', () => {
+  it('decides on the local replica alone with a remote configured', async () => {
+    const fake = makeFakeRemote()
     const storage = await makeStorage(fake as unknown as WASRemoteStore)
     const credential = makeCredential('Dave')
     await storage.addCredential({
@@ -200,40 +120,5 @@ describe('StorageManager.retractPublicCopy', () => {
     await storage.deleteCredential({ cid })
 
     expect(await storage.listCredentials()).toEqual([])
-  })
-})
-
-describe('StorageManager.listPublicCredentials', () => {
-  it('unions the local rows with the remote collection, skipping known cids', async () => {
-    const remoteOnly = makeCredential('Remote')
-    const { fake } = makeFakeRemote({
-      resources: {
-        'cid-remote': remoteOnly as unknown as Json,
-        'cid-private': makeCredential('HasPrivateRow') as unknown as Json
-      }
-    })
-    const storage = await makeStorage(fake as unknown as WASRemoteStore)
-
-    const listed = await storage.listPublicCredentials({
-      skipCids: new Set(['cid-private'])
-    })
-
-    expect(listed.map(({ cid }) => cid)).toEqual(['cid-remote'])
-    // One page walk, no per-resource GET: the skipped cid's private
-    // credential's delete retracts it.
-    expect(fake.listSyncedDocuments).toHaveBeenCalledTimes(1)
-    expect(fake.getSyncedResource).not.toHaveBeenCalled()
-  })
-
-  it('throws when the remote listing fails', async () => {
-    const { fake } = makeFakeRemote()
-    fake.listSyncedDocuments.mockImplementationOnce(async () => {
-      throw new Error('collection unreachable')
-    })
-    const storage = await makeStorage(fake as unknown as WASRemoteStore)
-
-    await expect(storage.listPublicCredentials()).rejects.toThrow(
-      'collection unreachable'
-    )
   })
 })

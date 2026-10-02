@@ -1422,7 +1422,7 @@ async function sessionFromKeyringHit({
   // abandoned, and none of the block's registry, bridge, or promotion
   // writes is wanted on it. `session.registryReady` settles when the
   // registry-writing registrations have reported, and `session.mends` when
-  // the whole block has, the app-key sweep and the annex GC included.
+  // the whole block has, the annex GC and the keystore report included.
   // No provisioning, no block: the signup existence probe logs in with
   // `provisionStorage: false` and discards the session at once, and none of
   // the block's registry, bridge, or promotion writes is wanted on its

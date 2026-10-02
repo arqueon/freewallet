@@ -6,8 +6,8 @@
   say what happens to accounts, bundles, and keys that predate it.
   Extracted at that design's approval.
 - Affects: freewallet (signup provisioning, the credential-anchored mend's
-  collection set, `src/session/appKeySweep.ts` and its registration, the
-  content migration); dcw (its one-time provisioning gate); wallet-backup
+  collection set, the retired stranded app-key sweep, the content
+  migration); dcw (its one-time provisioning gate); wallet-backup
   (the archive survey's roster set).
 
 ## Context
@@ -25,7 +25,7 @@ every non-roster collection as an app collection to migrate, so once the
 writer roster's id leaves the roster, an older bundle's empty
 `registered-writers` migrates as an app collection, and after the app-key
 collection's rename so does an older bundle's app-key collection with its
-seeds. The stranded app-key sweep retires an app's authority by reading
+seeds. The stranded app-key sweep retired an app's authority by reading
 its grants before deleting a key stranded in `private-credentials`, and
 such a key predates the directory, so the sweep would revoke nothing.
 
@@ -34,12 +34,12 @@ such a key predates the directory, so the sweep would revoke nothing.
 Nothing backfills the directory. Signup provisions it on every path, and
 no mender provisions it on an account that lacks it. The content
 migration survey is not changed, and the retired roster ids migrate as
-whatever the survey classifies them. The stranded app-key sweep stays,
-and its one grant source is the directory. It is not given a
-history-reading grant path. A key that predates the directory has no
-entry, so the sweep revokes no grant for it. It rotates the app out of
-the collections whose `generator` stamp names the app, then deletes the
-key.
+whatever the survey classifies them. The stranded app-key sweep is
+retired rather than given a history-reading grant path. A key that
+predates the directory has no entry, so a sweep would revoke no grant
+for it. Deleting the key would leave the app's zcaps live, and its
+key-epoch membership in every collection its `generator` stamp does not
+name. Such a key stays in place.
 
 ## Rejected Alternatives
 
@@ -59,6 +59,10 @@ key.
   exception to "the history log is audit trail only" (0034), keeping the
   lost-row gap on that branch for a population older than the one this
   record already excludes.
+- **Keep the sweep with the directory as its one grant source.** It
+  deletes a pre-directory key while revoking none of the app's grants.
+  The app keeps its zcaps until they expire, with no Applications page
+  row to revoke them from.
 
 ## Consequences
 
@@ -72,18 +76,14 @@ key.
   collection holding the old account's app-key seeds. The storage
   facade's refusal of externally supplied app keys covers only
   `addCredential`, not the app-collection path.
-- A stranded key that predates the directory is still deleted, but the
-  app behind it keeps its grants until they expire. Only the
-  collections its `generator` stamp names are rotated away from it.
-- The sweep reads the directory before it touches a key that names an
-  app. A failed read, a missing directory, or a directory binding the
-  session refuses leaves every such stranded key and orphan public copy
-  in place until a later login reads the directory. Until then a
-  stranded key keeps both of `private-credentials`' exits open, the
-  public link and the share, and an orphan public copy stays
-  world-readable.
-- The sweep runs on the remembered-login chain alone, so an account that
-  never runs a remembered login keeps its stranded keys.
+- A stranded key that predates the directory stays in
+  `private-credentials`, and so does any public copy of one. The key
+  keeps both of that collection's exits open onto its seed, the public
+  link and the share, and a public copy stays world-readable. The app
+  behind it keeps its grants until they expire.
+- The invariant `app-keys-live-only-in-app-connections` is retired from
+  the mender registry and from wallet-core's invariant-id census. The
+  residue is no gap the registry tracks.
 
 ## Revisit Criteria
 
@@ -97,7 +97,7 @@ Reopen this decision when one or more of the following holds:
 
 ## Changelog
 
-- 2026-10-01: Reversed the stranded app-key sweep's retirement to match
-  the code. The sweep stays with the directory as its grant source, and
-  the Consequences state what it leaves for a pre-directory key and on a
-  refused directory read.
+- 2026-10-01: Retired the stranded app-key sweep, because a pre-directory
+  key has no grants in the directory to revoke. The Decision, a new
+  Rejected Alternative, and the Consequences state what such a key now
+  leaves in place.

@@ -97,10 +97,10 @@ export function heldFor({
  * Starts one login chain's block, selecting the registrations, the
  * registry-writing prefix, and the seed from the chain the deps name. The
  * remembered chain runs the provisioning seed, the six registry-writing
- * registrations, then the app-key sweep, the annex GC, and the keystore
- * report; the transient chain runs the collection fan-out, the shared
- * registry passes, then the acting credential's management-zcap refresh,
- * and has no seed, a transient session provisioning nothing.
+ * registrations, then the annex GC and the keystore report; the transient
+ * chain runs the collection fan-out, the shared registry passes, then the
+ * acting credential's management-zcap refresh, and has no seed, a transient
+ * session provisioning nothing.
  *
  * Both of the session's promises are stamped before anything is awaited, so
  * a caller that returns the session at once finds them. The two settle

@@ -33,11 +33,33 @@ import {
 } from '../../src/session/menders/index.js'
 
 /**
+ * The design table's rows, by row number minus one: the census ids in
+ * order, with a retired row (20) left empty so the rows after it keep
+ * their numbers.
+ */
+const ROW_IDS: Array<InvariantId | undefined> = [
+  ...INVARIANT_IDS.slice(0, 19),
+  undefined,
+  ...INVARIANT_IDS.slice(19)
+]
+
+/**
  * The design table's row number for an id, so the pins read as the design
  * reads.
  */
 function rowOf(id: InvariantId): number {
-  return INVARIANT_IDS.indexOf(id) + 1
+  return ROW_IDS.indexOf(id) + 1
+}
+
+/**
+ * The inverse of {@link rowOf}: the census id at a design row.
+ */
+function idOfRow(row: number): InvariantId {
+  const id = ROW_IDS[row - 1]
+  if (id === undefined) {
+    throw new Error(`design row ${row} is retired and names no invariant`)
+  }
+  return id
 }
 
 function source(relative: string): string {
@@ -97,12 +119,13 @@ describe('the gap allowlist', () => {
     // Row 35 entered `none` with its declaration and left it when the
     // connections writer sweep became an encounter site at the directory
     // listing read. Row 36 entered `none` with its declaration: nothing
-    // backfills the connections directory.
+    // backfills the connections directory. Row 20 left the census with the
+    // login-time stranded app-key sweep.
     expect(
       derived
         .filter(gap => gap.kind === 'unreachable')
         .map(gap => rowOf(gap.invariant))
-    ).toEqual([11, 19, 20, 22, 24, 27, 33])
+    ).toEqual([11, 19, 22, 24, 27, 33])
     expect(undeclaredGaps({ derived, declared: MENDER_GAPS })).toEqual([])
   })
 
@@ -201,11 +224,6 @@ describe('the code counterpart', () => {
         symbol: 'sweepClientAnnexGenerations'
       },
       {
-        row: 20,
-        file: 'src/session/appKeySweep.ts',
-        symbol: 'sweepStrandedAppKeys'
-      },
-      {
         row: 21,
         file: 'src/session/forget.ts',
         symbol: 'wipeStaleClientResidue'
@@ -244,7 +262,7 @@ describe('the code counterpart', () => {
       expect(text, `${symbol} in ${file}`).toMatch(
         new RegExp(`^export (async )?function ${symbol}\\b`, 'm')
       )
-      expect(reported.has(INVARIANT_IDS[row - 1]!), `row ${row}`).toBe(true)
+      expect(reported.has(idOfRow(row)), `row ${row}`).toBe(true)
     }
     // The two facade methods: reachable through StorageManager rather than
     // as module exports.
@@ -276,7 +294,7 @@ describe('the code counterpart', () => {
     // must not repeat that copy, or a login logs each failure twice.
     const passes = source('src/session/registryPasses.ts')
     for (const row of [4, 5, 6, 7]) {
-      const decl = freewalletMenderRegistry.byId(INVARIANT_IDS[row - 1]!)!
+      const decl = freewalletMenderRegistry.byId(idOfRow(row))!
       expect(passes, `row ${row}`).not.toContain(decl.warn)
     }
   })

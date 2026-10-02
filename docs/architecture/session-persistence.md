@@ -50,8 +50,8 @@ wire. The sync controller sends it on every replication push as the WAS
 `Writer-Id` header. The in-memory variant cannot reach that label. It holds
 a per-visit one minted in tab memory, and declares none today, since it runs
 no replication and remote-direct writes send no `Writer-Id` on any session
-kind. A remembered session's own remote-direct writes (the CHAPI popup, the
-app-key sweep's public-copy retraction) go unlabeled too.
+kind. A remembered session's own remote-direct writes, such as the CHAPI
+popup's, go unlabeled too.
 
 Global UI prefs (theme, language) are not session state and ride a sibling
 seam (`src/lib/prefsStorage.ts`): during a transient session, pref writes

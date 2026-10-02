@@ -67,12 +67,6 @@ export function memoryConnectionsStore(): {
       const etag = `e${++revision}`
       rows.set(resourceId, { body: structuredClone(body), etag })
       return { etag }
-    },
-    async delete({ resourceId }) {
-      if (!rows.delete(resourceId)) {
-        throw namedError('NotFoundError')
-      }
-      writes.push(`delete:${resourceId}`)
     }
   }
   return { store, rows, writes }

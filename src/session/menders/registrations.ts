@@ -7,9 +7,9 @@
  *
  * Two lists are run by the runner, one per chain trigger. The remembered
  * list is split at the settle point: the registry-writing part settles
- * `session.registryReady`, and the tail (the app-key sweep, the annex GC,
- * and the keystore report last, so neither sweep queues behind its KMS
- * round trip) settles only `session.mends`. Beside them sit the sites that
+ * `session.registryReady`, and the tail (the annex GC, then the keystore
+ * report last, so the sweep does not queue behind its KMS round trip)
+ * settles only `session.mends`. Beside them sit the sites that
  * report from their own call sites: the routing entries, whose control flow
  * decides whether a session is built at all, and the did:web projection
  * mend, which a transient visit fires before its chain and in the CHAPI
@@ -84,7 +84,6 @@ import {
   clientAnnexReachFor,
   ensureGenerationDelegation
 } from '@/session/annexReach'
-import { sweepStrandedAppKeys } from '@/session/appKeySweep'
 import { sweepClientAnnexGenerations } from '@/session/clientAnnexGc'
 import { refreshTransientManageCapability } from '@/session/unlockMethods'
 import { sweepHeldConnectionWriters } from '@/session/connectionWriters'
@@ -627,35 +626,6 @@ const GENERATION_DELEGATION_HEAL: Registration<LoginMenderDeps, CeremonyId> = {
         }
       ]
     }
-  }
-}
-
-/**
- * The stranded app-key sweep, first of the tail: it is registered behind the
- * registry-writing entries, so it settles under `session.mends` alone, and
- * ahead of the keystore report, so it does not queue behind a KMS round
- * trip. The verified document's reading is handed along as a thunk the sweep
- * reads best-effort, and only once a Resource needs revoking, so a stranded key
- * whose grants are dead already (an orphaned signer, a rotted generation
- * delegation)
- * is deleted rather than left behind a revocation the server would refuse at
- * every login, and a clean account verifies nothing extra.
- */
-const APP_KEY_SWEEP: Registration<LoginMenderDeps, CeremonyId> = {
-  trigger: 'remembered-login-chain',
-  reports: ['app-keys-live-only-in-app-connections'],
-  async converge(deps) {
-    const { session } = remembered(deps)
-    const { deleted, retracted } = await sweepStrandedAppKeys({
-      storage: session.storage
-    })
-    return [
-      {
-        invariant: 'app-keys-live-only-in-app-connections',
-        outcome: deleted + retracted > 0 ? 'clean' : 'noop',
-        detail: { deleted, retracted }
-      }
-    ]
   }
 }
 
@@ -1217,13 +1187,13 @@ export const REMEMBERED_REGISTRY_REGISTRATIONS: ReadonlyArray<
 ]
 
 /**
- * The remembered block's tail: the two sweeps and the keystore report, which
- * nothing waits on but `session.mends`. The keystore report is last, so
- * neither sweep queues behind its KMS round trip.
+ * The remembered block's tail: the annex GC and the keystore report, which
+ * nothing waits on but `session.mends`. The keystore report is last, so the
+ * sweep does not queue behind its KMS round trip.
  */
 const REMEMBERED_TAIL_REGISTRATIONS: ReadonlyArray<
   Registration<LoginMenderDeps, CeremonyId>
-> = [APP_KEY_SWEEP, ANNEX_GC, KEYSTORE_PROMOTION]
+> = [ANNEX_GC, KEYSTORE_PROMOTION]
 
 /**
  * The remembered block, seed excluded (the runner takes that separately).

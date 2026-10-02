@@ -50,9 +50,6 @@
   the verified document still lists the client, so a forget torn after its
   retirement no longer leaves the entry retired for up to a day.
 - The Forget-this-browser confirm button has its label in both locales.
-- Decision 0036 now describes the stranded app-key sweep as the code has it:
-  the sweep stays, reads grants from the directory alone, and leaves every
-  stranded key in place when the directory cannot be read.
 - Revoking an app whose grant was signed by a since-disconnected wallet
   client succeeds again. The server now answers that dead grant with a
   masked 404, and wallet-core's refusal reading counts it as skipped
@@ -284,9 +281,6 @@
   now covers the directory's `writers`, with authority `none` and the
   `encounter` trigger. The writer first-seen record rides the persistence
   strategy and is unlock-local state.
-- The stranded app-key sweep reads grants from the directory. A stranded
-  key has no entry, so the sweep revokes no grant for it and rotates only
-  the collections whose `generator` names it.
 - `app-connections` listing rows carry their Resource id, and
   `addMintedAppKey` returns it.
 - `StorageManager.revokeAppGrants` and `revokeAgentGrants` are replaced by
@@ -393,9 +387,6 @@
 - A revocation now counts a grant the server answers `AlreadyRevokedError`
   as revoked, so the Revoke a retry records names the grants an earlier,
   failed attempt withdrew.
-- The login-time sweep of stranded app keys runs the same revocation
-  sequence as the Applications page (`revokeAppAuthority`), so the grant
-  stage also runs when a collection could not be re-keyed.
 - A string target naming an existing encrypted collection now shows the
   consent row's ciphertext note, read off the collection's own metadata,
   unless the collection's current key epoch already lists the grantee.
@@ -445,6 +436,10 @@
 - The cross-replica conformance `SyncStore` fake follows wallet-core's
   rename of `SyncedRow` to `SyncedResourceReplica` and `getDirtyRows` to
   `getDirtyResourceReplicas`.
+- Revoking an app with no `connections` entry fails with
+  `ConnectionEntryMissingError` before any rotation or grant revocation.
+  The branch that rotated its stamped collections and revoked nothing
+  served only the retired sweep.
 
 ### Removed
 
@@ -458,6 +453,16 @@
   (`applications.revokeAgentSuccessPartial`). No summary-only grant exists.
 - The CHAPI get popup's hand-off of its `app-connections` listing to the
   consent row's attribution pass.
+- The login-time sweep of app-key credentials stranded in
+  `private-credentials`, with its pass over orphaned public app-key copies.
+  A stranded key predates the `connections` directory and has no grants
+  there to revoke. Its invariant `app-keys-live-only-in-app-connections`
+  is retired from the mender registry and from wallet-core's census, with
+  its gap allowlist row and warning. Decisions 0033 and 0036 record the
+  retirement.
+- The `consultRemote` option on `deleteCredential`, the public-copy
+  retraction's remote consult, and `listPublicCredentials` on
+  `StorageManager` and both store backends. Only the sweep used them.
 
 ### Added
 
@@ -770,10 +775,6 @@
   collection listing that could not be read, keeps the app-key row and
   records no Revoke, so the user can retry rather than being told the app's
   access had already ended.
-
-- The login-time app-key sweep fetches the Space collection listing once for
-  the whole sweep and hands it to each rotation, rather than re-listing per
-  stranded key.
 
 - A transient session grants a whole-Space read like every other session
   kind. The refusal `resolveGrant` applied under a generation delegation

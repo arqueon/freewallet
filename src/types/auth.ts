@@ -248,7 +248,7 @@ export interface Session {
   // This login's mend report: one entry per invariant a mender reported,
   // in report order -- the routing entries this login fired, then every
   // registration of its chain's block. It settles when the whole block has
-  // run, the app-key sweep and the annex GC included, so it settles behind
+  // run, the annex GC and the keystore report included, so it settles behind
   // `registryReady` rather than with it. In memory only, scalar detail
   // only, and it never rejects.
   mends?: Promise<MendReport<CeremonyId>>

@@ -241,24 +241,6 @@ describe('localConnectionsStore', () => {
     )
   })
 
-  it('deletes under ifMatch, and an absent delete is NotFoundError', async () => {
-    const { store } = await localDirectory()
-    const resourceId = await idOf(AGENT)
-    const { etag } = await store.put({
-      resourceId,
-      body: { n: 1 },
-      ifNoneMatch: true
-    })
-    expect(
-      await rejectionName(store.delete({ resourceId, ifMatch: 'stale' }))
-    ).toBe('PreconditionFailedError')
-    await store.delete({ resourceId, ifMatch: etag })
-    await expect(store.list()).resolves.toEqual([])
-    expect(await rejectionName(store.delete({ resourceId }))).toBe(
-      'NotFoundError'
-    )
-  })
-
   it('runs the directory logic unchanged: record, list, retire', async () => {
     const { store } = await localDirectory()
     // A session with no Space passes no container URL and records no grant.

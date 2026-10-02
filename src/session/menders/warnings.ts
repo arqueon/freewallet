@@ -49,7 +49,6 @@ export const MENDER_WARNINGS: Readonly<Record<InvariantId, string>> = {
   'did-web-projection-matches-the-log':
     'Could not refresh the did:web projection of the account log',
   'no-annex-generation-outlives-its-pointer': 'The annex GC sweep failed',
-  'app-keys-live-only-in-app-connections': 'The stranded app-key sweep failed',
   'client-key-record-matches-the-pointed-account':
     'Could not wipe the stale client residue; the next login retries',
   'this-browser-is-still-an-enrolled-client':

@@ -121,7 +121,6 @@ export interface SyncedCollectionStore {
   }): Promise<void>
   removePublicCredential(options: { cid: string }): Promise<void>
   hasPublicCredential(options: { cid: string }): Promise<boolean>
-  listPublicCredentials(): Promise<Array<StoredCredential>>
   readonly unknownEpochContacts: number
   readonly unknownEpochContactsHistory: number
   listContacts(): Promise<Array<StoredContact>>
@@ -884,23 +883,6 @@ export class RemoteDirectStore implements SyncedCollectionStore {
       resourceId: cid
     })
     return data !== undefined
-  }
-
-  /**
-   * Lists the remote `public-credentials` collection's resources. The
-   * collection is plaintext and keyed by the credential's content cid, so each
-   * resource id IS the cid and each body IS the credential.
-   *
-   * @returns {Promise<Array<StoredCredential>>}
-   */
-  async listPublicCredentials(): Promise<Array<StoredCredential>> {
-    const resources = await this.#remote.listSyncedDocuments({
-      logicalKey: 'publicCredentials'
-    })
-    return resources.map(({ id, data }) => ({
-      cid: id,
-      vc: data as unknown as IVerifiableCredential
-    }))
   }
 
   get unknownEpochContacts(): number {

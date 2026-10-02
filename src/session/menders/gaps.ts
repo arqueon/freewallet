@@ -141,14 +141,8 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
     item: 'FW-462',
     kind: 'unreachable'
   },
-  // 13
-  {
-    invariant: 'app-keys-live-only-in-app-connections',
-    tornState: 'Stranded app keys after a last-client transition.',
-    standsOn: ['ladder-anchored'],
-    item: 'FW-463',
-    kind: 'unreachable'
-  },
+  // 13. Retired 2026-10-01: invariant 20 (stranded app keys) left the
+  // census with its sweep. The number stays, so the rows below keep theirs.
   // 14
   {
     invariant: 'standard-collections-are-provisioned',

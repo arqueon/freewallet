@@ -8,7 +8,7 @@
  * total order (the provisioning seed, the user key sweep, the four shared
  * registry passes, the standing-delegation refresh, the ladder-rung
  * refresh, the pointer heal, the generation-delegation heal, then the
- * app-key sweep, the annex GC and the keystore report), is abandoned when
+ * annex GC and the keystore report), is abandoned when
  * provisioning itself
  * failed, and neither promise rejects. The order pin reads
  * `session.mends`, which carries one entry per invariant every registration
@@ -95,12 +95,6 @@ vi.mock('@/session/clientAnnexGc', () => ({
     return { skipped: 'not-enrolled' }
   })
 }))
-vi.mock('@/session/appKeySweep', () => ({
-  sweepStrandedAppKeys: vi.fn(async () => {
-    state.events.push('app-key-sweep')
-    return { deleted: 0, retracted: 0 }
-  })
-}))
 
 // The roster read succeeds (so the re-seal repair's gate is open) and the
 // sweep's convergence leaves the login key unchanged.
@@ -143,7 +137,7 @@ import { fetchKeyring } from '@/session/keyring'
 import { routeUnlockLogin } from '@/session/transientLogin'
 import { StorageManager } from '@/stores/storageManager'
 import { loginWithPassphrase } from '@/session/initSession'
-import { sweepStrandedAppKeys } from '@/session/appKeySweep'
+import { sweepClientAnnexGenerations } from '@/session/clientAnnexGc'
 import { mintUserKey } from '@interop/wallet-core/keys'
 import {
   assertClientStillEnrolled,
@@ -325,9 +319,9 @@ beforeEach(() => {
     state.events.push('reseal')
     return 'ok'
   })
-  vi.mocked(sweepStrandedAppKeys).mockImplementation(async () => {
-    state.events.push('app-key-sweep')
-    return { deleted: 0, retracted: 0 }
+  vi.mocked(sweepClientAnnexGenerations).mockImplementation(async () => {
+    state.events.push('annex-gc')
+    return { skipped: 'not-enrolled' }
   })
   vi.mocked(routeUnlockLogin).mockImplementation((async ({
     credential
@@ -383,13 +377,12 @@ describe('the FW-300 storageReady / registryReady split', () => {
       'torn-retirement',
       'bare-passkey',
       'backfill',
-      'app-key-sweep',
       'annex-gc'
     ])
     // The routing entry the login fired, then every registration of the
     // block, by the invariants it reports: the provisioning seed, the sweep's two, the four shared passes, the two
     // standing refreshes, the pointer heal's two, the generation-delegation
-    // heal, then the tail -- the two sweeps and the keystore report. A
+    // heal, then the tail -- the annex GC and the keystore report. A
     // registration that stopped reporting would drop its ids from this
     // list.
     expect(report.map(entry => entry.invariant)).toEqual([
@@ -408,32 +401,31 @@ describe('the FW-300 storageReady / registryReady split', () => {
       'account-pointer-names-the-account-did',
       'space-controller-is-the-account-did',
       'generation-delegation-is-current',
-      'app-keys-live-only-in-app-connections',
       'no-annex-generation-outlives-its-pointer',
       'keystore-controller-is-the-account-did'
     ])
     // `registryReady` settles at the registry-writing registrations' last
-    // entry, and `mends` behind the two tail sweeps.
+    // entry, and `mends` behind the tail.
     expect(
       report.findIndex(
         entry => entry.invariant === 'generation-delegation-is-current'
       )
     ).toBeLessThan(
       report.findIndex(
-        entry => entry.invariant === 'app-keys-live-only-in-app-connections'
+        entry => entry.invariant === 'no-annex-generation-outlives-its-pointer'
       )
     )
   })
 
-  it('settles registryReady before the tail sweeps have run', async () => {
+  it('settles registryReady before the tail sweep has run', async () => {
     const fake = await arrangeEnrolledLogin()
     let releaseSweep!: () => void
-    vi.mocked(sweepStrandedAppKeys).mockImplementation(
+    vi.mocked(sweepClientAnnexGenerations).mockImplementation(
       () =>
-        new Promise<{ deleted: number; retracted: number }>(resolve => {
+        new Promise(resolve => {
           releaseSweep = () => {
-            state.events.push('app-key-sweep')
-            resolve({ deleted: 0, retracted: 0 })
+            state.events.push('annex-gc')
+            resolve({ skipped: 'not-enrolled' })
           }
         })
     )
@@ -442,7 +434,7 @@ describe('the FW-300 storageReady / registryReady split', () => {
     fake.resolveProvisioning()
     await session!.registryReady
     expect(await settled(session!.mends)).toBe(false)
-    expect(state.events).not.toContain('app-key-sweep')
+    expect(state.events).not.toContain('annex-gc')
 
     releaseSweep()
     await session!.mends
@@ -602,7 +594,7 @@ describe('the remembered login chain on the event channel', () => {
 
   it('emits a failed mender event beside the declared warn when a pass throws', async () => {
     const fake = await arrangeEnrolledLogin()
-    vi.mocked(sweepStrandedAppKeys).mockRejectedValue(
+    vi.mocked(sweepClientAnnexGenerations).mockRejectedValue(
       new TypeError('the sweep broke')
     )
 
@@ -610,7 +602,7 @@ describe('the remembered login chain on the event channel', () => {
     fake.resolveProvisioning()
     await session!.mends
 
-    const events = capture.menders('app-keys-live-only-in-app-connections')
+    const events = capture.menders('no-annex-generation-outlives-its-pointer')
     expect(events).toHaveLength(1)
     expect(events[0]?.level).toBe('error')
     expect(events[0]?.data).toMatchObject({
@@ -623,7 +615,7 @@ describe('the remembered login chain on the event channel', () => {
         event.level === 'warn' &&
         event.msg !== 'ceremony mender' &&
         (event.data as { invariant?: string } | undefined)?.invariant ===
-          'app-keys-live-only-in-app-connections'
+          'no-annex-generation-outlives-its-pointer'
     )
     expect(warns).toHaveLength(1)
     expect(warns[0]?.err).toBeInstanceOf(TypeError)

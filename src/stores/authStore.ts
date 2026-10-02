@@ -34,8 +34,8 @@ function publishStorageSeam(session: Session | null): void {
  * non-production builds only, publish a waiter on
  * `window.__E2E_LOGIN_CHAIN_SETTLED__` so a Playwright fixture can let the
  * block finish before it tears the context down. It waits on
- * `session.mends`, which settles when the whole block has run -- the
- * app-key sweep and the annex GC included -- and never rejects. Cleared on
+ * `session.mends`, which settles when the whole block has run -- the annex
+ * GC and the keystore report included -- and never rejects. Cleared on
  * logout. No-op in production.
  */
 function publishLoginChainSeam(session: Session | null): void {

@@ -154,9 +154,6 @@ vi.mock('@/session/pointerHeal', () => ({
     controller: { outcome: 'noop' }
   }))
 }))
-vi.mock('@/session/appKeySweep', () => ({
-  sweepStrandedAppKeys: vi.fn(async () => ({ deleted: 0, retracted: 0 }))
-}))
 vi.mock('@/session/clientAnnexGc', () => ({
   sweepClientAnnexGenerations: vi.fn(async () => ({ skipped: 'no-annex' }))
 }))

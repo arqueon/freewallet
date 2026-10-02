@@ -20,7 +20,7 @@
  * name.
  */
 import type { RxCollection, RxDocument } from 'rxdb/plugins/core'
-import { NotFoundError, PreconditionFailedError } from '@interop/was-client'
+import { PreconditionFailedError } from '@interop/was-client'
 import type { EdvDocCipher } from '@interop/was-client/edv'
 import type {
   ConnectionIdKey,
@@ -91,9 +91,7 @@ export function resolvingConnectionsStore({
     get: options =>
       delegate({ operation: 'get', run: store => store.get(options) }),
     put: options =>
-      delegate({ operation: 'put', run: store => store.put(options) }),
-    delete: options =>
-      delegate({ operation: 'delete', run: store => store.delete(options) })
+      delegate({ operation: 'put', run: store => store.put(options) })
   }
 }
 
@@ -226,25 +224,6 @@ export function localConnectionsStore({
           ...(epoch !== undefined && { epoch })
         })
         return { etag: inserted.revision }
-      } catch (err) {
-        if (isRxConflict(err)) {
-          throw preconditionFailed({ resourceId, cause: err })
-        }
-        throw err
-      }
-    },
-    async delete({ resourceId, ifMatch }) {
-      const existing = await collection.findOne(resourceId).exec()
-      if (!existing) {
-        throw new NotFoundError(
-          `No local connections entry "${resourceId}" to delete.`
-        )
-      }
-      if (ifMatch !== undefined && existing.revision !== ifMatch) {
-        throw preconditionFailed({ resourceId })
-      }
-      try {
-        await existing.remove()
       } catch (err) {
         if (isRxConflict(err)) {
           throw preconditionFailed({ resourceId, cause: err })
