@@ -462,6 +462,7 @@
     "revokeTitle": "Revoke app access?",
     "revokeConfirm": "Revoking access removes {{name}}'s app key from your wallet and revokes the storage access it was granted. For each collection it provisioned, the encryption key is rotated so anything written from now on is unreadable to it -- but it may still hold copies of data it already fetched. The app will need to connect again from scratch. Older connections without a revocable grant will lapse on their own. This cannot be undone.",
     "revokeConfirmAction": "Revoke access",
+    "revokeConfirmShares": "{{name}} also holds a share of these wallet collections, which revoking removes: {{collections}}. Each one's encryption key is rotated, so anything written to them from now on is unreadable to it.",
     "revokeConfirmOrphaned": "The storage access {{name}} was granted already stopped working when the wallet that connected it was disconnected. Revoking now removes its app key from your wallet and rotates the encryption key of each collection it provisioned, so anything written from now on is unreadable to it -- but it may still hold copies of data it already fetched. This cannot be undone.",
     "revokeSuccess": "App access revoked.",
     "revokeSuccessOrphaned": "App removed. Its storage access had already ended when its wallet was disconnected.",

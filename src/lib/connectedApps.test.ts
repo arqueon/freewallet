@@ -20,7 +20,8 @@ import {
   findKnownAgents,
   listConnectedAgents,
   listConnectedApps,
-  lookupCollectionCreators
+  lookupCollectionCreators,
+  sharedCollectionIds
 } from '@/lib/connectedApps'
 import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
 import type { StorageManager } from '@/stores/storageManager'
@@ -73,6 +74,7 @@ beforeEach(() => {
 async function connectApp({
   did = APP_DID,
   grants = [],
+  grantKind,
   appKey,
   name = 'Notes',
   origin = APP_ORIGIN,
@@ -81,6 +83,7 @@ async function connectApp({
 }: {
   did?: string
   grants?: Array<Record<string, unknown>>
+  grantKind?: 'grant' | 'share'
   appKey?: string
   name?: string
   origin?: string
@@ -92,6 +95,7 @@ async function connectApp({
     did,
     kind: 'app',
     grants,
+    ...(grantKind !== undefined && { grantKind }),
     ...(appKey !== undefined && { appKey }),
     name,
     origin,
@@ -192,6 +196,7 @@ describe('listConnectedApps', () => {
         target: `${SPACE_URL}drafts/`,
         allowedActions: ['GET', 'PUT'],
         expires: '2099-01-01T00:00:00.000Z',
+        collectionId: 'drafts',
         signerKeyId: WALLET_SIGNER,
         grantKind: 'grant',
         grantedAt: LAST_SEEN
@@ -201,10 +206,56 @@ describe('listConnectedApps', () => {
         target: `${SPACE_URL}notes/`,
         allowedActions: ['GET'],
         expires: PAST,
+        collectionId: 'notes',
         signerKeyId: WALLET_SIGNER,
         grantKind: 'grant',
         grantedAt: FIRST_SEEN
       }
+    ])
+  })
+
+  it('names the wallet collections an app holds a share of, once each', async () => {
+    await connectApp({
+      grants: [
+        grantZcap({
+          id: 'urn:zcap:share-1',
+          controller: APP_DID,
+          collection: 'private-credentials'
+        }),
+        grantZcap({
+          id: 'urn:zcap:share-2',
+          controller: APP_DID,
+          collection: 'private-credentials'
+        }),
+        grantZcap({
+          id: 'urn:zcap:share-3',
+          controller: APP_DID,
+          collection: 'contacts'
+        })
+      ],
+      grantKind: 'share',
+      at: FIRST_SEEN
+    })
+    // A plain grant on an app collection is no share.
+    await connectApp({
+      grants: [
+        grantZcap({
+          id: 'urn:zcap:docs',
+          controller: APP_DID,
+          collection: 'docs'
+        })
+      ],
+      at: LAST_SEEN
+    })
+
+    const [app] = listConnectedApps({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL
+    })
+
+    expect(sharedCollectionIds({ grants: app.grants })).toEqual([
+      'private-credentials',
+      'contacts'
     ])
   })
 

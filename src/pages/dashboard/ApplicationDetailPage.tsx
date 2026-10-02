@@ -26,6 +26,7 @@ import { formatDate } from '@/lib/viewMappers/formatDate'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { RevokeAppDialog } from '@/components/RevokeAppDialog'
+import { getCollectionDisplayName } from '@/components/storage/displayUtils'
 import { useAsyncLoad } from '@/hooks/useAsyncLoad'
 import { useAuthStore } from '@/stores/authStore'
 import { showToast } from '@/stores/toastStore'
@@ -37,6 +38,7 @@ import {
 } from '@/session/applications'
 import {
   deriveGrantsState,
+  sharedCollectionIds,
   type AppGrant,
   type ConnectedAgent,
   type ConnectedApp
@@ -318,6 +320,9 @@ export function ApplicationDetailPage() {
         appName={partyName}
         agent={!app && !!agent}
         orphaned={grantsState === 'orphaned'}
+        sharedCollections={sharedCollectionIds({
+          grants: app?.grants ?? []
+        }).map(id => getCollectionDisplayName({ collection: { id }, t }))}
         revoking={revoking}
         error={revokeError}
         onCancel={() => setRevokeDialogOpen(false)}

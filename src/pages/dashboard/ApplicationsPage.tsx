@@ -40,6 +40,7 @@ import { formatDate } from '@/lib/viewMappers/formatDate'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { RevokeAppDialog } from '@/components/RevokeAppDialog'
+import { getCollectionDisplayName } from '@/components/storage/displayUtils'
 import { useAsyncLoad } from '@/hooks/useAsyncLoad'
 import { usePullSettled } from '@/hooks/usePullSettled'
 import { APP_CONNECTIONS_COLLECTION } from '@interop/wallet-core/space'
@@ -53,6 +54,7 @@ import {
 } from '@/session/applications'
 import {
   deriveGrantsState,
+  sharedCollectionIds,
   type AppGrant,
   type ConnectedAgent,
   type ConnectedApp
@@ -506,6 +508,9 @@ export function ApplicationsPage() {
           deriveGrantsState({ grants: revokeTarget.grants, signerCheck }) ===
             'orphaned'
         }
+        sharedCollections={sharedCollectionIds({
+          grants: revokeTarget?.grants ?? []
+        }).map(id => getCollectionDisplayName({ collection: { id }, t }))}
         revoking={revoking}
         error={revokeError}
         onCancel={() => setRevokeTarget(null)}

@@ -4,6 +4,10 @@
  * whose recorded grants were all signed by a since-disconnected wallet client)
  * gets its own wording, since its grants already stopped verifying.
  *
+ * An app holding a share of one of the wallet's own collections is told which
+ * collections the disconnect takes its key off (`sharedCollections`), so the
+ * confirmation says no less than the Storage page's shares dialog would.
+ *
  * The same dialog confirms revoking a connected AGENT (`agent`), whose copy
  * speaks only of the storage grants: an agent holds no app key to delete and
  * is no collection's epoch recipient, so nothing is rotated. It has no
@@ -29,6 +33,8 @@ import { useTranslation } from 'react-i18next'
  *   an App Connect application
  * @param [options.orphaned] {boolean}   whether the app's grants are orphaned
  *   (read on the app path only)
+ * @param [options.sharedCollections] {string[]}   the display names of the
+ *   wallet collections the app holds a share of, which the revoke un-shares
  * @param options.revoking {boolean}   whether a revocation is in flight
  * @param options.error {boolean}   whether the last attempt failed
  * @param options.onCancel {Function}
@@ -40,6 +46,7 @@ export function RevokeAppDialog({
   appName,
   agent = false,
   orphaned = false,
+  sharedCollections = [],
   revoking,
   error,
   onCancel,
@@ -49,6 +56,7 @@ export function RevokeAppDialog({
   appName: string
   agent?: boolean
   orphaned?: boolean
+  sharedCollections?: string[]
   revoking: boolean
   error: boolean
   onCancel: () => void
@@ -81,6 +89,14 @@ export function RevokeAppDialog({
             { name: appName }
           )}
         </DialogContentText>
+        {sharedCollections.length > 0 && (
+          <DialogContentText sx={{ mt: 2 }}>
+            {t('applications.revokeConfirmShares', {
+              name: appName,
+              collections: sharedCollections.join(', ')
+            })}
+          </DialogContentText>
+        )}
         {error && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {t(

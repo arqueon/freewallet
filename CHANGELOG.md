@@ -2,6 +2,12 @@
 
 ## 0.44.0 - TBD
 
+### Added
+
+- The revoke-access confirmation for an app names the wallet collections the
+  app holds a share of, which the disconnect takes its key off. Each listed
+  grant now carries the `collectionId` its target addresses.
+
 ### Fixed
 
 - A consent rolled back after a failure re-retires the party's `connections`

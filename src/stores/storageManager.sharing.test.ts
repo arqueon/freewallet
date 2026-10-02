@@ -1581,6 +1581,31 @@ describe('StorageManager.unshareCollection', () => {
     expect(await unshareRecorded()).toBe(true)
   })
 
+  it('disconnecting an app takes it off the wallet collection it holds a share of', async () => {
+    const app = await generateAppIdentity()
+    const { owner, stores, storage, revoked, share } = await shareSession()
+    const { descriptor: shared, zcap } = await share(app, {
+      name: 'Notes',
+      origin: 'https://notes.example'
+    })
+    expect(currentEpochKids(shared)).toContain(app.recipient.id)
+
+    const { rotated, outcome } = await revokeAppAuthority({
+      storage,
+      subjectDid: app.did
+    })
+
+    // Read axis: the protected collection rotated, and the app is off its
+    // new current epoch.
+    expect(rotated).toBe(1)
+    const descriptor = stores.descriptorOf('private-credentials')!
+    expect(descriptor.currentEpoch).not.toBe(shared.currentEpoch)
+    expect(currentEpochKids(descriptor)).toEqual([owner.keyAgreementKey.id])
+    // Pull axis: the share grant was revoked once, by the rotation.
+    expect(revokedIdsOf(revoked)).toEqual([zcap.id])
+    expect(outcome.revoked + outcome.withdrawn).toBeGreaterThan(0)
+  })
+
   it('keeps a torn unshare listed, and a retry POSTs and removes the share grant', async () => {
     const reader = await generateAppIdentity()
     // A refusal the verified document cannot explain: the grant may still be

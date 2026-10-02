@@ -338,7 +338,11 @@ its grants end at their own expiry
 (`decisions/0036-no-backfill-for-the-directory.md`).
 
 **Disconnecting an app** (`revokeAppAccess` in `src/lib/connectedApps.ts`)
-reads the app's entry and runs its stages in order.
+reads the app's entry and runs its stages in order. The confirmation dialog
+first names the wallet collections the app holds a share of
+(`sharedCollectionIds`, the `grantKind: 'share'` grants' collections), so
+the user is told no less than the Storage page's shares dialog would tell
+them.
 
 1. The rotation. Each candidate collection's key epoch rotates off the
    app's key (`removeRecipient`, which rotates and then revokes the

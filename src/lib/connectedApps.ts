@@ -48,6 +48,7 @@ import {
 } from '@interop/wallet-core/clients'
 import type { AccountSignerCheck } from '@interop/wallet-core/clientAnnex'
 import {
+  collectionIdInSpace,
   connectionGrants,
   connectionKindOf,
   findConnection,
@@ -79,6 +80,12 @@ export interface AppGrant {
    * The capability's own `expires`; empty when it carries none.
    */
   expires: string
+  /**
+   * The Collection the target addresses, when it is exactly a Collection
+   * container URL of this Space; absent for a Resource or a sub-resource
+   * target.
+   */
+  collectionId?: string
   /**
    * The verification-method id that signed the delegation
    * (`zcap.proof.verificationMethod`).
@@ -221,16 +228,30 @@ function partyGrants({
 /**
  * A grant as the views read it.
  *
- * @param grant {ConnectionGrant}
+ * @param options {object}
+ * @param options.grant {ConnectionGrant}
+ * @param [options.spaceUrl] {string}   this Space's container URL, which the
+ *   collection id is read against; absent on a session with no Space
  * @returns {AppGrant}
  */
-function appGrantOf(grant: ConnectionGrant): AppGrant {
+function appGrantOf({
+  grant,
+  spaceUrl
+}: {
+  grant: ConnectionGrant
+  spaceUrl?: string
+}): AppGrant {
   const signerKeyId = delegationProofKeyId(grant.zcap as unknown as IZcap)
+  const collectionId =
+    spaceUrl === undefined
+      ? undefined
+      : collectionIdInSpace({ target: grant.target, spaceUrl })
   return {
     id: grant.zcapId,
     target: grant.target,
     allowedActions: [grant.allowedAction ?? []].flat(),
     expires: grant.expires ?? '',
+    ...(collectionId !== undefined && { collectionId }),
     ...(signerKeyId !== undefined && { signerKeyId }),
     grantKind: grant.grantKind,
     grantedAt: grant.grantedAt
@@ -240,13 +261,45 @@ function appGrantOf(grant: ConnectionGrant): AppGrant {
 /**
  * Grants as the views read them, newest first by `grantedAt`.
  *
- * @param grants {ConnectionGrant[]}
+ * @param options {object}
+ * @param options.grants {ConnectionGrant[]}
+ * @param [options.spaceUrl] {string}   this Space's container URL
  * @returns {AppGrant[]}
  */
-function newestFirst(grants: ConnectionGrant[]): AppGrant[] {
+function newestFirst({
+  grants,
+  spaceUrl
+}: {
+  grants: ConnectionGrant[]
+  spaceUrl?: string
+}): AppGrant[] {
   return grants
-    .map(appGrantOf)
+    .map(grant => appGrantOf({ grant, spaceUrl }))
     .sort((first, second) => second.grantedAt.localeCompare(first.grantedAt))
+}
+
+/**
+ * The distinct collections of this wallet a party holds a share of, in the
+ * grants' order: the ones a disconnect takes its key off. A share grant
+ * names a Collection container URL, so one without a collection id is
+ * skipped.
+ *
+ * @param options {object}
+ * @param options.grants {AppGrant[]}
+ * @returns {string[]}
+ */
+export function sharedCollectionIds({
+  grants
+}: {
+  grants: AppGrant[]
+}): string[] {
+  const ids = new Set<string>()
+  for (const grant of grants) {
+    if (grant.grantKind === 'share' && grant.collectionId !== undefined) {
+      ids.add(grant.collectionId)
+    }
+  }
+  return [...ids]
 }
 
 /**
@@ -340,7 +393,7 @@ export function listConnectedApps({
       ...(entry.appKey !== undefined && { appKey: entry.appKey }),
       connectedAt: entry.firstSeen,
       lastConnectedAt: entry.lastSeen,
-      grants: newestFirst(grants)
+      grants: newestFirst({ grants, spaceUrl })
     })
   }
   sortByLastSeen(apps)
@@ -376,7 +429,7 @@ function agentRows({
     if (grants.length === 0) {
       continue
     }
-    const rows = newestFirst(grants)
+    const rows = newestFirst({ grants, spaceUrl })
     const name = entry.label ?? entry.name
     const expired = splitGrantsByExpiry({ grants }).live.length === 0
     agents.push({
