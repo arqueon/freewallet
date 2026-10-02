@@ -360,7 +360,9 @@ function refuseMissingGeneration(
  * @param options.account {object}   the verified account log view
  * @param options.persistence {TransientSessionStores}   the visit's stores
  * @returns {Promise<object>}   `{ outcome }` on a completed ensure, or
- *   `{ unavailable }` carrying wallet-core's typed refusal
+ *   `{ unavailable }` carrying wallet-core's typed refusal; `landed` when
+ *   the stage re-sealed the record, naming the members the record carries
+ *   now (a restated member may have lost to another writer's re-mint)
  */
 // Exported for the mender registry, which names it as the converger of the
 // three invariants this routing site reports.
@@ -385,8 +387,11 @@ export async function ensureClientAnnexGenerationReady({
 }): Promise<{
   outcome?: ClientAnnexGenerationEnsureOutcome
   unavailable?: unknown
+  landed?: { delegation: IZcap; delegatedClients?: IZcap }
 }> {
   const zcapClient = found.standingClient.agents.zcapClient
+  // What the record re-seal landed, when the ensure re-sealed it.
+  let landed: { delegation: IZcap; delegatedClients?: IZcap } | undefined
   // Discovered once for every client this readiness stage builds, the ones
   // wallet-core builds from the closures below included.
   const serviceDescription = await wasServiceDescription()
@@ -430,13 +435,13 @@ export async function ensureClientAnnexGenerationReady({
               're-bind closure, so a fresh sibling delegation cannot be sealed.'
           )
         }
-        await rebind({ delegation, delegatedClients })
+        landed = await rebind({ delegation, delegatedClients })
       },
       ...(standing.delegatedClients
         ? { delegatedClients: standing.delegatedClients }
         : {})
     })
-    return { outcome }
+    return { outcome, ...(landed ? { landed } : {}) }
   } catch (err) {
     if ((err as Error).name === 'ClientAnnexGenerationUnavailableError') {
       return { unavailable: err }
@@ -742,9 +747,14 @@ export async function transientSessionFromKeyringHit({
     )
   })
   const healedGenerationDelegation = readiness.outcome?.generationDelegation
-  // The bridge this visit may still write the log through: the renewed one
-  // when the readiness stage re-minted it, the record's own otherwise.
-  const usableBridge = readiness.outcome?.delegation ?? standing.delegation
+  // The bridge this visit may still write the log through: what the
+  // readiness stage's re-seal landed when it re-sealed the record (another
+  // writer's re-mint can win over a bridge the stage only restated), else
+  // the renewed one when the stage re-minted it, the record's own otherwise.
+  const usableBridge =
+    readiness.landed?.delegation ??
+    readiness.outcome?.delegation ??
+    standing.delegation
   if (readiness.outcome?.bridgeResealError !== undefined) {
     // A bridge-only re-seal failure denies this visit nothing: the fresh
     // bridge is minted offline and already served the pointer writes above.
@@ -757,10 +767,18 @@ export async function transientSessionFromKeyringHit({
   let siblingDelegation: IZcap
   let annexSpaceId: string
   if (readiness.outcome) {
-    siblingDelegation = readiness.outcome.delegatedClients
     annexSpaceId = clientAnnexDidParts({
       did: readiness.outcome.clientAnnexDid
     }).spaceId
+    // The landed sibling when the re-seal landed one for this visit's annex
+    // Space; the ensure's own otherwise.
+    const landedSibling = readiness.landed?.delegatedClients
+    siblingDelegation =
+      landedSibling &&
+      delegatedClientsDelegationSpaceId({ delegation: landedSibling }) ===
+        annexSpaceId
+        ? landedSibling
+        : readiness.outcome.delegatedClients
     if (readiness.outcome.generationMinted || readiness.outcome.spaceMinted) {
       // The pointer moved: the pre-mend document names a generation that is
       // no longer the live one, so the enrollment must read the fresh log.

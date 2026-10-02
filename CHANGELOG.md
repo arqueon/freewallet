@@ -38,6 +38,18 @@
 
 ### Fixed
 
+- The unlock record re-bind and the pointer rewrite are a compare-and-swap
+  on the served record's ETag, re-reading and retrying on a lost race. The
+  re-bind carries forward any delegation its caller did not mint, so a
+  re-bind racing another writer's bridge re-mint (two transient visits
+  included) no longer writes the rotted bridge back, and a transient session
+  carries the bridge that landed. A record gone since the login read, or one
+  whose pointer or ladder seed changed since it, is refused
+  (`UnlockRecordAuthorityChangedError` for the latter), and the pointer
+  rewrite now keeps a standing record's bridge, sibling, and ladder seed. A
+  pointer rewrite that finds its target already landed (another session
+  healed first) writes nothing. A WAS deployment must expose the `ETag`
+  header through CORS.
 - `loadContact` and `updateContact` (and the `deleteContact` pre-read) that
   meet a head sealed under a key epoch this session has not seen run the
   same one-time descriptor refresh `listContacts` does, then re-run, on both

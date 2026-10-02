@@ -1296,6 +1296,37 @@ describe('transientSessionFromKeyringHit -- the client-annex generation-readines
     expect(session.profile.standingUnlock!.delegation).toBe(FRESH_BRIDGE)
   })
 
+  it("carries the record's served bridge into the session when it won the re-seal", async () => {
+    primeHappyPath()
+    const found = makeFound()
+    // Another writer re-minted the bridge after this visit's login read, so
+    // the re-seal carries that bridge forward over the one this stage only
+    // restated, and resolves to it.
+    const servedBridge = { id: 'urn:zcap:bridge-served' }
+    vi.mocked(found.rebindStandingRecord!).mockResolvedValue({
+      delegation: servedBridge as never,
+      delegatedClients: FRESH_SIBLING as never
+    })
+    vi.mocked(ensureCredentialClientAnnexGeneration).mockImplementation(
+      async ({ onRebindRecord }) => {
+        await onRebindRecord({
+          delegation: RECORD_BRIDGE as never,
+          delegatedClients: FRESH_SIBLING as never
+        })
+        return ensureOutcome({
+          delegatedClients: FRESH_SIBLING,
+          siblingReminted: true
+        }) as never
+      }
+    )
+    const { session } = await runComposition(found)
+    expect(found.rebindStandingRecord).toHaveBeenCalledWith({
+      delegation: RECORD_BRIDGE,
+      delegatedClients: FRESH_SIBLING
+    })
+    expect(session.profile.standingUnlock!.delegation).toBe(servedBridge)
+  })
+
   it('warns and proceeds when a bridge-only re-seal failed', async () => {
     primeHappyPath()
     const resealError = new Error('the unlock Space PUT failed')

@@ -152,6 +152,30 @@ still writes a record that supersedes the one it overwrites. Nothing
 compares pointers either, since a rebind, a host migration, and a fresh
 account under a reused passphrase all produce a newer signed record.
 
+**Record rewrites.** A write over an existing unlock record is a
+compare-and-swap. The standing re-bind (`rebindStandingRecord`, which the
+refresh block, the transient readiness stage, the annex establishment, and
+the last-client forget all reseal through) and the pointer rewrite each
+read the served record with its ETag just before writing. They verify it as
+a login does, build the next record from it, and PUT under `If-Match`. A
+lost race (412) re-reads and rebuilds, up to three attempts, and then fails
+with `PreconditionFailedError`. The re-bind replaces only the delegations
+its caller minted. A member the caller restates from its login read comes
+from the served record instead, so a bridge another writer re-minted is
+never put back to the rotted one. That holds between two transient visits
+too. The re-bind resolves to the members that landed, and the transient
+session carries those. A record gone since the login read is refused rather
+than re-created. So is one whose pointer or ladder seed changed since that
+read, and a fresh sibling for an annex Space another writer moved off
+(`UnlockRecordAuthorityChangedError`), since what the caller minted is
+valid only against the authority it read. The one exception is a pointer
+rewrite meeting a record that already names its target pointer, which
+another session's heal landed first. That rewrite writes nothing and
+refreshes the local cache from the served record. A read served with no ETag is
+refused too, so a WAS deployment must expose the `ETag` response header to
+the browser through CORS. A bind and a recovery-code issuance write a whole
+record of their own and stay plain upserts.
+
 The bound on the whole construction: server-held material the unlock
 credential alone decrypts is only as strong as that credential's entropy.
 Against a malicious storage host running an offline KDF grind, zcap scoping,

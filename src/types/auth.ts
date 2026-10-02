@@ -168,7 +168,7 @@ export interface ControllerProfile {
     rebindRecord?: (options: {
       delegation: IZcap
       delegatedClients?: IZcap
-    }) => Promise<void>
+    }) => Promise<{ delegation: IZcap; delegatedClients?: IZcap }>
   }
   // The invocation capability the session's WAS requests ride, when the
   // session's authority over the data Space is a delegated Space-subtree

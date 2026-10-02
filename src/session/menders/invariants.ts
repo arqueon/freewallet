@@ -209,7 +209,9 @@ const DECLARATIONS: ReadonlyArray<
   // `rebindStandingRecord`, then `refreshStandingDelegationFields`); the
   // transient half sits inside `ensureClientAnnexGenerationReady`
   // (`src/session/transientLogin.ts`). Neither is an addressable symbol.
-  // Also runs in the remote-direct CHAPI popup.
+  // Also runs in the remote-direct CHAPI popup. Both halves re-seal through
+  // the record re-bind, a compare-and-swap over a fresh read of the served
+  // unlock record that carries forward any member it does not re-mint.
   {
     id: 'standing-delegations-verify-under-the-current-document',
     statement:
@@ -222,7 +224,10 @@ const DECLARATIONS: ReadonlyArray<
       'client-revocation',
       'recovery-code-revocation'
     ],
-    evidence: ['verified-registry', 'local-clock']
+    // The delegations come off the served unlock record, both at detection
+    // and in the re-bind's fresh read; their signers are checked against the
+    // verified account log, their expiry against this browser's clock.
+    evidence: ['served-unlock-record', 'verified-log', 'local-clock']
   },
   // 9
   // converger: the ladder-rung refresh closure (`attributeLadderRung`, then

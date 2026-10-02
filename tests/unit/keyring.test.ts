@@ -45,8 +45,23 @@ import {
 const wasState = vi.hoisted(() => ({
   url: 'https://was.example.test' as string | undefined,
   spaces: new Map<string, unknown>(),
-  getError: undefined as unknown
+  getError: undefined as unknown,
+  // Each unlock Space's record version: the fake's ETag is `"v<n>"`, and a
+  // conditional PUT naming any other one is refused with a 412.
+  versions: new Map<string, number>(),
+  // Runs inside a PUT, after its record was built from a read but before the
+  // write lands: the window another writer races into.
+  beforePut: undefined as undefined | ((spaceId: string) => Promise<void>),
+  // Serves records with no ETag, as a deployment hiding the header would.
+  omitEtag: false
 }))
+
+/**
+ * The fake's ETag for an unlock Space's current record.
+ */
+function etagFor(spaceId: string): string {
+  return `"v${wasState.versions.get(spaceId) ?? 0}"`
+}
 
 vi.mock('@/app.config', async importOriginal => ({
   ...(await importOriginal<typeof import('@/app.config')>()),
@@ -75,8 +90,26 @@ vi.mock('@interop/wallet-core/keyring', async importOriginal => ({
   ...(await importOriginal<typeof import('@interop/wallet-core/keyring')>()),
   ensureUnlockSpace: vi.fn(async () => {}),
   putUnlockKeyring: vi.fn(
-    async ({ spaceId, record }: { spaceId: string; record: unknown }) => {
+    async ({
+      spaceId,
+      record,
+      ifMatch
+    }: {
+      spaceId: string
+      record: unknown
+      ifMatch?: string
+    }) => {
+      await wasState.beforePut?.(spaceId)
+      if (
+        ifMatch !== undefined &&
+        (!wasState.spaces.has(spaceId) || ifMatch !== etagFor(spaceId))
+      ) {
+        const { PreconditionFailedError } = await import('@interop/was-client')
+        throw new PreconditionFailedError('Precondition Failed')
+      }
+      wasState.versions.set(spaceId, (wasState.versions.get(spaceId) ?? 0) + 1)
       wasState.spaces.set(spaceId, record)
+      return { etag: etagFor(spaceId) }
     }
   ),
   getUnlockKeyring: vi.fn(async ({ spaceId }: { spaceId: string }) => {
@@ -84,6 +117,16 @@ vi.mock('@interop/wallet-core/keyring', async importOriginal => ({
       throw wasState.getError
     }
     return wasState.spaces.has(spaceId) ? wasState.spaces.get(spaceId) : null
+  }),
+  getUnlockKeyringWithEtag: vi.fn(async ({ spaceId }: { spaceId: string }) => {
+    if (wasState.getError) {
+      throw wasState.getError
+    }
+    if (!wasState.spaces.has(spaceId)) {
+      return null
+    }
+    const record = wasState.spaces.get(spaceId)
+    return wasState.omitEtag ? { record } : { record, etag: etagFor(spaceId) }
   }),
   deleteUnlockSpace: vi.fn(async ({ spaceId }: { spaceId: string }) => {
     wasState.spaces.delete(spaceId)
@@ -109,6 +152,7 @@ import {
   ensureUnlockSpace,
   getUnlockKeyring,
   KEYRING_KDF,
+  putUnlockKeyring,
   KEYRING_RECORD_VERSION,
   mintRecordEncryption,
   recordSignerFromAgent,
@@ -393,6 +437,9 @@ beforeEach(() => {
   wasState.url = 'https://was.example.test'
   wasState.spaces.clear()
   wasState.getError = undefined
+  wasState.versions.clear()
+  wasState.beforePut = undefined
+  wasState.omitEtag = false
   clientsState.signingKeys = []
   vi.clearAllMocks()
 })
@@ -2831,5 +2878,454 @@ describe('fetchTransientKeyring (FW-215)', () => {
         accountLogPinStore: memoryResourceLogPinStore()
       })
     ).rejects.toThrow(KeyringRecordForgedError)
+  })
+})
+
+describe('the unlock record rewrite is a compare-and-swap (FW-343)', () => {
+  /**
+   * A bridge or sibling delegation stand-in. Only its `id` decides anything
+   * here: the record seals it whole and the re-bind compares ids.
+   */
+  function zcap({
+    id,
+    target = 'https://was.example.test/space/space-123/id/did.jsonl'
+  }: {
+    id: string
+    target?: string
+  }): IDelegatedZcap {
+    return {
+      '@context': 'https://w3id.org/zcap/v1',
+      id,
+      controller: 'did:key:z6MkStandingClientForTests',
+      invocationTarget: target,
+      allowedAction: ['PUT'],
+      expires: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
+      parentCapability: 'urn:zcap:root:x',
+      proof: { verificationMethod: 'did:key:z6MkSignerForTests#z6MkSigner' }
+    } as unknown as IDelegatedZcap
+  }
+
+  const OLD_BRIDGE = zcap({ id: 'urn:uuid:bridge-at-login' })
+  const OLD_SIBLING = zcap({
+    id: 'urn:uuid:sibling-at-login',
+    target: 'https://was.example.test/space/annex-1/'
+  })
+
+  /**
+   * Binds a standing record for `passphrase` from another browser profile,
+   * so every fetch below starts from the same served record.
+   */
+  async function bindStanding({
+    passphrase,
+    idb = createFakeIdb(),
+    pointer = POINTER
+  }: {
+    passphrase: string
+    idb?: IDBFactory
+    pointer?: AccountPointer
+  }) {
+    const seed = crypto.getRandomValues(new Uint8Array(32))
+    const { unlockSpaceId } = await bindPassphrase({
+      clientSeed: randomSeed(),
+      controller: DATA_CONTROLLER,
+      passphrase,
+      pointer,
+      delegation: OLD_BRIDGE,
+      delegatedClients: OLD_SIBLING,
+      ladderSeed: seed,
+      idb,
+      kdf: KDF
+    })
+    return { unlockSpaceId, ladderSeed: seed, idb }
+  }
+
+  /**
+   * One transient visit's keyring hit: what the readiness stage's
+   * `onRebindRecord` re-binds through.
+   */
+  async function transientVisit(passphrase: string) {
+    const found = await fetchTransientKeyring({
+      secret: passphrase,
+      kdf: KDF,
+      accountLogPinStore: memoryResourceLogPinStore()
+    })
+    return found!
+  }
+
+  /**
+   * The standing members the served record carries now, read the way a
+   * later visit reads them.
+   */
+  async function served(passphrase: string) {
+    const found = await transientVisit(passphrase)
+    return {
+      bridge: found.standing!.delegation.id,
+      sibling: found.standing!.delegatedClients?.id,
+      ladderSeed: found.standing!.ladderSeed,
+      pointer: found.pointer
+    }
+  }
+
+  it('a re-bind racing a bridge re-mint does not write the rotted bridge back', async () => {
+    const passphrase = 'cas bridge re-mint race'
+    const { ladderSeed } = await bindStanding({ passphrase })
+    // Both writers read the record before either writes.
+    const transient = await transientVisit(passphrase)
+    const reminting = await transientVisit(passphrase)
+    const freshBridge = zcap({ id: 'urn:uuid:bridge-re-minted' })
+    const freshSibling = zcap({
+      id: 'urn:uuid:sibling-re-minted',
+      target: 'https://was.example.test/space/annex-1/'
+    })
+
+    // The bridge re-mint lands inside the transient re-bind's window: after
+    // its read, before its write.
+    wasState.beforePut = async () => {
+      wasState.beforePut = undefined
+      await reminting.rebindStandingRecord!({ delegation: freshBridge })
+    }
+    // The readiness stage's call shape: the bridge it read at login, beside
+    // a fresh sibling.
+    await transient.rebindStandingRecord!({
+      delegation: transient.standing!.delegation,
+      delegatedClients: freshSibling
+    })
+
+    const now = await served(passphrase)
+    expect(now.bridge).toBe(freshBridge.id)
+    expect(now.sibling).toBe(freshSibling.id)
+    expect(now.ladderSeed).toEqual(ladderSeed)
+    expect(now.pointer).toEqual(POINTER)
+    // The lost race was a 412 and a re-read, not an overwrite.
+    const ifMatches = vi
+      .mocked(putUnlockKeyring)
+      .mock.calls.map(([args]) => args.ifMatch)
+    expect(ifMatches.slice(-3)).toEqual(['"v1"', '"v1"', '"v2"'])
+  })
+
+  it('two transient visits re-binding the same record keep both re-mints', async () => {
+    const passphrase = 'cas two transient visits'
+    const { ladderSeed } = await bindStanding({ passphrase })
+    // Two concurrent transient visits, no remembered session anywhere: one
+    // whose readiness stage renewed the bridge, one whose stage minted a
+    // fresh sibling. Each restates the other member from its own login read.
+    const renewing = await transientVisit(passphrase)
+    const mending = await transientVisit(passphrase)
+    const freshBridge = zcap({ id: 'urn:uuid:bridge-renewed-by-visit-a' })
+    const freshSibling = zcap({
+      id: 'urn:uuid:sibling-minted-by-visit-b',
+      target: 'https://was.example.test/space/annex-2/'
+    })
+
+    wasState.beforePut = async () => {
+      wasState.beforePut = undefined
+      await renewing.rebindStandingRecord!({
+        delegation: freshBridge,
+        delegatedClients: renewing.standing!.delegatedClients
+      })
+    }
+    await mending.rebindStandingRecord!({
+      delegation: mending.standing!.delegation,
+      delegatedClients: freshSibling
+    })
+
+    let now = await served(passphrase)
+    expect(now.bridge).toBe(freshBridge.id)
+    expect(now.sibling).toBe(freshSibling.id)
+    expect(now.ladderSeed).toEqual(ladderSeed)
+
+    // The same pair with no overlap in the write itself: the renewing visit
+    // re-binds again from its stale login read, after the mending visit
+    // landed. Its restated sibling must not displace the fresh one.
+    await renewing.rebindStandingRecord!({
+      delegation: freshBridge,
+      delegatedClients: renewing.standing!.delegatedClients
+    })
+    now = await served(passphrase)
+    expect(now.bridge).toBe(freshBridge.id)
+    expect(now.sibling).toBe(freshSibling.id)
+  })
+
+  it("keeps the remembered re-bind's own re-mint and refreshes the local cache", async () => {
+    const passphrase = 'cas remembered rebind'
+    const idb = createFakeIdb()
+    const { unlockSpaceId, ladderSeed } = await bindStanding({
+      passphrase,
+      idb
+    })
+    const found = await fetchKeyring({
+      accountLogPinStore: logPins,
+      secret: passphrase,
+      idb,
+      kdf: KDF
+    })
+    // Another writer re-minted the bridge since this login's read.
+    const transient = await transientVisit(passphrase)
+    await transient.rebindStandingRecord!({
+      delegation: zcap({ id: 'urn:uuid:bridge-from-elsewhere' })
+    })
+
+    // The remembered self-refresh re-mints both members: its own wins.
+    const freshBridge = zcap({ id: 'urn:uuid:bridge-self-refresh' })
+    const freshSibling = zcap({
+      id: 'urn:uuid:sibling-self-refresh',
+      target: 'https://was.example.test/space/annex-1/'
+    })
+    await found!.rebindStandingRecord!({
+      delegation: freshBridge,
+      delegatedClients: freshSibling
+    })
+
+    const now = await served(passphrase)
+    expect(now.bridge).toBe(freshBridge.id)
+    expect(now.sibling).toBe(freshSibling.id)
+    expect(now.ladderSeed).toEqual(ladderSeed)
+    expect(vi.mocked(putUnlockKeyring).mock.lastCall![0].ifMatch).toBe('"v2"')
+    const cached = await loadKeyringCache({ spaceId: unlockSpaceId, idb })
+    expect(cached!.record).toEqual(wasState.spaces.get(unlockSpaceId))
+  })
+
+  it('surfaces exhausted retries as PreconditionFailedError and writes nothing', async () => {
+    const passphrase = 'cas retries exhausted'
+    const { unlockSpaceId } = await bindStanding({ passphrase })
+    const transient = await transientVisit(passphrase)
+    const before = wasState.spaces.get(unlockSpaceId)
+    // Another writer lands inside every attempt's window.
+    wasState.beforePut = async spaceId => {
+      wasState.versions.set(spaceId, (wasState.versions.get(spaceId) ?? 0) + 1)
+    }
+    const puts = vi.mocked(putUnlockKeyring).mock.calls.length
+
+    await expect(
+      transient.rebindStandingRecord!({
+        delegation: transient.standing!.delegation,
+        delegatedClients: zcap({ id: 'urn:uuid:sibling-never-lands' })
+      })
+    ).rejects.toMatchObject({ name: 'PreconditionFailedError' })
+    expect(vi.mocked(putUnlockKeyring).mock.calls.length - puts).toBe(3)
+    expect(wasState.spaces.get(unlockSpaceId)).toBe(before)
+  })
+
+  it('refuses to re-create the record of a credential retired since the login read', async () => {
+    const passphrase = 'cas retired credential'
+    const { unlockSpaceId } = await bindStanding({ passphrase })
+    const transient = await transientVisit(passphrase)
+    wasState.spaces.delete(unlockSpaceId)
+
+    await expect(
+      transient.rebindStandingRecord!({
+        delegation: zcap({ id: 'urn:uuid:bridge-for-a-gone-record' })
+      })
+    ).rejects.toThrow(/gone/)
+    expect(wasState.spaces.has(unlockSpaceId)).toBe(false)
+  })
+
+  it('resolves to the landed members, the served bridge when the caller only restated it', async () => {
+    const passphrase = 'cas landed members'
+    await bindStanding({ passphrase })
+    const transient = await transientVisit(passphrase)
+    const servedBridge = zcap({ id: 'urn:uuid:bridge-from-another-writer' })
+    await (
+      await transientVisit(passphrase)
+    ).rebindStandingRecord!({ delegation: servedBridge })
+    const freshSibling = zcap({
+      id: 'urn:uuid:sibling-landed',
+      target: 'https://was.example.test/space/annex-1/'
+    })
+
+    const landed = await transient.rebindStandingRecord!({
+      delegation: transient.standing!.delegation,
+      delegatedClients: freshSibling
+    })
+
+    expect(landed.delegation.id).toBe(servedBridge.id)
+    expect(landed.delegatedClients!.id).toBe(freshSibling.id)
+  })
+
+  it('refuses a re-mint over a record re-bound under another ladder seed', async () => {
+    const passphrase = 'cas ladder seed changed'
+    const { unlockSpaceId } = await bindStanding({ passphrase })
+    const transient = await transientVisit(passphrase)
+    // A recovery spend re-binds the credential under a new ladder in between.
+    await bindPassphrase({
+      clientSeed: randomSeed(),
+      controller: DATA_CONTROLLER,
+      passphrase,
+      pointer: POINTER,
+      delegation: zcap({ id: 'urn:uuid:bridge-under-new-ladder' }),
+      ladderSeed: crypto.getRandomValues(new Uint8Array(32)),
+      idb: createFakeIdb(),
+      kdf: KDF
+    })
+    const before = wasState.spaces.get(unlockSpaceId)
+
+    await expect(
+      transient.rebindStandingRecord!({
+        delegation: zcap({ id: 'urn:uuid:bridge-signed-by-old-ladder' })
+      })
+    ).rejects.toMatchObject({
+      name: 'UnlockRecordAuthorityChangedError',
+      reason: 'ladder-seed'
+    })
+    expect(wasState.spaces.get(unlockSpaceId)).toBe(before)
+  })
+
+  it('refuses a fresh sibling for an annex Space another writer moved off', async () => {
+    const passphrase = 'cas sibling space moved'
+    const { unlockSpaceId } = await bindStanding({ passphrase })
+    const refreshing = await transientVisit(passphrase)
+    // Another visit moved the sibling to a fresh annex Space.
+    await (
+      await transientVisit(passphrase)
+    ).rebindStandingRecord!({
+      delegation: OLD_BRIDGE,
+      delegatedClients: zcap({
+        id: 'urn:uuid:sibling-new-space',
+        target: 'https://was.example.test/space/annex-2/'
+      })
+    })
+    const before = wasState.spaces.get(unlockSpaceId)
+
+    await expect(
+      refreshing.rebindStandingRecord!({
+        delegation: zcap({ id: 'urn:uuid:bridge-refreshed' }),
+        delegatedClients: zcap({
+          id: 'urn:uuid:sibling-for-old-space',
+          target: 'https://was.example.test/space/annex-1/'
+        })
+      })
+    ).rejects.toMatchObject({
+      name: 'UnlockRecordAuthorityChangedError',
+      reason: 'sibling-space'
+    })
+    expect(wasState.spaces.get(unlockSpaceId)).toBe(before)
+  })
+
+  it('refuses a read served with no ETag rather than overwriting', async () => {
+    const passphrase = 'cas no etag'
+    const { unlockSpaceId } = await bindStanding({ passphrase })
+    const transient = await transientVisit(passphrase)
+    const before = wasState.spaces.get(unlockSpaceId)
+    wasState.omitEtag = true
+    const puts = vi.mocked(putUnlockKeyring).mock.calls.length
+
+    await expect(
+      transient.rebindStandingRecord!({
+        delegation: zcap({ id: 'urn:uuid:bridge-no-etag' })
+      })
+    ).rejects.toThrow(/no ETag/)
+    expect(vi.mocked(putUnlockKeyring).mock.calls.length).toBe(puts)
+    expect(wasState.spaces.get(unlockSpaceId)).toBe(before)
+  })
+
+  it('refuses a record deleted between the read and the write', async () => {
+    const passphrase = 'cas deleted mid-write'
+    const { unlockSpaceId } = await bindStanding({ passphrase })
+    const transient = await transientVisit(passphrase)
+    // The credential is retired inside the window: the PUT meets a 412, and
+    // the re-read finds nothing.
+    wasState.beforePut = async spaceId => {
+      wasState.beforePut = undefined
+      wasState.spaces.delete(spaceId)
+    }
+
+    await expect(
+      transient.rebindStandingRecord!({
+        delegation: zcap({ id: 'urn:uuid:bridge-for-a-retiring-record' })
+      })
+    ).rejects.toThrow(/gone/)
+    expect(wasState.spaces.has(unlockSpaceId)).toBe(false)
+  })
+
+  it('refuses a pointer rewrite over a record re-bound to another account', async () => {
+    const passphrase = 'cas pointer account changed'
+    const idb = createFakeIdb()
+    const unpromoted = { ...POINTER, did: 'did:key:z6MkUnpromotedForTests' }
+    const { unlockSpaceId } = await bindStanding({
+      passphrase,
+      idb,
+      pointer: unpromoted
+    })
+    const found = await fetchKeyring({
+      accountLogPinStore: logPins,
+      secret: passphrase,
+      idb,
+      kdf: KDF
+    })
+    // The credential is re-bound to another account's Space in between.
+    await bindStanding({
+      passphrase,
+      pointer: { ...unpromoted, spaceId: 'another-account-space' }
+    })
+    const before = wasState.spaces.get(unlockSpaceId)
+
+    await expect(found!.persistAccountPointer!(POINTER)).rejects.toMatchObject({
+      name: 'UnlockRecordAuthorityChangedError',
+      reason: 'pointer'
+    })
+    expect(wasState.spaces.get(unlockSpaceId)).toBe(before)
+  })
+
+  it('a pointer rewrite carries the standing members another writer refreshed', async () => {
+    const passphrase = 'cas pointer rewrite'
+    const idb = createFakeIdb()
+    const unpromoted = { ...POINTER, did: 'did:key:z6MkUnpromotedForTests' }
+    const { ladderSeed } = await bindStanding({
+      passphrase,
+      idb,
+      pointer: unpromoted
+    })
+    const found = await fetchKeyring({
+      accountLogPinStore: logPins,
+      secret: passphrase,
+      idb,
+      kdf: KDF
+    })
+    const freshBridge = zcap({ id: 'urn:uuid:bridge-before-pointer-heal' })
+    const transient = await transientVisit(passphrase)
+    await transient.rebindStandingRecord!({ delegation: freshBridge })
+
+    await found!.persistAccountPointer!(POINTER)
+
+    const now = await served(passphrase)
+    expect(now.pointer).toEqual(POINTER)
+    expect(now.bridge).toBe(freshBridge.id)
+    expect(now.sibling).toBe(OLD_SIBLING.id)
+    expect(now.ladderSeed).toEqual(ladderSeed)
+    expect(vi.mocked(putUnlockKeyring).mock.lastCall![0].ifMatch).toBe('"v2"')
+  })
+
+  it('a pointer rewrite another session already landed writes nothing', async () => {
+    const passphrase = 'cas pointer already healed'
+    const idb = createFakeIdb()
+    const unpromoted = { ...POINTER, did: 'did:key:z6MkUnpromotedForTests' }
+    const { unlockSpaceId, ladderSeed } = await bindStanding({
+      passphrase,
+      idb,
+      pointer: unpromoted
+    })
+    const found = await fetchKeyring({
+      accountLogPinStore: logPins,
+      secret: passphrase,
+      idb,
+      kdf: KDF
+    })
+    // Another remembered browser on the same credential heals first.
+    await bindStanding({ passphrase, pointer: POINTER })
+    const healed = wasState.spaces.get(unlockSpaceId)
+    const puts = vi.mocked(putUnlockKeyring).mock.calls.length
+
+    await expect(
+      found!.persistAccountPointer!(POINTER)
+    ).resolves.toBeUndefined()
+
+    expect(vi.mocked(putUnlockKeyring).mock.calls.length).toBe(puts)
+    expect(wasState.spaces.get(unlockSpaceId)).toBe(healed)
+    const now = await served(passphrase)
+    expect(now.pointer).toEqual(POINTER)
+    expect(now.ladderSeed).not.toEqual(ladderSeed)
+    // The local cache is refreshed from the record that landed.
+    const cached = await loadKeyringCache({ spaceId: unlockSpaceId, idb })
+    expect(cached?.record).toEqual(healed)
   })
 })

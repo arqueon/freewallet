@@ -72,6 +72,7 @@
  * Space.
  */
 import type { ZcapClient } from '@interop/ezcap'
+import { PreconditionFailedError } from '@interop/was-client'
 import { spacePath, toUrl } from '@interop/was-client/paths'
 import type { IKeyAgreementKey, IZcap } from '@interop/data-integrity-core'
 import {
@@ -97,6 +98,7 @@ import {
   deriveUnlockSeed,
   ensureUnlockSpace,
   getUnlockKeyring,
+  getUnlockKeyringWithEtag,
   putUnlockKeyring,
   unlockIdentityFromSeed,
   unwrapKeyringRecord,
@@ -117,8 +119,9 @@ import {
   type UnlockRecordProofState
 } from '@interop/wallet-core/unlock'
 import { currentAccountRecordSigners } from '@interop/wallet-core/clients'
+import { delegatedClientsDelegationSpaceId } from '@interop/wallet-core/clientAnnex'
 import type { ResourceLogPinStore } from '@interop/vh-resource-log'
-import { isStorageUnreachable } from '@/lib/storageErrors'
+import { isPreconditionFailed, isStorageUnreachable } from '@/lib/storageErrors'
 import { isResourceLogContinuityError } from '@/session/verifiedLog'
 import {
   unwrapRecordEnvelope,
@@ -218,7 +221,8 @@ export interface KeyringFetchResult extends KeyringRecordContents {
   // closure over the unlock identity that produced this hit. In-memory only.
   persistClientKeys?: (changes: PersistableClientKeys) => Promise<void>
   // Re-wraps and re-PUTs the keyring record with a changed account pointer
-  // (and refreshes the local cache) without the unlock secret
+  // (and refreshes the local cache) without the unlock secret, carrying every
+  // other member from a fresh read under an ETag compare-and-swap
   // -- the login-time heal path for a signup whose did:webvh backfill never
   // ran (a KMS hiccup): once a later login's provisioning publishes the log,
   // the pointer can durably adopt the did. In-memory only.
@@ -256,16 +260,16 @@ export interface KeyringFetchResult extends KeyringRecordContents {
     pending?: ClientKeyRecordPending
   }) => Promise<(changes: PersistableClientKeys) => Promise<void>>
   // Present beside `standing`: re-wraps and re-PUTs this unlock record with a
-  // freshly minted bridge delegation (and, when supplied, a fresh
-  // annex-Space sibling; an existing sibling is restated verbatim
-  // otherwise), restating everything else verbatim
-  // (the ladder seed included) -- the login-time expiry refresh of the
-  // credential's own delegations, run when one is expired or
-  // inside the renewal window. In-memory only.
+  // freshly minted bridge delegation and, when supplied, a fresh annex-Space
+  // sibling. A member the caller restates from this read, and everything
+  // else (the ladder seed included), is carried from a fresh read of the
+  // served record, and the write is a compare-and-swap on that read's ETag
+  // -- the login-time expiry refresh of the credential's own delegations,
+  // run when one is expired or inside the renewal window. In-memory only.
   rebindStandingRecord?: (options: {
     delegation: IZcap
     delegatedClients?: IZcap
-  }) => Promise<void>
+  }) => Promise<{ delegation: IZcap; delegatedClients?: IZcap }>
   // The credential's own unlock key-agreement key, as the bind paths record
   // it in the registry entry: the key's id and its multibase, each present
   // only when the derived key carries it. In-memory only -- recomputed from
@@ -546,54 +550,81 @@ function clientKeysPersister({
 }
 
 /**
- * Builds the `persistAccountPointer` closure a fetch result carries: re-wraps
+ * Builds the `persistAccountPointer` closure a fetch result carries: rewrites
  * the keyring record with a changed account pointer under the same unlock
- * identity, signs it with that identity's record signer, PUTs it (when a WAS
- * server is configured), and refreshes the local cache. The controller and
- * email are restated from
- * the fetched record -- only the pointer changes. This is the login-time
- * counterpart of signup's did:webvh pointer backfill, for accounts whose
- * backfill never ran (a provisioning hiccup at signup).
+ * identity, signs it with that identity's record signer, and refreshes the
+ * local cache. This is the login-time counterpart of signup's did:webvh
+ * pointer backfill, for accounts whose backfill never ran (a provisioning
+ * hiccup at signup).
+ *
+ * Only the pointer changes. Every other member is carried from the record
+ * the write replaces: with a WAS server, a fresh read taken just before the
+ * write, which then lands as a compare-and-swap under that read's ETag
+ * ({@link casRewriteUnlockRecord}). So a record another writer replaced since
+ * this login's read keeps what that writer wrote, a standing layout's bridge,
+ * sibling, and ladder seed included. A served record already naming the
+ * target pointer (another session healed it first) is taken as landed: the
+ * local cache is refreshed from it and nothing is written.
  *
  * @param options {object}
- * @param options.unlock {UnlockIdentity}
- * @param options.found {KeyringRecordContents}
+ * @param options.credential {UnlockCredential}
+ * @param options.unwrapped {UnwrappedStoredRecord}   the record this login
+ *   read, the base when no WAS server is configured
+ * @param options.accountLogPinStore {ResourceLogPinStore}   the pin store a
+ *   fresh read's pending-proof settlement rides
  * @param [options.idb] {IDBFactory}
  * @returns {(pointer: AccountPointer) => Promise<void>}
  */
 function accountPointerPersister({
-  unlock,
-  found,
+  credential,
+  unwrapped,
+  accountLogPinStore,
   idb
 }: {
-  unlock: UnlockIdentity
-  found: KeyringRecordContents
+  credential: UnlockCredential
+  unwrapped: UnwrappedStoredRecord
+  accountLogPinStore: ResourceLogPinStore
   idb?: IDBFactory
 }): (pointer: AccountPointer) => Promise<void> {
+  const { unlock, standing: standingClient } = credential
   return async pointer => {
-    // Stamped here rather than left to the codec, so the rewrite carries a
-    // known timestamp without re-reading the record. Advanced past the
-    // record being rewritten, so a client whose clock lags behind whichever
-    // client bound last still writes a record that supersedes it.
-    const createdAt = nextRecordCreatedAt({ advancePast: [found.createdAt] })
-    const record = await wrapKeyringRecord({
-      controller: found.controller,
-      email: found.email,
-      pointer,
-      keyAgreementKey: unlock.keyAgreementKey as IKeyAgreementKey,
-      signer: unlock.recordSigner,
-      createdAt
+    await casRewriteUnlockRecord({
+      credential,
+      accountLogPinStore,
+      base: unwrapped,
+      action: 'pointer rewrite',
+      alreadyLanded: ({ served }) =>
+        samePointer({ before: served.found.pointer, after: pointer }),
+      build: async ({ served, createdAt }) =>
+        served.standing
+          ? wrapUnlockRecord({
+              controller: served.found.controller,
+              email: served.found.email,
+              pointer,
+              delegation: served.standing.delegation,
+              ...(served.standing.delegatedClients
+                ? { delegatedClients: served.standing.delegatedClients }
+                : {}),
+              ...(served.standing.ladderSeed
+                ? { ladderSeed: served.standing.ladderSeed }
+                : {}),
+              keyAgreementKey: unlock.keyAgreementKey as IKeyAgreementKey,
+              signer: unlock.recordSigner,
+              bindingMacKey: standingClient.bindingMacKey,
+              createdAt
+            })
+          : wrapKeyringRecord({
+              controller: served.found.controller,
+              email: served.found.email,
+              pointer,
+              keyAgreementKey: unlock.keyAgreementKey as IKeyAgreementKey,
+              signer: unlock.recordSigner,
+              createdAt
+            }),
+      onWritten: async record => {
+        await saveKeyringCache({ spaceId: unlock.spaceId, record, idb })
+      }
     })
-    if (WAS_SERVER_URL) {
-      await putUnlockKeyring({
-        serviceDescription: await wasServiceDescription(),
-        storageServerUrl: WAS_SERVER_URL,
-        zcapClient: unlock.zcapClient,
-        spaceId: unlock.spaceId,
-        record
-      })
-    }
-    await saveKeyringCache({ spaceId: unlock.spaceId, record, idb })
   }
 }
 
@@ -693,6 +724,33 @@ export class KeyringRecordForgedError extends Error {
     super(`Forged or tampered keyring record.${detail}`)
     this.name = 'KeyringRecordForgedError'
     this.cause = cause
+  }
+}
+
+/**
+ * Thrown by an unlock record rewrite when the served record has moved to a
+ * different authority since this session's login read: its account pointer
+ * (did, Space, host) or its ladder seed changed, or another writer re-pointed
+ * its annex-Space sibling at another Space while this caller minted one for
+ * the old Space. What the caller minted is only valid against the login
+ * read's authority, so the rewrite stops rather than mixing the two.
+ * Deliberately not a 412: re-reading cannot make the caller's members valid.
+ */
+export class UnlockRecordAuthorityChangedError extends Error {
+  reason: 'pointer' | 'ladder-seed' | 'sibling-space'
+
+  constructor({
+    reason
+  }: {
+    reason: 'pointer' | 'ladder-seed' | 'sibling-space'
+  }) {
+    super(
+      `The unlock record's ${reason} changed since this session read it; ` +
+        'refusing to rewrite it with members minted for the earlier one. ' +
+        'Log in again to act on the current record.'
+    )
+    this.name = 'UnlockRecordAuthorityChangedError'
+    this.reason = reason
   }
 }
 
@@ -957,6 +1015,7 @@ async function readCachedRecord({
       unwrapped,
       credential,
       mintManageCapability,
+      accountLogPinStore,
       idb
     })
   } catch (err) {
@@ -1142,6 +1201,7 @@ export async function fetchKeyring({
     unwrapped,
     credential,
     mintManageCapability,
+    accountLogPinStore,
     idb
   })
 }
@@ -1172,13 +1232,14 @@ export interface TransientKeyringFetchResult extends KeyringRecordContents {
   }
   standingClient: StandingUnlockClient
   // Present beside `standing`: the record re-bind closure, in its transient
-  // shape -- the remote record is re-written, nothing local is touched. What
-  // the visit's client-annex heal re-seals a freshly minted sibling
-  // delegation into.
+  // shape -- the remote record is re-written (a compare-and-swap over a fresh
+  // read), nothing local is touched. What the visit's client-annex heal
+  // re-seals a freshly minted sibling delegation into. Resolves to the
+  // members that landed.
   rebindStandingRecord?: (options: {
     delegation: IZcap
     delegatedClients?: IZcap
-  }) => Promise<void>
+  }) => Promise<{ delegation: IZcap; delegatedClients?: IZcap }>
   unlockKeyAgreementKeyId?: string
   unlockKeyAgreementKeyMultibase?: string
 }
@@ -1295,10 +1356,9 @@ export async function fetchTransientKeyring({
       ? {
           standing: unwrapped.standing,
           rebindStandingRecord: standingRecordRebinder({
-            unlock,
-            standingClient,
-            found: unwrapped.found,
-            standing: unwrapped.standing
+            credential,
+            unwrapped: { ...unwrapped, standing: unwrapped.standing },
+            accountLogPinStore
           })
         }
       : {}),
@@ -1307,80 +1367,378 @@ export async function fetchTransientKeyring({
 }
 
 /**
- * Builds a standing record's re-bind closure: re-wraps and re-PUTs the
- * record with a freshly minted bridge delegation (and, when supplied, a
- * fresh annex-Space sibling; an existing sibling is restated verbatim
- * otherwise), everything else -- the controller, the pointer, the email,
- * the ladder seed -- restated verbatim.
- *
- * The one difference between the remembered and the transient variant is
- * `local`: a remembered hit refreshes this browser's keyring cache
- * afterwards, while a transient visit (which holds no local state at all)
- * writes nothing locally. Both floor the fresh stamp over the served
- * record, and the remote record write is the same one either way.
+ * The bounded compare-and-swap attempts of an unlock record rewrite, matching
+ * the unlock-methods registry's loop.
+ */
+const RECORD_CAS_ATTEMPTS = 3
+
+/**
+ * Reads the served unlock record with its ETag and opens it exactly as a
+ * login does: the proof and the credential-authenticated account binding are
+ * verified in the unwrap, and a pending proof (a cascade-re-minted record) is
+ * settled against the account document. The read half of
+ * {@link casRewriteUnlockRecord}.
  *
  * @param options {object}
- * @param options.unlock {UnlockIdentity}   the derived unlock identity
- * @param options.standingClient {StandingUnlockClient}   the credential's
- *   own client identity (its binding MAC key authenticates the account core)
- * @param options.found {KeyringRecordContents}   the served record's contents
- * @param options.standing {object}   the record's standing members
- * @param [options.local] {object}   the remembered variant's local state (the
- *   `freewallet-session` IndexedDB factory); absent for a transient visit
- * @returns {Function}   `({ delegation, delegatedClients }) => Promise<void>`
+ * @param options.credential {UnlockCredential}
+ * @param options.accountLogPinStore {ResourceLogPinStore}
+ * @returns {Promise<{ served: UnwrappedStoredRecord, record: unknown,
+ *   etag: string }>}   the opened record, the stored envelope it was opened
+ *   from, and the ETag it was served under
  */
-function standingRecordRebinder({
-  unlock,
-  standingClient,
-  found,
-  standing,
-  local
+async function readServedUnlockRecord({
+  credential,
+  accountLogPinStore
 }: {
-  unlock: UnlockIdentity
-  standingClient: StandingUnlockClient
-  found: KeyringRecordContents
-  standing: NonNullable<UnwrappedStoredRecord['standing']>
-  local?: { idb?: IDBFactory }
-}): (options: {
-  delegation: IZcap
-  delegatedClients?: IZcap
-}) => Promise<void> {
-  return async ({ delegation, delegatedClients }) => {
-    const createdAt = nextRecordCreatedAt({ advancePast: [found.createdAt] })
-    // A fresh sibling replaces the stored one; absent a fresh one,
-    // the record's own sibling is restated verbatim.
-    const carriedDelegatedClients =
-      delegatedClients ?? standing.delegatedClients
-    const record = await wrapUnlockRecord({
-      controller: found.controller,
-      email: found.email,
-      pointer: found.pointer!,
-      delegation,
-      ...(carriedDelegatedClients
-        ? { delegatedClients: carriedDelegatedClients }
-        : {}),
-      ...(standing.ladderSeed ? { ladderSeed: standing.ladderSeed } : {}),
-      keyAgreementKey: unlock.keyAgreementKey as IKeyAgreementKey,
-      signer: unlock.recordSigner,
-      bindingMacKey: standingClient.bindingMacKey,
-      createdAt
+  credential: UnlockCredential
+  accountLogPinStore: ResourceLogPinStore
+}): Promise<{ served: UnwrappedStoredRecord; record: unknown; etag: string }> {
+  const { unlock } = credential
+  const stored = await getUnlockKeyringWithEtag({
+    serviceDescription: await wasServiceDescription(),
+    storageServerUrl: WAS_SERVER_URL as string,
+    zcapClient: unlock.zcapClient,
+    spaceId: unlock.spaceId
+  })
+  if (!stored) {
+    // The credential was retired (its unlock Space deleted) since this
+    // login's read. Re-creating its record would resurrect it.
+    throw new Error(
+      'The unlock record is gone from its unlock Space; refusing to rewrite ' +
+        'a retired credential.'
+    )
+  }
+  if (stored.etag === undefined) {
+    throw new Error(
+      'The unlock record read carried no ETag; refusing an unconditional ' +
+        'overwrite.'
+    )
+  }
+  let served: UnwrappedStoredRecord
+  try {
+    served = await unwrapStoredKeyringRecord({
+      record: stored.record,
+      credential
     })
-    if (WAS_SERVER_URL) {
+  } catch (err) {
+    throw keyringUnwrapError(err)
+  }
+  await settlePendingRecordProof({
+    record: stored.record,
+    proofState: served.proofState,
+    found: served.found,
+    accountLogPinStore
+  })
+  return { served, record: stored.record, etag: stored.etag }
+}
+
+/**
+ * Whether two account pointers name the same account: the same did, Space
+ * id, and host. Both absent counts as the same.
+ *
+ * @param options {object}
+ * @param [options.before] {AccountPointer}
+ * @param [options.after] {AccountPointer}
+ * @returns {boolean}
+ */
+function samePointer({
+  before,
+  after
+}: {
+  before?: AccountPointer
+  after?: AccountPointer
+}): boolean {
+  return (
+    before?.did === after?.did &&
+    before?.spaceId === after?.spaceId &&
+    before?.host === after?.host
+  )
+}
+
+/**
+ * Refuses a served record whose authority differs from the login read's:
+ * another account pointer (did, Space id, or host), or another ladder seed.
+ * Both sides absent counts as the same.
+ *
+ * @param options {object}
+ * @param options.base {UnwrappedStoredRecord}   the login read
+ * @param options.served {UnwrappedStoredRecord}   the fresh read
+ * @returns {void}
+ * @throws {UnlockRecordAuthorityChangedError}
+ */
+function assertSameRecordAuthority({
+  base,
+  served
+}: {
+  base: UnwrappedStoredRecord
+  served: UnwrappedStoredRecord
+}): void {
+  if (
+    !samePointer({ before: base.found.pointer, after: served.found.pointer })
+  ) {
+    throw new UnlockRecordAuthorityChangedError({ reason: 'pointer' })
+  }
+  const seedBefore = base.standing?.ladderSeed
+  const seedAfter = served.standing?.ladderSeed
+  const sameSeed =
+    seedBefore === undefined || seedAfter === undefined
+      ? seedBefore === seedAfter
+      : seedBefore.length === seedAfter.length &&
+        seedBefore.every((byte, index) => byte === seedAfter[index])
+  if (!sameSeed) {
+    throw new UnlockRecordAuthorityChangedError({ reason: 'ladder-seed' })
+  }
+}
+
+/**
+ * The one read-modify-write loop every rewrite of an EXISTING unlock record
+ * runs (the standing re-bind and the pointer rewrite). Each attempt reads
+ * the served record with its ETag ({@link readServedUnlockRecord}), builds
+ * the next record from it, and PUTs it under `If-Match` on that ETag. A lost
+ * race (412) re-enters the loop with a fresh read, up to
+ * {@link RECORD_CAS_ATTEMPTS}; exhaustion throws `PreconditionFailedError`.
+ * So a writer never puts back members another writer replaced after this
+ * session's login read, and a credential retired in between is refused
+ * rather than re-created. A served record whose pointer or ladder seed
+ * differs from the login read's is refused too
+ * ({@link assertSameRecordAuthority}), since the caller's change was built
+ * for the earlier one. One served record is taken before that check: one
+ * `alreadyLanded` accepts, which carries the caller's change already (another
+ * writer made the same rewrite first). It is handed to `onWritten` as it
+ * stands and nothing is PUT. The stamp advances past the record actually
+ * read.
+ *
+ * The read refuses a record served with no ETag, so a WAS deployment must
+ * expose the `ETag` response header to the browser.
+ *
+ * With no WAS server the local cache is the record's only copy and no other
+ * writer shares it, so `base` (the record this login read) is the one input
+ * and nothing goes on the wire.
+ *
+ * @param options {object}
+ * @param options.credential {UnlockCredential}
+ * @param options.accountLogPinStore {ResourceLogPinStore}
+ * @param options.base {UnwrappedStoredRecord}   the record this login read
+ * @param options.action {string}   how the exhaustion message names the write
+ * @param options.build {Function}   `({ served, createdAt }) => record`, the
+ *   wrapped record to store over the served one
+ * @param [options.alreadyLanded] {Function}   `({ served }) => boolean`,
+ *   whether the served record already carries the caller's change
+ * @param [options.onWritten] {Function}   called with the wrapped record once
+ *   it landed, or with the served one `alreadyLanded` accepted
+ * @returns {Promise<object>}   the record that landed
+ */
+async function casRewriteUnlockRecord({
+  credential,
+  accountLogPinStore,
+  base,
+  action,
+  build,
+  alreadyLanded,
+  onWritten
+}: {
+  credential: UnlockCredential
+  accountLogPinStore: ResourceLogPinStore
+  base: UnwrappedStoredRecord
+  action: string
+  build: (options: {
+    served: UnwrappedStoredRecord
+    createdAt: string
+  }) => Promise<object>
+  alreadyLanded?: (options: { served: UnwrappedStoredRecord }) => boolean
+  onWritten?: (record: object) => Promise<void>
+}): Promise<object> {
+  const { unlock } = credential
+  if (!WAS_SERVER_URL) {
+    const record = await build({
+      served: base,
+      createdAt: nextRecordCreatedAt({ advancePast: [base.found.createdAt] })
+    })
+    await onWritten?.(record)
+    return record
+  }
+  let lastError: unknown
+  for (let attempt = 0; attempt < RECORD_CAS_ATTEMPTS; attempt++) {
+    const {
+      served,
+      record: servedRecord,
+      etag
+    } = await readServedUnlockRecord({
+      credential,
+      accountLogPinStore
+    })
+    if (alreadyLanded?.({ served })) {
+      await onWritten?.(servedRecord as object)
+      return servedRecord as object
+    }
+    assertSameRecordAuthority({ base, served })
+    // Advanced past the record being replaced, so a client whose clock lags
+    // the last writer's still writes a record that supersedes it. The login
+    // read's stamp rides too, in case the host served an older record.
+    const createdAt = nextRecordCreatedAt({
+      advancePast: [served.found.createdAt, base.found.createdAt]
+    })
+    const record = await build({ served, createdAt })
+    try {
       await putUnlockKeyring({
         serviceDescription: await wasServiceDescription(),
         storageServerUrl: WAS_SERVER_URL,
         zcapClient: unlock.zcapClient,
         spaceId: unlock.spaceId,
-        record
-      })
-    }
-    if (local) {
-      await saveKeyringCache({
-        spaceId: unlock.spaceId,
         record,
-        idb: local.idb
+        ifMatch: etag
       })
+    } catch (err) {
+      if (isPreconditionFailed(err)) {
+        // Another writer landed first: re-read and rebuild on its record.
+        lastError = err
+        continue
+      }
+      throw err
     }
+    await onWritten?.(record)
+    return record
+  }
+  throw new PreconditionFailedError(
+    `The unlock record ${action} lost the compare-and-swap race after ` +
+      `${RECORD_CAS_ATTEMPTS} attempts (another writer kept updating the ` +
+      'record). Retry the operation.',
+    { cause: lastError as Error }
+  )
+}
+
+/**
+ * Builds a standing record's re-bind closure: re-wraps and re-PUTs the
+ * record with the bridge and sibling delegations the caller hands it,
+ * everything else -- the controller, the pointer, the email, the ladder
+ * seed -- carried from the served record. The write is a compare-and-swap
+ * over a fresh read ({@link casRewriteUnlockRecord}).
+ *
+ * Which delegation wins. A caller hands both members, but it only replaces
+ * the ones it minted. The others it restates from what it read at login
+ * (the transient readiness stage passes the record's own bridge beside a
+ * fresh sibling, the annex establishment the same). So a member the caller
+ * hands is a replacement only when this closure has never seen it, neither
+ * in the login read nor in a write of its own. A replacement wins. A
+ * restated or absent member is taken from the served record instead, which
+ * carries another writer's re-mint forward rather than writing the rotted
+ * login-time member back over it.
+ *
+ * A fresh sibling is refused when another writer has meanwhile re-pointed
+ * the served sibling at a different annex Space: the caller minted its own
+ * for the Space it read at login. The closure resolves to the members that
+ * landed, so a caller whose restated member lost to the served one acts
+ * through what the record now carries.
+ *
+ * The one difference between the remembered and the transient variant is
+ * `local`: a remembered hit refreshes this browser's keyring cache
+ * afterwards, while a transient visit (which holds no local state at all)
+ * writes nothing locally. The remote record write is the same either way.
+ *
+ * @param options {object}
+ * @param options.credential {UnlockCredential}   the derived unlock
+ *   identity and the credential's own client identity (its binding MAC key
+ *   authenticates the account core)
+ * @param options.unwrapped {UnwrappedStoredRecord}   the record this login
+ *   read, standing members included
+ * @param options.accountLogPinStore {ResourceLogPinStore}   the pin store a
+ *   fresh read's pending-proof settlement rides
+ * @param [options.local] {object}   the remembered variant's local state (the
+ *   `freewallet-session` IndexedDB factory); absent for a transient visit
+ * @returns {Function}   `({ delegation, delegatedClients }) =>
+ *   Promise<{ delegation, delegatedClients? }>`, the landed members
+ */
+function standingRecordRebinder({
+  credential,
+  unwrapped,
+  accountLogPinStore,
+  local
+}: {
+  credential: UnlockCredential
+  unwrapped: UnwrappedStoredRecord & {
+    standing: NonNullable<UnwrappedStoredRecord['standing']>
+  }
+  accountLogPinStore: ResourceLogPinStore
+  local?: { idb?: IDBFactory }
+}): (options: {
+  delegation: IZcap
+  delegatedClients?: IZcap
+}) => Promise<{ delegation: IZcap; delegatedClients?: IZcap }> {
+  const { unlock, standing: standingClient } = credential
+  // Every delegation id this closure has read or written: a member the
+  // caller hands that is in this set is restated, not minted.
+  const seen = new Set<string>([unwrapped.standing.delegation.id])
+  if (unwrapped.standing.delegatedClients) {
+    seen.add(unwrapped.standing.delegatedClients.id)
+  }
+  function replacement(offered?: IZcap): IZcap | undefined {
+    return offered && !seen.has(offered.id) ? offered : undefined
+  }
+  return async ({ delegation, delegatedClients }) => {
+    const freshBridge = replacement(delegation)
+    const freshSibling = replacement(delegatedClients)
+    let landed: { delegation: IZcap; delegatedClients?: IZcap } | undefined
+    await casRewriteUnlockRecord({
+      credential,
+      accountLogPinStore,
+      base: unwrapped,
+      action: 're-bind',
+      build: async ({ served, createdAt }) => {
+        if (!served.standing) {
+          throw new Error(
+            'The served unlock record is no longer in the standing layout; ' +
+              'there are no standing members to re-bind.'
+          )
+        }
+        const servedSibling = served.standing.delegatedClients
+        if (
+          freshSibling &&
+          servedSibling &&
+          !seen.has(servedSibling.id) &&
+          delegatedClientsDelegationSpaceId({ delegation: servedSibling }) !==
+            delegatedClientsDelegationSpaceId({ delegation: freshSibling })
+        ) {
+          throw new UnlockRecordAuthorityChangedError({
+            reason: 'sibling-space'
+          })
+        }
+        const bridge = freshBridge ?? served.standing.delegation
+        const sibling = freshSibling ?? servedSibling
+        landed = {
+          delegation: bridge,
+          ...(sibling ? { delegatedClients: sibling } : {})
+        }
+        return wrapUnlockRecord({
+          controller: served.found.controller,
+          email: served.found.email,
+          pointer: served.found.pointer!,
+          delegation: bridge,
+          ...(sibling ? { delegatedClients: sibling } : {}),
+          ...(served.standing.ladderSeed
+            ? { ladderSeed: served.standing.ladderSeed }
+            : {}),
+          keyAgreementKey: unlock.keyAgreementKey as IKeyAgreementKey,
+          signer: unlock.recordSigner,
+          bindingMacKey: standingClient.bindingMacKey,
+          createdAt
+        })
+      },
+      onWritten: async record => {
+        if (local) {
+          await saveKeyringCache({
+            spaceId: unlock.spaceId,
+            record,
+            idb: local.idb
+          })
+        }
+      }
+    })
+    for (const written of [freshBridge, freshSibling]) {
+      if (written) {
+        seen.add(written.id)
+      }
+    }
+    return landed!
   }
 }
 
@@ -1394,6 +1752,8 @@ function standingRecordRebinder({
  * @param options.unwrapped {UnwrappedStoredRecord}   the unwrapped record
  * @param options.credential {UnlockCredential}
  * @param options.mintManageCapability {boolean}
+ * @param options.accountLogPinStore {ResourceLogPinStore}   the pin store the
+ *   record rewrite closures' fresh reads settle a pending proof under
  * @param [options.idb] {IDBFactory}
  * @returns {Promise<KeyringFetchResult>}
  */
@@ -1401,11 +1761,13 @@ async function buildFetchResult({
   unwrapped,
   credential,
   mintManageCapability,
+  accountLogPinStore,
   idb
 }: {
   unwrapped: UnwrappedStoredRecord
   credential: UnlockCredential
   mintManageCapability: boolean
+  accountLogPinStore: ResourceLogPinStore
   idb?: IDBFactory
 }): Promise<KeyringFetchResult> {
   const { unlock, standing: standingClient } = credential
@@ -1420,10 +1782,9 @@ async function buildFetchResult({
       ? {
           standing,
           rebindStandingRecord: standingRecordRebinder({
-            unlock,
-            standingClient,
-            found,
-            standing,
+            credential,
+            unwrapped: { ...unwrapped, standing },
+            accountLogPinStore,
             local: { idb }
           })
         }
@@ -1432,7 +1793,12 @@ async function buildFetchResult({
       ? {
           clientKeys,
           persistClientKeys: clientKeysPersister({ unlock, idb }),
-          persistAccountPointer: accountPointerPersister({ unlock, found, idb })
+          persistAccountPointer: accountPointerPersister({
+            credential,
+            unwrapped,
+            accountLogPinStore,
+            idb
+          })
         }
       : {
           enrollClientKeys: async keys => {

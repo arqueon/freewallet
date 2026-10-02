@@ -79,7 +79,7 @@ export async function refreshStandingDelegations({
   rebindStandingRecord: (members: {
     delegation: IZcap
     delegatedClients?: IZcap
-  }) => Promise<void>
+  }) => Promise<unknown>
   delegation: IZcap
   delegatedClients?: IZcap
   standingClientDid: string
