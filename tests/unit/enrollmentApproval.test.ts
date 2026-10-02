@@ -13,16 +13,20 @@
  * enrolls with the credential's ladder, through the record's bridge store,
  * and unwraps every epoch with the credential's standing key. Handing the
  * wrong one over produces a capability that verifies nowhere, so the kinds
- * are asserted structurally rather than through a live signer.
+ * are asserted structurally rather than through a live signer. The
+ * best-effort tail -- the `connections` entry, then the ClientConnect
+ * activity row -- is asserted here too.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { addSink, captureSink } from '@interop/logger'
 
 const state = vi.hoisted(() => ({
   wasUrl: 'https://was.example.test' as string | undefined,
   calls: [] as string[],
   /** which kind the session's ceremony context resolves to, or none at all */
   kind: 'ladder' as 'enrolled' | 'ladder' | 'none',
-  labelFails: false
+  labelFails: false,
+  activityFails: false
 }))
 
 vi.mock('@/app.config', async importOriginal => ({
@@ -172,7 +176,15 @@ function approvingSession(): Session {
   return {
     user: { id: 'did:key:z6MkApprovingClient' },
     isGuest: false,
-    storage: { remoteStore: { isStore: true } },
+    storage: {
+      remoteStore: { isStore: true },
+      addHistoryClientConnected: vi.fn(async () => {
+        state.calls.push('addHistoryClientConnected')
+        if (state.activityFails) {
+          throw new Error('the activity collection is refused')
+        }
+      })
+    },
     profile: { accountPointer: POINTER }
   } as unknown as Session
 }
@@ -182,6 +194,7 @@ beforeEach(() => {
   state.calls = []
   state.kind = 'ladder'
   state.labelFails = false
+  state.activityFails = false
   vi.clearAllMocks()
 })
 
@@ -222,7 +235,8 @@ describe('the ladder kind (a transient session on a standing credential)', () =>
       'approveEnrollmentCore',
       'invalidateVerifiedLog',
       'reprimeVerifiedAccountLog',
-      'recordWalletClientEntry'
+      'recordWalletClientEntry',
+      'addHistoryClientConnected'
     ])
     expect(vi.mocked(reprimeVerifiedAccountLog)).toHaveBeenCalledWith({
       session,
@@ -328,6 +342,79 @@ describe('the preconditions and the best-effort entry write', () => {
       session,
       did: 'did:key:z6MkEnrolleeClient'
     })
+  })
+})
+
+describe('the best-effort ClientConnect activity', () => {
+  it('records the connected client with the label the approver gave it', async () => {
+    const session = approvingSession()
+    await approveEnrollment({
+      request: REQUEST,
+      session,
+      name: 'Wallet 2',
+      label: 'Old laptop'
+    })
+    expect(session.storage.addHistoryClientConnected).toHaveBeenCalledWith({
+      user: session.user,
+      signingKeyMultibase: 'z6MkEnrolleeClient',
+      clientDid: 'did:key:z6MkEnrolleeClient',
+      label: 'Old laptop'
+    })
+  })
+
+  it('records no label when the approver gave none or a blank one', async () => {
+    const session = approvingSession()
+    await approveEnrollment({
+      request: REQUEST,
+      session,
+      name: 'Wallet 2',
+      label: '   '
+    })
+    expect(session.storage.addHistoryClientConnected).toHaveBeenCalledWith({
+      user: session.user,
+      signingKeyMultibase: 'z6MkEnrolleeClient',
+      clientDid: 'did:key:z6MkEnrolleeClient'
+    })
+  })
+
+  it('records the activity after the connections entry is written', async () => {
+    await approveEnrollment({ request: REQUEST, session: approvingSession() })
+    expect(state.calls.slice(-2)).toEqual([
+      'recordWalletClientEntry',
+      'addHistoryClientConnected'
+    ])
+  })
+
+  it('records the activity even when the entry write fails', async () => {
+    state.labelFails = true
+    await approveEnrollment({ request: REQUEST, session: approvingSession() })
+    expect(state.calls.slice(-2)).toEqual([
+      'recordWalletClientEntry',
+      'addHistoryClientConnected'
+    ])
+  })
+
+  it('completes the approval and warns when the activity write fails', async () => {
+    state.activityFails = true
+    const capture = captureSink()
+    const removeSink = addSink(capture.sink)
+    let approved
+    try {
+      approved = await approveEnrollment({
+        request: REQUEST,
+        session: approvingSession()
+      })
+    } finally {
+      removeSink()
+    }
+    expect(approved.clientDid).toBe('did:key:z6MkEnrolleeClient')
+    const warnings = capture.events.filter(
+      event => event.ns === 'fw:enrollment' && event.level === 'warn'
+    )
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]?.msg).toBe(
+      'Could not record the client-connected activity'
+    )
   })
 })
 

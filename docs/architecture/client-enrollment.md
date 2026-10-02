@@ -46,7 +46,10 @@ canonical in wallet-core's ARCHITECTURE.md.
    visible as a row in Connected wallets. The write of the new client's
    `connections` entry is best-effort on both kinds: `name` takes the name
    the approver was offered, and `label` is set only when the approver
-   edited it.
+   edited it. After the entry, the approving wallet records a ClientConnect
+   `wallet-activity` row naming the client by its label or its signing-key
+   multibase. That row is best-effort too, and is symmetric with the
+   ClientRevoke row a disconnect writes.
 
 3. **Enrollee** ("finish connecting") verifies the enrollment from the
    world-readable log against the pointer's DID, makes its first roster read

@@ -473,8 +473,8 @@ revoke, a wallet-client disconnect, or a forget. Retirement empties its
 grants, drops its `appKey`, and stamps `retired`. It keeps the names, so a
 departed party still resolves. A later consent from the same party
 un-retires the entry. The `wallet-activity` Grant, Login, Revoke,
-CollectionShare, CollectionUnshare, and ClientRevoke rows stay as audit
-trail. The History page and the content migration's dedupe read them, and
+CollectionShare, CollectionUnshare, ClientConnect, and ClientRevoke rows
+stay as audit trail. The History page and the content migration's dedupe read them, and
 nothing that decides about a party does
 (`decisions/0034-the-directory-is-the-grant-index.md`).
 

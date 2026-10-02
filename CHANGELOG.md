@@ -4,6 +4,9 @@
 
 ### Added
 
+- Approving a wallet-client enrollment (a pasted connect code or QR
+  onboarding) records a History entry naming the connected client, symmetric
+  with the disconnect entry. The write is best-effort.
 - The revoke-access confirmation for an app names the wallet collections the
   app holds a share of, which the disconnect takes its key off. Each listed
   grant now carries the `collectionId` its target addresses.

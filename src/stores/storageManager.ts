@@ -192,6 +192,7 @@ import {
   addHistoryWalletLogin as buildHistoryWalletLogin,
   addHistoryAppRevoke as buildHistoryAppRevoke,
   addHistoryAgentRevoke as buildHistoryAgentRevoke,
+  addHistoryClientConnected as buildHistoryClientConnected,
   addHistoryClientRevoked as buildHistoryClientRevoked,
   addHistoryGenerationCollected as buildHistoryGenerationCollected,
   addHistoryCollectionShared as buildHistoryCollectionShared,
@@ -4445,6 +4446,41 @@ export class StorageManager {
         actor,
         revoked,
         skipped,
+        id
+      })
+    )
+  }
+
+  /**
+   * Records (in the `wallet-activity` collection) a ClientConnect activity: a
+   * wallet client's enrollment was approved here -- the enrollment ceremony's
+   * audit record, symmetric with the ClientRevoke one.
+   *
+   * @param options {object}
+   * @param options.user {User}
+   * @param options.signingKeyMultibase {string}   the connected client's
+   *   signing key multibase
+   * @param options.clientDid {string}   the connected client's did:key
+   * @param [options.label] {string}
+   * @returns {Promise<void>}
+   */
+  async addHistoryClientConnected({
+    user,
+    signingKeyMultibase,
+    clientDid,
+    label
+  }: {
+    user: User
+    signingKeyMultibase: string
+    clientDid: string
+    label?: string
+  }) {
+    await this.#recordActivity(id =>
+      buildHistoryClientConnected({
+        user,
+        signingKeyMultibase,
+        clientDid,
+        label,
         id
       })
     )

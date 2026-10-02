@@ -6,7 +6,9 @@
  * - `approveEnrollment` -- the approving half, resolving this session's
  *   account-ceremony context (an enrolled client's own keys, or a standing
  *   credential's ladder on a transient session) and handing the ceremony the
- *   signer, the stores and the keys that kind acts with.
+ *   signer, the stores and the keys that kind acts with. Once the ceremony
+ *   lands it writes the new client's `connections` entry and a ClientConnect
+ *   activity row.
  * - `completeEnrollment` -- the enrollee's half: the account pointer comes out
  *   of the keyring (the enrollee holds the passphrase), the portable core
  *   verifies and reads the roster, the key set is persisted under the
@@ -76,6 +78,11 @@ const log = createLogger('fw:enrollment')
  * when the approver edited it. The document carries
  * key material only. Best-effort: a failed entry write does not fail the
  * completed ceremony.
+ *
+ * After the entry, a ClientConnect `wallet-activity` row records the
+ * approval, naming the client by the approver's label or its signing-key
+ * multibase. It is the audit record, symmetric with the ClientRevoke row a
+ * disconnect writes. Best-effort, like the entry.
  *
  * @param options {object}
  * @param options.request {EnrollmentRequest}   the parsed connect code
@@ -150,6 +157,18 @@ export async function approveEnrollment({
     })
   } catch (err) {
     log.warn("Could not write the new client's connections entry", { err })
+  }
+  // The audit record, after the ceremony has landed and the entry is
+  // written, like the revocation one. Best-effort.
+  try {
+    await session.storage.addHistoryClientConnected({
+      user: session.user,
+      signingKeyMultibase: approved.signingKeyMultibase,
+      clientDid: approved.clientDid,
+      ...(label?.trim() ? { label } : {})
+    })
+  } catch (err) {
+    log.warn('Could not record the client-connected activity', { err })
   }
   return approved
 }
