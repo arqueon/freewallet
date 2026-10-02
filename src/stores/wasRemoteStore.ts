@@ -1266,7 +1266,8 @@ export class WASRemoteStore {
           ...item,
           isPublic,
           isEncrypted: Boolean(description?.encryption),
-          generator: description?.generator
+          generator: description?.generator,
+          createdBy: description?.createdBy
         }
       })
     )

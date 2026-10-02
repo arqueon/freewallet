@@ -26,6 +26,14 @@ export type StorageCollection = {
    * controller-asserted at App Connect provisioning time.
    */
   generator?: CollectionGenerator
+  /**
+   * The DID whose capability invocation created this collection, as the
+   * server observed it on the first write: read-only, optional, and not
+   * verified identity. Read off the same Collection Metadata object as
+   * `generator`, so carrying it costs the listing nothing. The Storage
+   * page's listing does not show it; the collection contents page does.
+   */
+  createdBy?: string
 }
 
 export type StorageResource = {

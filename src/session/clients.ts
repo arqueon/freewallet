@@ -32,12 +32,15 @@
  * directory read and nothing else.
  */
 import {
+  accountLogDids,
   clientSigningKeyMultibase,
-  enrolledClientVmIds,
-  isWebvhDid
+  isWebvhDid,
+  walletClientDid
 } from '@interop/wallet-core/webvh'
-import { vmFragmentOf } from '@interop/vh-resource-log'
-import { delegatedClientsPointer } from '@interop/wallet-core/clientAnnex'
+import {
+  delegatedClientsPointer,
+  delegatedClientsPointerHistory
+} from '@interop/wallet-core/clientAnnex'
 import {
   setConnectionLabel,
   type ConnectionEntry,
@@ -61,12 +64,12 @@ import {
 } from '@/session/accountCeremonyContext'
 import {
   revokeEnrolledClient,
-  walletClientDid,
   type RevocationOutcome
 } from '@/session/revocation'
 import { reportCeremonyTail } from '@/session/menders/ceremonyTail'
 import { listConnectionsDirectory } from '@/session/menders/encounterSites'
 import { verifiedAccountLog } from '@/session/verifiedLog'
+import { isBrowserLocalSession } from '@/session/persistence'
 import { createLogger } from '@/lib/log'
 
 const log = createLogger('fw:session:clients')
@@ -198,8 +201,7 @@ export async function readDirectoryListing({
 
 /**
  * The did:keys of every wallet client the account document lists or ever
- * listed, from the locally verified did:webvh log: each log entry's document
- * read for its enrolled clients' verification methods. A revoked client's
+ * listed, from the locally verified did:webvh log. A revoked client's
  * did:key stays public in the log for good, so the set covers it. When this
  * session's account pointer is absent or names no did:webvh, there is no
  * account document. The only wallet client is then this session's own key,
@@ -221,14 +223,64 @@ export async function listedClientDids({
     return new Set(ownDid?.startsWith('did:key:') ? [ownDid] : [])
   }
   const { log: accountLog } = await verifiedAccountLog({ session, pointer })
+  return accountLogDids({ log: accountLog }).clientDids
+}
+
+/**
+ * Every DID the wallet itself invokes as, for naming a server-observed
+ * `createdBy` as the wallet rather than as a foreign creator. This session's
+ * own identities come first, from the session alone: the user id, the key
+ * agent's did:key, the keyring record's controller (the did:key that
+ * created the Space before promotion), the account DID, and on a transient
+ * session the client-annex DID every request signs under. When the account
+ * names a did:webvh, the locally verified log adds, across every entry, each
+ * wallet client's did:key, each ladder VM's bare did:key, and each annex DID
+ * the document pointed at, so a revision a since-revoked client or an
+ * earlier visit made still reads as the wallet's. A log that cannot be read
+ * leaves the session's own set, logged.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @returns {Promise<Set<string>>}
+ */
+export async function walletOwnDids({
+  session
+}: {
+  session: Session
+}): Promise<Set<string>> {
+  const { profile, persistence } = session
+  const pointer = profile.accountPointer
   const dids = new Set<string>()
-  for (const entry of accountLog) {
-    for (const vmId of enrolledClientVmIds({ doc: entry.state })) {
-      const signingKeyMultibase = vmFragmentOf(vmId)
-      if (signingKeyMultibase) {
-        dids.add(walletClientDid({ signingKeyMultibase }))
-      }
+  const add = (did: string | undefined) => {
+    if (did) {
+      dids.add(did)
     }
+  }
+  add(session.user.id)
+  add(profile.keyAgent?.id)
+  add(profile.accountController)
+  add(profile.didWebvh?.did)
+  add(pointer?.did)
+  if (!isBrowserLocalSession(persistence)) {
+    add(persistence.clientAnnex.clientAnnexDid)
+  }
+  if (!pointer || !isWebvhDid(pointer.did)) {
+    return dids
+  }
+  try {
+    const { log: accountLog } = await verifiedAccountLog({ session, pointer })
+    const { clientDids, ladderDids } = accountLogDids({ log: accountLog })
+    for (const did of [
+      ...clientDids,
+      ...ladderDids,
+      ...delegatedClientsPointerHistory({ log: accountLog })
+    ]) {
+      dids.add(did)
+    }
+  } catch (err) {
+    log.warn("Could not read the account log for the wallet's own DIDs", {
+      err
+    })
   }
   return dids
 }

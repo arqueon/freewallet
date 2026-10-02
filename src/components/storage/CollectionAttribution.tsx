@@ -1,12 +1,16 @@
 /**
- * The "Created by ..." caption a collection carries in the storage browser:
- * the application it was provisioned for, by the name stamped on the
+ * The "Created for ..." caption a collection carries in the storage browser:
+ * the requester it was provisioned for, by the name stamped on the
  * collection's `generator` or else the name its `connections` entry holds
  * for it (linked while the app is still connected), the bare origin recorded at
- * provisioning when neither names the app, or the wallet itself for the
- * collections it provisions. The naming order is `collectionCreatorLabel`'s,
- * an interaction-URL agent's stamp included.
+ * provisioning when neither names the app, or "Created by this wallet" for
+ * the collections the wallet provisions for itself. The naming order is
+ * `collectionCreatorLabel`'s, an interaction-URL agent's stamp included. The
+ * stamp is the wallet's own record of whom it created the collection for,
+ * so the verb is "for" on every surface, apart from the server-observed
+ * "Created by" line that stands beside it on the collection contents page.
  */
+import type { ReactNode } from 'react'
 import Box from '@mui/material/Box'
 import Link from '@mui/material/Link'
 import Typography from '@mui/material/Typography'
@@ -40,14 +44,54 @@ export function CollectionAttribution({
   if (!caption) {
     return null
   }
+  return <AttributionCaption>{caption}</AttributionCaption>
+}
+
+/**
+ * The caption shell every creator line in the storage browser shares.
+ */
+export function AttributionCaption({ children }: { children: ReactNode }) {
   return (
     <Typography
       variant="caption"
       component="div"
       sx={storageStyles.collectionAttribution}
     >
-      {caption}
+      {children}
     </Typography>
+  )
+}
+
+/**
+ * A creator line naming one party: the `<app>` slot of the i18n key holds
+ * the name, linked to the party's application detail page when its entry
+ * resource id is given (while the Applications page lists it), and plain
+ * text otherwise.
+ */
+export function NamedCreatorCaption({
+  i18nKey,
+  name,
+  resourceId
+}: {
+  i18nKey: string
+  name: string
+  resourceId?: string
+}) {
+  const nameComponent = resourceId ? (
+    <Link
+      component={RouterLink}
+      to={`/applications/${resourceId}`}
+      underline="hover"
+    />
+  ) : (
+    <Box component="span" />
+  )
+  return (
+    <Trans
+      i18nKey={i18nKey}
+      values={{ name }}
+      components={{ app: nameComponent }}
+    />
   )
 }
 
@@ -73,21 +117,12 @@ function creatorCaption({
   if (!label) {
     return null
   }
-  const nameComponent =
-    creator?.resourceId && linkToApp ? (
-      <Link
-        component={RouterLink}
-        to={`/applications/${creator.resourceId}`}
-        underline="hover"
-      />
-    ) : (
-      <Box component="span" />
-    )
   return (
-    <Trans
-      i18nKey="storage.createdByApp"
-      values={{ name: label }}
-      components={{ app: nameComponent }}
+    <NamedCreatorCaption
+      i18nKey="storage.createdForApp"
+      name={label}
+      {...(linkToApp &&
+        creator?.resourceId && { resourceId: creator.resourceId })}
     />
   )
 }

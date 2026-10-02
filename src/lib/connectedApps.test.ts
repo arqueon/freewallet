@@ -21,6 +21,7 @@ import {
   listConnectedAgents,
   listConnectedApps,
   lookupCollectionCreators,
+  lookupCreatedByParty,
   sharedCollectionIds
 } from '@/lib/connectedApps'
 import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
@@ -859,6 +860,119 @@ describe('lookupCollectionCreators', () => {
     expect(
       listConnectedApps({ connections: after }).map(app => app.subjectDid)
     ).toEqual(order)
+  })
+})
+
+describe('lookupCreatedByParty', () => {
+  /**
+   * The lookup over the fixture directory.
+   *
+   * @param did {string}
+   * @param [rosterCollections] {string[] | Error}
+   * @returns {Promise<object>}   the party and the storage double
+   */
+  async function partyOf(did: string, rosterCollections?: string[] | Error) {
+    const storage = directoryStorage({ directory, rosterCollections })
+    const party = await lookupCreatedByParty({
+      storage: storage as unknown as StorageManager,
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      did
+    })
+    return { party, storage }
+  }
+
+  it('names a listed app from its entry, with the resource id a link needs', async () => {
+    await connectApp({ appKey: 'r-app-key' })
+
+    const { party, storage } = await partyOf(APP_DID)
+
+    expect(party).toEqual({
+      name: 'Notes',
+      resourceId: await connectionResourceId({
+        hmacKey: HMAC_KEY,
+        did: APP_DID
+      })
+    })
+    expect(storage.granteeRosterCollections).not.toHaveBeenCalled()
+  })
+
+  it('names a listed agent from its entry', async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: AGENT_DID })],
+      name: 'Backup Agent'
+    })
+
+    const { party } = await partyOf(AGENT_DID)
+
+    expect(party).toEqual({
+      name: 'Backup Agent',
+      resourceId: await connectionResourceId({
+        hmacKey: HMAC_KEY,
+        did: AGENT_DID
+      })
+    })
+  })
+
+  it('links an expired agent while a collection still lists it, and not otherwise', async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [
+        grantZcap({ id: 'urn:zcap:gone', controller: AGENT_DID, expires: PAST })
+      ],
+      name: 'Backup Agent'
+    })
+    const resourceId = await connectionResourceId({
+      hmacKey: HMAC_KEY,
+      did: AGENT_DID
+    })
+
+    const listed = await partyOf(AGENT_DID, ['notes'])
+    expect(listed.party).toEqual({ name: 'Backup Agent', resourceId })
+
+    const dropped = await partyOf(AGENT_DID, [])
+    expect(dropped.party).toEqual({ name: 'Backup Agent' })
+  })
+
+  it('names a share recipient by its entry', async () => {
+    await connectApp({
+      grants: [grantZcap({ id: 'urn:zcap:share', controller: APP_DID })],
+      grantKind: 'share'
+    })
+
+    const { party } = await partyOf(APP_DID)
+
+    expect(party?.name).toBe('Notes')
+  })
+
+  it('names a retired party from its kept names, with no resource id', async () => {
+    await connectApp({
+      appKey: 'r-app-key',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: APP_DID })]
+    })
+    await retireParty({ directory, did: APP_DID, zcapIds: ['urn:zcap:one'] })
+
+    const { party } = await partyOf(APP_DID)
+
+    expect(party).toEqual({ name: 'Notes' })
+  })
+
+  it('answers nothing for a wallet-client entry or a DID no entry names', async () => {
+    await recordConsent({
+      directory,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      name: 'Work laptop'
+    })
+    await connectApp({ appKey: 'r-app-key' })
+
+    expect((await partyOf(CLIENT_DID)).party).toBeUndefined()
+    expect((await partyOf(OTHER_APP_DID)).party).toBeUndefined()
   })
 })
 

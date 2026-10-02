@@ -59,8 +59,8 @@ import {
   getResourceDisplayName
 } from '@/components/storage/displayUtils'
 import { CollectionAttribution } from '@/components/storage/CollectionAttribution'
-import { useCollectionCreators } from '@/hooks/useCollectionCreators'
-import { recordedCreatorOf } from '@/lib/collectionAttribution'
+import { ObservedCreatorAttribution } from '@/components/storage/ObservedCreatorAttribution'
+import { useCreatorAttribution } from '@/hooks/useCreatorAttribution'
 import { createLogger } from '@/lib/log'
 
 const log = createLogger('fw:ui:storage')
@@ -176,17 +176,18 @@ export function CollectionContentsPage() {
     }
   )
 
-  // The application that created this collection, for the header's
-  // "Created by" line, by its `generator` stamp: the same reader the Storage
-  // page and the consent row use. A collection stamped with no app generator
-  // names no app, so the lookup is off there rather than reading the
-  // directory for nothing.
-  const generator = collection?.generator
-  const creators = useCollectionCreators({
+  // The header's two creator lines. The `generator` stamp names the
+  // requester the wallet created the collection for, by the same reader the
+  // Storage page and the consent row use. The server-observed `createdBy`
+  // rides the listed collection (the listing already reads its Collection
+  // Metadata object), so naming it costs no extra fetch. With no app stamp
+  // and no `createdBy`, the directory is not read at all.
+  const { creator, createdBy } = useCreatorAttribution({
     session,
-    generators: [generator]
+    generator: collection?.generator,
+    createdBy: collection?.createdBy,
+    observedRead: collection !== null && collection !== undefined
   })
-  const creator = recordedCreatorOf({ generator, creators })
 
   const resources = contentsError ? [] : (contents?.resources ?? [])
   const errorKey = contentsError
@@ -396,6 +397,9 @@ export function CollectionContentsPage() {
                 collection={collection}
                 creator={creator}
               />
+            )}
+            {createdBy && (
+              <ObservedCreatorAttribution attribution={createdBy} />
             )}
           </Stack>
           {collection && (

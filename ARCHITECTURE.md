@@ -496,9 +496,11 @@ session persistence's per-profile label). Every replication, and every
 Space lifecycle (create/exists/wipe), the storage-browser read-through
 (`/storage/**` pages work directly over remote collections), export/import,
 and quotas. `StorageManager` is the facade; pages and components always talk
-to it rather than to a backend class. A collection's and a resource's `/meta`
-document is read on demand by the storage-browser pages' Metadata card, which
-fetches only when the user expands it.
+to it rather than to a backend class. A collection's `/meta` document is
+read on demand by the storage-browser pages' Metadata card, which fetches
+only when the user expands it. The Resource page reads a Resource's beside
+the body, for its `createdBy` line, and hands that read to its card, so an
+expand costs no second GET.
 
 Deleting a credential retracts its world-readable public copy before
 removing the private credential (`StorageManager.deleteCredential`), since
@@ -542,6 +544,27 @@ It matches the stamp in memory, against one directory listing, to the
 since retirement keeps the names. Only an app the Applications page lists
 carries the entry resource id the caption links with. A creator no entry
 names is shown by its `generator.origin`.
+
+A collection and a Resource carry a second creator signal, `createdBy`. The
+server records it on the first write as the DID whose capability invocation
+created the object. It is server-observed, read-only, and optional, where
+`generator` is controller-asserted. Neither is verified identity. Under
+delegated provisioning the two differ by design: the wallet creates an app's
+collection, so `createdBy` names the wallet's invoking DID. The collection
+contents page shows the two as separate labeled lines, the stamp as "created
+for" and `createdBy` as what the server observed. The Resource page shows a
+Resource's `createdBy` the same way, since a Resource has no `generator` of
+its own. `resolveCreatedBy` (`src/lib/collectionAttribution.ts`) names it.
+A DID the wallet itself invokes as reads as "this wallet": the account DID,
+any wallet client or ladder VM the verified account log ever listed, and the
+client-annex DID, which is what a transient session's own writes record. An
+app, an agent, or a share recipient is named from its `connections` entry
+(`lookupCreatedByParty`, beside `lookupCollectionCreators` over the same
+listing read). A `createdBy` the wallet invokes as reads the directory only
+when an app stamp needs naming. Any other DID is shown shortened, and an absent one as "not
+recorded". The Storage page's listing shows `generator` alone. It carries
+`createdBy` off the Collection Metadata object it already reads, and fetches
+nothing more for it.
 
 Content migration brings another account's backup bundle into this one. The
 Storage page's "Import from another wallet" action

@@ -252,8 +252,13 @@ in `src/lib/connectedApps.ts`). It reads the directory once and matches each
 stamp in memory to the `kind: 'app'` entry whose `id` is that DID, so the
 host sees no read at the id a DID derives to. A disconnected creator still
 answers, since retirement keeps an entry's names. A failed directory read
-leaves every creator unresolved. The storage browser's "Created by" line
+leaves every creator unresolved. The storage browser's "Created for" line
 reads the same join, so a creator is named the same way on both. The
+reading decides on `generator` alone. The server-observed `createdBy` names
+the wallet's invoking DID on a collection the wallet provisioned for an
+app, so it says nothing about the requester here. The storage browser shows
+it as a separate line on the collection contents page and the Resource
+page, described under "Storage model" in ARCHITECTURE.md. The
 same-application test compares app URLs rather than origins, because the
 wallet tells apps apart by `appUrl` and two may share one origin. The
 creator's app URL is the collection's own `generator.url` when it carries

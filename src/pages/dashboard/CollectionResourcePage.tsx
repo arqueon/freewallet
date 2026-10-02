@@ -33,6 +33,8 @@ import { getResourceDisplayName } from '@/components/storage/displayUtils'
 import { PublicAccessIcon } from '@/components/storage/AccessIcon'
 import { SourceViewToggle } from '@/components/storage/SourceViewToggle'
 import { MetadataCard } from '@/components/storage/MetadataCard'
+import { ObservedCreatorAttribution } from '@/components/storage/ObservedCreatorAttribution'
+import { useCreatorAttribution } from '@/hooks/useCreatorAttribution'
 import { fetchMetaWithEncryptionProbe } from '@/components/storage/metadataRows'
 import {
   decryptResourceBody,
@@ -70,6 +72,7 @@ const RESOURCE_META_FIELDS = [
  * @param options.title {string}   the display title inside the card
  * @param options.isPublic {boolean}   whether to show the public-access marker
  * @param [options.description] {string}
+ * @param [options.attribution] {ReactNode}   the server-observed creator line
  * @param options.actions {ReactNode}   the card's action buttons
  * @param options.metadata {ReactNode}   the lazy metadata card
  * @param options.sourceToggle {ReactNode}   the decrypted/envelope switch
@@ -81,6 +84,7 @@ function ResourcePreview({
   title,
   isPublic,
   description,
+  attribution,
   actions,
   metadata,
   sourceToggle,
@@ -90,6 +94,7 @@ function ResourcePreview({
   title: string
   isPublic: boolean
   description?: string
+  attribution?: ReactNode
   actions: ReactNode
   metadata: ReactNode
   sourceToggle: ReactNode
@@ -129,6 +134,7 @@ function ResourcePreview({
                 {description}
               </Typography>
             ) : null}
+            {attribution}
           </Box>
 
           <Stack
@@ -196,6 +202,12 @@ export function CollectionResourcePage() {
       payload: FetchedCollectionResource | null
       envelopeText: string | null
       errorKey: string | null
+      /**
+       * The Resource Metadata object, read beside the body for its
+       * server-observed creator and handed to the Metadata card so an expand
+       * costs no second GET; `undefined` when the read failed or was refused.
+       */
+      meta?: Record<string, unknown> | null
     } | null> => {
       if (!storage?.hasRemoteStorage || !collectionId || !resourceId) {
         return null
@@ -238,7 +250,19 @@ export function CollectionResourcePage() {
         }
       }
 
-      const body = await storage.fetchCollectionResource(matchResource)
+      // The Metadata object carries the server-observed creator, the one
+      // per-item creator signal, since `generator` lives on the collection.
+      // A failed or refused read shows no creator line, rather than claiming
+      // the server recorded no creator, and leaves the card to its own read.
+      const [body, meta] = await Promise.all([
+        storage.fetchCollectionResource(matchResource),
+        storage
+          .fetchResourceMeta({ url: matchResource.url })
+          .catch((err: unknown) => {
+            log.warn('Could not read the resource metadata', { err })
+            return undefined
+          })
+      ])
       if (isCancelled()) {
         return null
       }
@@ -262,7 +286,8 @@ export function CollectionResourcePage() {
           payload: { kind: 'json', data },
           envelopeText:
             decrypted !== undefined ? JSON.stringify(body.data, null, 2) : null,
-          errorKey: null
+          errorKey: null,
+          meta
         }
       }
       if (body.kind === 'text') {
@@ -270,7 +295,8 @@ export function CollectionResourcePage() {
           resource: matchResource,
           payload: { kind: 'text', text: body.text },
           envelopeText: null,
-          errorKey: null
+          errorKey: null,
+          meta
         }
       }
       // A binary body has no inline JSON/text rendering here.
@@ -278,7 +304,8 @@ export function CollectionResourcePage() {
         resource: matchResource,
         payload: null,
         envelopeText: null,
-        errorKey: 'storage.resourceNotViewable'
+        errorKey: 'storage.resourceNotViewable',
+        meta
       }
     },
     [storage, collectionId, resourceId, resetCopied],
@@ -399,6 +426,17 @@ export function CollectionResourcePage() {
     : null
 
   const resourceUrl = resource?.url ?? null
+
+  const resourceMeta = loaded?.meta
+  const { createdBy } = useCreatorAttribution({
+    session,
+    createdBy:
+      typeof resourceMeta?.createdBy === 'string'
+        ? resourceMeta.createdBy
+        : undefined,
+    observedRead: resourceMeta !== undefined && resourceMeta !== null
+  })
+
   const fetchResourceMeta = useCallback(async () => {
     if (!storage || !resourceUrl || !collectionId) {
       return { meta: null, encrypted: false }
@@ -409,14 +447,20 @@ export function CollectionResourcePage() {
     // carries no `encryption` member of its own, so the fallback reads as
     // `false` on a probe failure.
     return fetchMetaWithEncryptionProbe({
-      fetchMeta: () => storage.fetchResourceMeta({ url: resourceUrl }),
+      fetchMeta: () =>
+        resourceMeta !== undefined
+          ? Promise.resolve(resourceMeta)
+          : storage.fetchResourceMeta({ url: resourceUrl }),
       probeEncrypted: () => storage.isCollectionEncrypted({ collectionId }),
       onProbeError: err =>
         log.warn('Could not probe the collection encryption descriptor', {
           err
         })
     })
-  }, [storage, resourceUrl, collectionId])
+  }, [storage, resourceUrl, collectionId, resourceMeta])
+  const attribution = createdBy ? (
+    <ObservedCreatorAttribution attribution={createdBy} />
+  ) : null
 
   const metadata = resourceUrl ? (
     <MetadataCard
@@ -466,6 +510,7 @@ export function CollectionResourcePage() {
               title={displayTitle}
               isPublic={!!resource.isPublic}
               description={description}
+              attribution={attribution}
               metadata={metadata}
               sourceToggle={sourceToggle}
               sourceText={shownSourceText}
@@ -511,6 +556,7 @@ export function CollectionResourcePage() {
             resourceId={resource.id}
             title={displayTitle}
             isPublic={!!resource.isPublic}
+            attribution={attribution}
             metadata={metadata}
             sourceToggle={sourceToggle}
             sourceText={shownSourceText}

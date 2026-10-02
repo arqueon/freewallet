@@ -28,8 +28,10 @@
  * from a transient session is signed by a client-annex per-visit key the
  * document never lists, so it derives as unknown rather than orphaned.
  * `lookupCollectionCreators` answers each app `generator.id` stamp with the
- * entry's name and canonical app URL, and `findKnownAgents` answers the
- * interaction-URL page's known-agent note.
+ * entry's name and canonical app URL, `lookupCreatedByParty` answers a
+ * server-observed `createdBy` DID with the name of the app or agent entry
+ * whose `id` it is, and `findKnownAgents` answers the interaction-URL page's
+ * known-agent note.
  *
  * `revokeAppAccess` retires an app: the collections its grants target or its
  * `generator` stamp names are rotated off its recipient key (so it cannot
@@ -350,6 +352,17 @@ export function deriveGrantsState({
 }
 
 /**
+ * A party's display name off its entry: the user's `label`, else the
+ * party's own `name`, else an app's origin.
+ *
+ * @param entry {ConnectionEntry}
+ * @returns {string | undefined}
+ */
+function partyName(entry: ConnectionEntry): string | undefined {
+  return entry.label ?? entry.name ?? entry.origin
+}
+
+/**
  * Lists the user's connected applications: every unretired `kind: 'app'`
  * entry that holds an app key or any grant. The display name reads the
  * user's `label`, then the app's `name`, then its origin. Rows sort by the
@@ -383,7 +396,7 @@ export function listConnectedApps({
     if (entry.appKey === undefined && grants.length === 0) {
       continue
     }
-    const name = entry.label ?? entry.name ?? entry.origin
+    const name = partyName(entry)
     apps.push({
       resourceId,
       ...(name !== undefined && { name }),
@@ -545,26 +558,32 @@ export function findKnownAgents({
 }
 
 /**
- * The application that created a collection, as the wallet's directory
- * names it: what every surface showing a collection's creator reads, by the
- * `generator.id` did:key stamped on the collection.
+ * The party behind a server-observed `createdBy` DID, as the wallet's
+ * directory names it.
  */
-export interface CollectionCreator {
+export interface CreatedByParty {
   /**
-   * The display name: the user's `label`, else the app's `name`, else its
-   * origin.
+   * The display name: the user's `label`, else the party's `name`, else an
+   * app's origin.
    */
   name: string
+  /**
+   * The party's entry resource id while the Applications page lists it, for
+   * a link to its detail page. A disconnected party has no row, so it
+   * carries none.
+   */
+  resourceId?: string
+}
+
+/**
+ * The app behind a collection's `generator` stamp, as the wallet's directory
+ * names it.
+ */
+export interface CollectionCreator extends CreatedByParty {
   /**
    * The canonical application URL, which tells apps sharing an origin apart.
    */
   appUrl: string
-  /**
-   * The app's entry resource id while the app is listed on the Applications
-   * page, for a link to its detail page. A disconnected creator has no row,
-   * so it carries none.
-   */
-  resourceId?: string
 }
 
 /**
@@ -614,7 +633,7 @@ export function lookupCollectionCreators({
     ) {
       continue
     }
-    const name = entry.label ?? entry.name ?? entry.origin
+    const name = partyName(entry)
     if (name === undefined || entry.url === undefined) {
       continue
     }
@@ -625,6 +644,62 @@ export function lookupCollectionCreators({
     })
   }
   return creators
+}
+
+/**
+ * What the directory says about the party behind one server-observed
+ * `createdBy` DID: the creator lookup's second half, beside
+ * `lookupCollectionCreators`, over the same listing read and the same
+ * in-memory match. An app entry and an agent entry each answer the DID that
+ * is their `id`, by the same name order as the creator lookup, so a share
+ * recipient (recorded on its app or agent entry) answers too. A
+ * wallet-client entry answers nothing here: the caller names the wallet's
+ * own DIDs first. A retired entry still names its party, and only a listed
+ * party carries the `resourceId` a link needs: listed by the same rule as
+ * the Applications page, run over the one matched entry, so an expired
+ * agent a collection's key epoch still lists links to the detail page that
+ * opens it. That rule reads the key epochs only when that agent's grants
+ * have all expired. A DID no entry names, or whose entry holds no name,
+ * answers `undefined`. Kept apart from `lookupCollectionCreators`, whose
+ * map answers app stamps alone, so an agent entry never names an app stamp.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param options.connections {ReadConnection[]}   the directory's entries,
+ *   from one listing read
+ * @param [options.spaceUrl] {string}   this Space's container URL
+ * @param options.did {string}   the `createdBy` DID
+ * @returns {Promise<CreatedByParty | undefined>}
+ */
+export async function lookupCreatedByParty({
+  storage,
+  connections,
+  spaceUrl,
+  did
+}: {
+  storage: StorageManager
+  connections: ReadConnection[]
+  spaceUrl?: string
+  did: string
+}): Promise<CreatedByParty | undefined> {
+  const match = connections.find(({ entry }) => {
+    const kind = connectionKindOf(entry)
+    return (kind === 'app' || kind === 'agent') && entry.id === did
+  })
+  const name = match && partyName(match.entry)
+  if (!match || name === undefined) {
+    return undefined
+  }
+  const only = [match]
+  const listed =
+    connectionKindOf(match.entry) === 'app'
+      ? listConnectedApps({ connections: only, spaceUrl }).length > 0
+      : (await listConnectedAgents({ storage, connections: only, spaceUrl }))
+          .length > 0
+  return {
+    name,
+    ...(listed && { resourceId: match.resourceId })
+  }
 }
 
 /**

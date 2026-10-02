@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   attributeCollectionsToApps,
-  collectionCreatorLabel
+  collectionCreatorLabel,
+  resolveCreatedBy
 } from './collectionAttribution'
 import type { CollectionCreator } from '@/lib/connectedApps'
 import type { StorageCollection } from '@/lib/storage'
@@ -161,5 +162,68 @@ describe('collectionCreatorLabel', () => {
         generator: collectionEntry({ id: 'docs' }).generator
       })
     ).toBeUndefined()
+  })
+})
+
+describe('resolveCreatedBy', () => {
+  const ACCOUNT_DID = 'did:webvh:QmScid:was.example:space:s:id'
+  const CLIENT_DID = 'did:key:z6MkEnrolledClientKey'
+  const ANNEX_DID = 'did:webvh:QmAnnex:was.example:space:a:id'
+  const APP_DID = 'did:key:z6MkConnectedAppKey'
+  const WALLET_DIDS = new Set([ACCOUNT_DID, CLIENT_DID, ANNEX_DID])
+
+  it('reads an absent createdBy as not recorded', () => {
+    expect(resolveCreatedBy({ walletDids: WALLET_DIDS })).toEqual({
+      kind: 'not-recorded'
+    })
+  })
+
+  it.each([
+    ['the account did:webvh', ACCOUNT_DID],
+    ["an enrolled client's did:key", CLIENT_DID],
+    ['the client-annex DID', ANNEX_DID]
+  ])('names %s as the wallet itself', (_label, createdBy) => {
+    expect(resolveCreatedBy({ createdBy, walletDids: WALLET_DIDS })).toEqual({
+      kind: 'wallet'
+    })
+  })
+
+  it('names the wallet ahead of a party entry carrying the same DID', () => {
+    expect(
+      resolveCreatedBy({
+        createdBy: CLIENT_DID,
+        walletDids: WALLET_DIDS,
+        party: { name: 'Planted' }
+      })
+    ).toEqual({ kind: 'wallet' })
+  })
+
+  it('names a listed party by its entry, with the resource id a link needs', () => {
+    expect(
+      resolveCreatedBy({
+        createdBy: APP_DID,
+        walletDids: WALLET_DIDS,
+        party: { name: 'Editor', resourceId: 'entry-1' }
+      })
+    ).toEqual({ kind: 'party', name: 'Editor', resourceId: 'entry-1' })
+  })
+
+  it('names an unlisted party by its entry, with no link', () => {
+    expect(
+      resolveCreatedBy({
+        createdBy: AGENT_DID,
+        walletDids: WALLET_DIDS,
+        party: { name: 'Backup Agent' }
+      })
+    ).toEqual({ kind: 'party', name: 'Backup Agent' })
+  })
+
+  it('shows a DID nothing names shortened', () => {
+    expect(
+      resolveCreatedBy({
+        createdBy: 'did:key:z6MkUnknownCreatorKeyMaterial',
+        walletDids: WALLET_DIDS
+      })
+    ).toEqual({ kind: 'unknown', name: 'did:key:z6MkUnkn...terial' })
   })
 })

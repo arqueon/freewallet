@@ -12,8 +12,18 @@
  * no App Connect Grant, so its stamp is never looked up. It is named by
  * `generator.name`, else by a shortened `generator.id`. A collection carrying
  * no `generator` is unattributed.
+ *
+ * A collection and a Resource also carry a second creator signal, the
+ * server-observed `createdBy`: the DID whose capability invocation created
+ * it, recorded by the server on the first write, read-only, and optional.
+ * The two differ by design under delegated provisioning, where the wallet
+ * creates an app's collection, so the surfaces show them as two labeled
+ * lines rather than one. `resolveCreatedBy` names the `createdBy` DID: the
+ * wallet itself for any DID the wallet invokes as, a party's name off its
+ * `connections` entry, else the shortened DID. Neither signal is verified
+ * identity.
  */
-import type { CollectionCreator } from '@/lib/connectedApps'
+import type { CollectionCreator, CreatedByParty } from '@/lib/connectedApps'
 import type { StorageCollection } from '@/lib/storage'
 import type { CollectionGenerator } from '@interop/was-client'
 
@@ -146,4 +156,55 @@ export function collectionCreatorLabel({
     return generator.name ?? shortDid(generator.id)
   }
   return generator?.name ?? recordName ?? generator?.origin
+}
+
+/**
+ * What a surface shows for a `createdBy` DID: `not-recorded` when the server
+ * recorded none, `wallet` when the DID is one the wallet invokes as, `party`
+ * when a `connections` entry names it (linked while `resourceId` is set),
+ * and `unknown` with the shortened DID as its name otherwise.
+ */
+export type CreatedByAttribution =
+  | { kind: 'not-recorded' }
+  | { kind: 'wallet' }
+  | { kind: 'party'; name: string; resourceId?: string }
+  | { kind: 'unknown'; name: string }
+
+/**
+ * Names the server-observed creator of a collection or a Resource. The
+ * wallet arm comes first: the account's did:webvh, every wallet client's
+ * did:key the account document lists or ever listed, and the client-annex
+ * DID a transient session invokes as all read as the wallet itself, so the
+ * common case does not show as a foreign creator. A party the directory
+ * names (an app, an agent, a share recipient) is shown by its entry's name.
+ * Any other DID is shown shortened.
+ *
+ * @param options {object}
+ * @param [options.createdBy] {string}   the object's `createdBy`, absent
+ *   when the server recorded none
+ * @param options.walletDids {ReadonlySet<string>}   the DIDs the wallet
+ *   invokes as (`walletOwnDids`)
+ * @param [options.party] {CreatedByParty}   `lookupCreatedByParty`'s answer
+ *   for `createdBy`, when the directory names it
+ * @returns {CreatedByAttribution}
+ */
+export function resolveCreatedBy({
+  createdBy,
+  walletDids,
+  party
+}: {
+  createdBy?: string
+  walletDids: ReadonlySet<string>
+  party?: CreatedByParty
+}): CreatedByAttribution {
+  if (createdBy === undefined || createdBy === '') {
+    return { kind: 'not-recorded' }
+  }
+  if (walletDids.has(createdBy)) {
+    return { kind: 'wallet' }
+  }
+  if (party) {
+    return { kind: 'party', ...party }
+  }
+  return { kind: 'unknown', name: shortDid(createdBy) }
 }

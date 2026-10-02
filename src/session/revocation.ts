@@ -39,6 +39,7 @@
 import { deriveNextKeyHash } from '@interop/did-method-webvh'
 import {
   clientSigningKeyMultibase,
+  walletClientDid,
   type PublishedKeyDocument,
   type RevokedClientKeys
 } from '@interop/wallet-core/webvh'
@@ -164,25 +165,6 @@ async function unlockRegistry({
     )
     return null
   }
-}
-
-/**
- * A wallet client's did:key, from the signing-key multibase the account
- * document lists for it. For an Ed25519 did:key the method-specific id is
- * exactly that multibase, so this is the inverse of wallet-core's
- * `signingKeyMultibaseOfDid`: the id a wallet client's `connections` entry
- * is keyed by.
- *
- * @param options {object}
- * @param options.signingKeyMultibase {string}
- * @returns {string}
- */
-export function walletClientDid({
-  signingKeyMultibase
-}: {
-  signingKeyMultibase: string
-}): string {
-  return `did:key:${signingKeyMultibase}`
 }
 
 /**

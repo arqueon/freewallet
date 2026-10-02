@@ -10,9 +10,22 @@
 - The revoke-access confirmation for an app names the wallet collections the
   app holds a share of, which the disconnect takes its key off. Each listed
   grant now carries the `collectionId` its target addresses.
+- The collection contents page and the Resource page show the
+  server-observed creator (`createdBy`) as its own "Created by" line. The
+  account DID, any wallet client's did:key, a ladder VM, and the
+  client-annex DID read as this wallet. A connected app, an agent, or a
+  share recipient is named from its `connections` entry, and any other DID
+  is shown shortened.
 
 ### Changed
 
+- A collection's `generator` stamp reads "Created for" on every surface,
+  the Storage page's listing included, since it is the wallet's record of
+  whom it created the collection for and not an observation of who wrote it.
+- The wallet's own-DID readers come from `@interop/wallet-core`:
+  `accountLogDids` and `walletClientDid` on `/webvh`, and
+  `delegatedClientsPointerHistory` on `/clientAnnex`, in place of the
+  app-side log walks.
 - The update-key ladder names (`ladderRung`, `ladderVmKeyMultibase`,
   `attributeLadderRung`) are imported from `@interop/wallet-core/webvh`, and
   `generateLadderSeed` from `@interop/wallet-core/unlock`, following their

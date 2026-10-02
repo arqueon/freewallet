@@ -1,5 +1,5 @@
 /**
- * The "Created by" caption for a collection stamped by an interaction-URL
+ * The "Created for" caption for a collection stamped by an interaction-URL
  * agent: a `generator` with no `origin`. It names the agent by its stamped
  * name, else by its shortened DID, as plain text.
  */
@@ -56,7 +56,7 @@ describe("CollectionAttribution on an agent's stamp", () => {
       url: '/space/s/agent-notes/',
       generator: { id: AGENT_DID, name: 'Backup Agent' }
     })
-    expect(view.container.textContent).toBe('Created by Backup Agent')
+    expect(view.container.textContent).toBe('Created for Backup Agent')
     expect(view.container.querySelector('a')).toBeNull()
     await view.unmount()
   })

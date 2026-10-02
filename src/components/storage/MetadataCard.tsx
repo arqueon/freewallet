@@ -2,8 +2,9 @@
  * The storage browser's metadata card: a collapsed accordion that reads a
  * Resource's or a Collection's `/meta` document the first time it is expanded
  * and renders the server-managed members as labeled rows, with a toggle for
- * the raw metadata document beneath them. The page's own load path never pays
- * for this read -- nothing is fetched until the user opens the card.
+ * the raw metadata document beneath them. Nothing is fetched until the user
+ * opens the card, and a page that read the document for its own line hands
+ * that read in through `fetchMeta` rather than paying for it twice.
  *
  * A server without metadata support (`NotImplementedError`) and a `null`
  * read are the same empty state here, not an error. was-client resolves
