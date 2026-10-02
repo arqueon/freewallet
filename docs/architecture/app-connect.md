@@ -409,8 +409,11 @@ applies, so a share reader of `private-credentials` is kept. Any other
 roster entry receives no wrap. Every reader of the directory drops a grant
 whose `zcap.controller` is not the entry's `id`, and one whose target lies
 outside this Space, so a planted entry cannot steer the set at another
-party's capabilities. A body sitting at another id than its own derives to
-is ignored. The resolver fails closed, so nothing rotates, when the
+party's capabilities. Nothing authenticates an entry's body, so a host can
+roll an entry back, or plant a party's genuine capabilities at its own id.
+What that steers is listed in
+`decisions/0038-no-authorship-guard-on-connections-entries.md`. A body
+sitting at another id than its own derives to is ignored. The resolver fails closed, so nothing rotates, when the
 directory is absent or refused, when its listing fails, or when it holds an
 entry it cannot decrypt, a body it cannot parse at its own id, or an entry
 from a newer build. Reading such a directory as empty would evict every

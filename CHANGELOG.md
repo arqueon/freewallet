@@ -30,6 +30,11 @@
   `attributeLadderRung`) are imported from `@interop/wallet-core/webvh`, and
   `generateLadderSeed` from `@interop/wallet-core/unlock`, following their
   move out of the client annex. No behavior change.
+- Decided against an authorship guard (a signature or an ETag pin) on
+  `connections` entries, recorded in
+  `decisions/0038-no-authorship-guard-on-connections-entries.md`. A host
+  can still roll an entry back or rename it, but cannot steer a grant or a
+  rotation at another party.
 
 ### Fixed
 

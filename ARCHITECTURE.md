@@ -467,6 +467,14 @@ rule over the encrypted collections reads one roster-wide set,
 `ENCRYPTED_WALLET_COLLECTION_IDS`, which holds the directory beside the
 synced ones: descriptor acquisition, the stranded report, the user key
 cascade's base set, the credential-anchored mend, and the shares listing.
+Nothing authenticates an entry's body, so the host can write or roll back an
+entry at any id it has observed. Three reader rules bound what that steers:
+a grant must name the entry's own `id` and this Space, an app key is deleted
+only when its seed derives that `id`, and the rotation resolver fails closed
+on a directory it cannot read. What remains is a departed party
+reappearing as a listing row with its already-revoked grants, and a
+host-chosen name or writer liveness on a row
+(`decisions/0038-no-authorship-guard-on-connections-entries.md`).
 
 An entry is retired when its relationship ends: an app disconnect, an agent
 revoke, a wallet-client disconnect, or a forget. Retirement empties its
