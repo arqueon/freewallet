@@ -38,6 +38,11 @@
 
 ### Fixed
 
+- `loadContact` and `updateContact` (and the `deleteContact` pre-read) that
+  meet a head sealed under a key epoch this session has not seen run the
+  same one-time descriptor refresh `listContacts` does, then re-run, on both
+  the remote-direct and the local backend. They no longer fail or resolve
+  `undefined` after another client's rotation.
 - A consent rolled back after a failure re-retires the party's `connections`
   entry when it was absent or retired before and no grant escrowed, so a
   disconnected app whose reconnect failed is not listed as connected. Under

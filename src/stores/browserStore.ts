@@ -1638,10 +1638,13 @@ export class BrowserStore {
    * decrypt (the resource id IS the RxDB primary key), never the
    * full-collection scan {@link listContacts} pays. Mirrors the scan's
    * per-replica tolerance: a resource replica whose envelope will not decrypt
-   * under the current KAK (or names an unknown key epoch, or fails its
-   * integrity check) resolves to `undefined`, exactly as the scan would have
-   * skipped it. The head passes through the same idempotent
-   * `upgradeContactHeadPayload` read-side upgrade as {@link #contactEntries}.
+   * under the current KAK (or fails its integrity check) resolves to
+   * `undefined`, exactly as the scan would have skipped it. One whose envelope
+   * names an unknown key epoch throws the cipher's `UnknownEpochError`
+   * instead: possibly-fresh data behind a stale descriptor, which the
+   * facade's descriptor refresh may pick up. The head passes through the same
+   * idempotent `upgradeContactHeadPayload` read-side upgrade as
+   * {@link #contactEntries}.
    *
    * @param options {object}
    * @param options.id {string}
@@ -1663,7 +1666,11 @@ export class BrowserStore {
       try {
         raw = (await cipher.decrypt({ id, envelope: data! })) as Json
       } catch (err) {
-        if (classifyDecryptFailure(err) === 'integrity') {
+        const failure = classifyDecryptFailure(err)
+        if (failure === 'unknown-epoch') {
+          throw err
+        }
+        if (failure === 'integrity') {
           log.warn(
             'Refusing a contacts resource replica whose body failed its integrity check',
             { readUnderId: id, err }
@@ -1762,7 +1769,10 @@ export class BrowserStore {
    * revision (on every replica) refers to, and it differs from the resource id
    * for mobile-authored contacts. Throws when the existing head is unreachable
    * (missing resource replica, undecryptable envelope): rewriting it blind
-   * would sever the contact from its history.
+   * would sever the contact from its history. The decrypt's own error is
+   * thrown as is, before any write, so a head sealed under an unknown key
+   * epoch surfaces as `UnknownEpochError` and the facade can refresh the
+   * descriptor and re-run the whole update.
    *
    * @param options {object}
    * @param options.id {string}

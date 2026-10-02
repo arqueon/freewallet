@@ -5,7 +5,8 @@
  * recipient rotation (`revokeCollectionRecipients`) a party revocation runs,
  * the admitted-recipient resolver every rotation wraps the fresh epoch
  * through, the server-side app-key delete (`deleteAppKeyResource`), plus the
- * transparent unknown-epoch descriptor refresh on `listCredentials`.
+ * transparent unknown-epoch descriptor refresh on `listCredentials` and on
+ * the contacts point reads (`loadContact`, `updateContact`).
  *
  * Every encrypted collection's descriptor is log-governed, so the descriptor
  * state lives in the in-memory descriptor stores (`memoryDescriptorStores`,
@@ -72,6 +73,7 @@ import {
   type GrantKind
 } from '@interop/wallet-core/connections'
 import { mintAppKeyCredential } from '@interop/wallet-request'
+import type { ContactData, ContactHeadPayload } from '@interop/social-core'
 import {
   descriptorLogsFrom,
   memoryDescriptorStores,
@@ -116,6 +118,7 @@ import { mintUserKey, userKeyVaultKeys } from '@interop/wallet-core/keys'
 import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
 import type { WASRemoteStore } from './wasRemoteStore'
 import type { StorageCollection } from '@/lib/storage'
+import type { StoredContact } from '@/types/contact'
 
 /**
  * A minimal well-formed VC body; the storage layer treats it as opaque JSON.
@@ -4428,6 +4431,156 @@ describe('StorageManager unknown-epoch refresh', () => {
     expect(
       afterEnvelopes.filter(stored => indexedOf(stored).length > 0)
     ).toHaveLength(1)
+  })
+})
+
+/**
+ * A local-replica session holding one contact, with plain (not
+ * self-refreshing) contacts ciphers built on a two-reader epoch, beside a
+ * stand-in for another client that rotates the `contacts` epoch and whose
+ * rewrite of the head lands in the local replica, as replication would land
+ * it. The session's cipher stays on the stale descriptor, so the next point
+ * read meets an unknown epoch.
+ *
+ * @returns {Promise<object>}
+ */
+async function localContactsRotation(): Promise<{
+  storage: StorageManager
+  localStore: BrowserStore
+  stored: StoredContact
+  rotateAndRewrite(contact: ContactData): Promise<string>
+}> {
+  const owner = await generateKey()
+  const extra = await generateKey()
+  const stores = memoryDescriptorStores()
+  const { remoteStore } = makeFakeRemote({ stores })
+  const contactsStore = stores.storeFor('contacts')
+  const descriptor1 = await initRecipients({
+    store: contactsStore,
+    recipients: [
+      ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+      ownerRecipient({ keyAgreementKey: extra.keyAgreementKey })
+    ]
+  })
+  const { descriptor: historyDescriptor } = await ensureFirstEpoch({
+    store: stores.storeFor('contacts-history'),
+    recipients: [ownerRecipient({ keyAgreementKey: owner.keyAgreementKey })]
+  })
+  const contactsCipher = (encryption: CollectionEncryption) =>
+    createEdvDocCipher({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver,
+      collectionId: 'contacts',
+      idDerivation: 'random',
+      encryption
+    })
+  const ciphers = {
+    ...(await buildCiphers(owner, {})),
+    contacts: await contactsCipher(descriptor1),
+    contactsHistory: await createEdvDocCipher({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver,
+      collectionId: 'contacts-history',
+      encryption: historyDescriptor
+    })
+  }
+  const { localStore } = await initLocalStore(ciphers)
+  const storage = new StorageManager({
+    persistence: browserLocalSessionPersistence(),
+    localStore,
+    remoteStore,
+    descriptorLogs: descriptorLogsFrom(stores),
+    ciphers,
+    vaultKeys: owner,
+    descriptors: {
+      contacts: descriptor1,
+      'contacts-history': historyDescriptor
+    }
+  })
+  const stored = await storage.addContact({
+    contact: { displayName: 'Ada' } as ContactData
+  })
+
+  const rotateAndRewrite = async (contact: ContactData): Promise<string> => {
+    const descriptor2 = await removeRecipient({
+      store: contactsStore,
+      space: remoteStore.spaceHandle(),
+      recipientId: extra.keyAgreementKey.id!,
+      revoke: [],
+      resolveRecipientKey: vouchFor(owner)
+    })
+    const doc = await localStore
+      .rxCollection('contacts')
+      .findOne(stored.id)
+      .exec()
+    const head: ContactHeadPayload = {
+      contactId: stored.contactId,
+      updatedAt: new Date().toISOString(),
+      writerId: 'other-client-writer',
+      contact
+    }
+    const epoch2Cipher = await contactsCipher(descriptor2)
+    const { envelope, epoch } = await epoch2Cipher.encryptUpdate!({
+      id: stored.id,
+      data: head as unknown as Json,
+      current: doc!.toMutableJSON().data as Json
+    })
+    await doc!.incrementalPatch({
+      updatedAt: new Date().toISOString(),
+      epoch,
+      data: envelope
+    })
+    return descriptor2.currentEpoch!
+  }
+  return { storage, localStore, stored, rotateAndRewrite }
+}
+
+describe('StorageManager unknown-epoch refresh (contacts point reads)', () => {
+  it('re-runs an edit once under the fresh epoch when a rotation lands between the read and the edit', async () => {
+    const { storage, localStore, stored, rotateAndRewrite } =
+      await localContactsRotation()
+    // The read the edit is built on.
+    expect((await storage.loadContact({ id: stored.id }))?.contact).toEqual({
+      displayName: 'Ada'
+    })
+
+    const freshEpoch = await rotateAndRewrite({
+      displayName: 'Ada L.'
+    } as ContactData)
+    const updated = await storage.updateContact({
+      id: stored.id,
+      contact: { displayName: 'Ada Lovelace' } as ContactData
+    })
+    expect(updated.contactId).toBe(stored.contactId)
+
+    // The edit landed under the fresh epoch, and recorded one revision.
+    const doc = await localStore
+      .rxCollection('contacts')
+      .findOne(stored.id)
+      .exec()
+    expect(doc!.toMutableJSON().epoch).toBe(freshEpoch)
+    expect((await storage.loadContact({ id: stored.id }))?.contact).toEqual({
+      displayName: 'Ada Lovelace'
+    })
+    const revisions = await storage.listContactRevisions({
+      contactId: stored.contactId
+    })
+    expect(revisions.map(({ action }) => action).sort()).toEqual([
+      'create',
+      'update'
+    ])
+  })
+
+  it('loads a head sealed under a rotated epoch instead of resolving undefined', async () => {
+    const { storage, stored, rotateAndRewrite } = await localContactsRotation()
+    await rotateAndRewrite({ displayName: 'Ada L.' } as ContactData)
+    expect(await storage.loadContact({ id: stored.id })).toEqual(
+      expect.objectContaining({
+        id: stored.id,
+        contactId: stored.contactId,
+        contact: { displayName: 'Ada L.' }
+      })
+    )
   })
 })
 

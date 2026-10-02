@@ -21,6 +21,9 @@
  *   gets refusing ciphers there, reported as stranded, and a refresh past the
  *   fan-out clears them. A named reader whose entry does not unwrap still
  *   fails the build.
+ * - A contacts point read or edit that meets a head another client sealed
+ *   under a rotated key epoch drives the facade's one-time descriptor refresh
+ *   and re-runs, writing the edit once under the fresh epoch.
  *
  * The WAS layer is faked at two seams matching the two subjects: a recording
  * fake `WasClient` under a real `WASRemoteStore` (so the store's own
@@ -44,24 +47,31 @@ import type { ZcapClient } from '@interop/ezcap'
 import type {
   CollectionEncryption,
   IZcap,
+  Space,
   WasClient
 } from '@interop/was-client'
 import {
+  addRecipient,
+  createEdvDocCipher,
   ensureFirstEpoch,
   ownerRecipient,
+  removeRecipient,
   replaceRecipient
 } from '@interop/was-client/edv'
 import { cidFrom } from '@interop/was-client/sync'
 import type { Json } from '@interop/was-sync'
+import type { ContactData, ContactHeadPayload } from '@interop/social-core'
 import {
   descriptorLogsFrom,
-  memoryDescriptorStores
+  memoryDescriptorStores,
+  type MemoryDescriptorStores
 } from '../../tests/unit/fakeDescriptorStores'
 import {
   inMemorySessionPersistence,
   transientSessionStores
 } from '@/session/persistence'
 import type { ControllerProfile, Session, User } from '@/types/auth'
+import type { StoredContact } from '@/types/contact'
 import { mintUserKey, userKeyVaultKeys } from '@interop/wallet-core/keys'
 import { adoptFollowerUserKey } from '@/session/userKeyAdoption'
 import { BrowserStore } from './browserStore'
@@ -284,6 +294,11 @@ function makeFakeRemote(): {
   }): Promise<void>
   seed(collectionId: string, descriptor: CollectionEncryption): void
   epochStamps: Map<string, string[]>
+  /**
+   * The governing logs' in-memory stores, for a test that rotates one
+   * collection's epoch the way another client would.
+   */
+  stores: MemoryDescriptorStores
 } {
   const spaceId = 's-space'
   const descriptors: Record<string, CollectionEncryption> = {}
@@ -483,7 +498,8 @@ function makeFakeRemote(): {
       descriptors[collectionId] = descriptor
       descriptorStores.seed(collectionId, descriptor)
     },
-    epochStamps
+    epochStamps,
+    stores: descriptorStores
   }
 }
 
@@ -1018,5 +1034,229 @@ describe('replica-less remote-direct StorageManager', () => {
           })
         })
     ).toThrow(/remote WAS store/)
+  })
+})
+
+/**
+ * A Space handle for a rotation that revokes nothing.
+ */
+const NO_REVOKE_SPACE = {
+  async revoke() {}
+} as unknown as Space
+
+/**
+ * A transient session over the fake remote holding one contact, beside a
+ * stand-in for another client that rotates the `contacts` key epoch and
+ * rewrites that contact's head under the fresh epoch. A rekey emits no
+ * change-feed entry, so the session's cipher stays on its stale descriptor.
+ *
+ * The `contacts` epoch starts with two readers beside the owner, so each of
+ * two rotations removes one. The contacts cipher absorbs the first rotation
+ * itself, through its own once-per-instance refresh. The second meets a
+ * cipher whose refresh is spent, which is the case the facade's refresh
+ * covers.
+ *
+ * @returns {Promise<object>}
+ */
+async function contactsRotationSession(): Promise<{
+  storage: StorageManager
+  stored: StoredContact
+  firstEpoch: string
+  epochStamps: Map<string, string[]>
+  rotateAndRewrite(contact: ContactData): Promise<string>
+  restore(): void
+}> {
+  const owner = await generateKey()
+  const readers = [await generateKey(), await generateKey()]
+  const {
+    remoteStore,
+    descriptors,
+    descriptorLogs,
+    provision,
+    epochStamps,
+    stores
+  } = makeFakeRemote()
+  await provision(owner)
+  for (const reader of readers) {
+    // Adding a reader escrows it into the current epoch without rotating.
+    descriptors.contacts = await addRecipient({
+      store: stores.storeFor('contacts'),
+      recipient: ownerRecipient({ keyAgreementKey: reader.keyAgreementKey }),
+      owner
+    })
+  }
+  const firstEpoch = descriptors.contacts.currentEpoch!
+
+  const persistence = inMemorySessionPersistence({
+    stores: transientSessionStores(),
+    clientAnnex: {
+      clientAnnexDid: 'did:webvh:example:annex',
+      invocationCapability: {} as IZcap
+    }
+  })
+  const user: User = { id: 'did:key:z6MkTestClient' }
+  const profile = {
+    zcapClient: {} as ZcapClient,
+    keyAgreementKey: owner.keyAgreementKey,
+    keyResolver: owner.keyResolver
+  } as ControllerProfile
+  const initClientSpy = vi
+    .spyOn(WASRemoteStore, 'initClient')
+    .mockResolvedValue({ remoteStore })
+  const { storage } = await StorageManager.initStorageClients({
+    user,
+    session: { profile, persistence },
+    descriptorLogs
+  })
+  await storage.ready()
+  const stored = await storage.addContact({
+    contact: { displayName: 'Alice' }
+  })
+
+  const vouched = [owner, ...readers].map(({ keyAgreementKey }) =>
+    ownerRecipient({ keyAgreementKey })
+  )
+  const rotateAndRewrite = async (contact: ContactData): Promise<string> => {
+    const reader = readers.shift()!
+    const descriptor = await removeRecipient({
+      store: stores.storeFor('contacts'),
+      space: NO_REVOKE_SPACE,
+      recipientId: reader.keyAgreementKey.id!,
+      revoke: [],
+      resolveRecipientKey: async kid =>
+        vouched.find(recipient => recipient.id === kid) ?? null
+    })
+    descriptors.contacts = descriptor
+    // The other client rewrites the head in place under the fresh epoch.
+    const cipher = await createEdvDocCipher({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver,
+      collectionId: 'contacts',
+      idDerivation: 'random',
+      encryption: descriptor
+    })
+    const found = await remoteStore.getSyncedResourceWithEtag({
+      logicalKey: 'contacts',
+      resourceId: stored.id
+    })
+    const head: ContactHeadPayload = {
+      contactId: stored.contactId,
+      updatedAt: new Date().toISOString(),
+      writerId: 'other-client-writer',
+      contact
+    }
+    const { envelope, epoch } = await cipher.encryptUpdate!({
+      id: stored.id,
+      data: head as unknown as Json,
+      current: found!.data
+    })
+    await remoteStore.putSyncedResource({
+      logicalKey: 'contacts',
+      resourceId: stored.id,
+      body: envelope,
+      epoch,
+      ifMatch: found!.etag
+    })
+    return descriptor.currentEpoch!
+  }
+
+  return {
+    storage,
+    stored,
+    firstEpoch,
+    epochStamps,
+    rotateAndRewrite,
+    restore: () => initClientSpy.mockRestore()
+  }
+}
+
+describe('replica-less contacts point reads after a rotation', () => {
+  it('re-runs an edit once under the fresh epoch when a rotation lands between the read and the edit', async () => {
+    const session = await contactsRotationSession()
+    const { storage, stored, firstEpoch, epochStamps, rotateAndRewrite } =
+      session
+    try {
+      const secondEpoch = await rotateAndRewrite({ displayName: 'Ally' })
+      // The read the edit is built on.
+      const loaded = await storage.loadContact({ id: stored.id })
+      expect(loaded?.contact).toEqual({ displayName: 'Ally' })
+
+      // Another client rotates again and rewrites the head before the edit.
+      const thirdEpoch = await rotateAndRewrite({ displayName: 'Allie' })
+      const updated = await storage.updateContact({
+        id: stored.id,
+        contact: { displayName: 'Alicia' }
+      })
+      expect(updated.id).toBe(stored.id)
+      expect(updated.contactId).toBe(stored.contactId)
+
+      // One write of the edit, sealed under the fresh epoch: the add, the
+      // other client's two rewrites, then the edit.
+      expect(epochStamps.get('contacts')).toEqual([
+        firstEpoch,
+        secondEpoch,
+        thirdEpoch,
+        thirdEpoch
+      ])
+      const head = await storage.loadContact({ id: stored.id })
+      expect(head?.contact).toEqual({ displayName: 'Alicia' })
+      // And one revision for it.
+      const revisions = await storage.listContactRevisions({
+        contactId: stored.contactId
+      })
+      expect(revisions.map(({ action }) => action)).toEqual([
+        'update',
+        'create'
+      ])
+    } finally {
+      session.restore()
+    }
+  })
+
+  it('loads a head sealed under a rotated epoch instead of resolving undefined', async () => {
+    const session = await contactsRotationSession()
+    const { storage, stored, rotateAndRewrite } = session
+    try {
+      await rotateAndRewrite({ displayName: 'Ally' })
+      expect(await storage.listContacts()).toEqual([
+        expect.objectContaining({ contact: { displayName: 'Ally' } })
+      ])
+
+      await rotateAndRewrite({ displayName: 'Allie' })
+      const loaded = await storage.loadContact({ id: stored.id })
+      expect(loaded).toEqual(
+        expect.objectContaining({
+          id: stored.id,
+          contactId: stored.contactId,
+          contact: { displayName: 'Allie' }
+        })
+      )
+    } finally {
+      session.restore()
+    }
+  })
+
+  it("records a delete revision carrying the rotated head's snapshot", async () => {
+    const session = await contactsRotationSession()
+    const { storage, stored, rotateAndRewrite } = session
+    try {
+      await rotateAndRewrite({ displayName: 'Ally' })
+      await storage.loadContact({ id: stored.id })
+
+      await rotateAndRewrite({ displayName: 'Allie' })
+      await storage.deleteContact({ id: stored.id })
+      expect(await storage.listContacts()).toEqual([])
+      const revisions = await storage.listContactRevisions({
+        contactId: stored.contactId
+      })
+      expect(
+        revisions.map(({ action, snapshot }) => [action, snapshot])
+      ).toEqual([
+        ['delete', { displayName: 'Allie' }],
+        ['create', { displayName: 'Alice' }]
+      ])
+    } finally {
+      session.restore()
+    }
   })
 })

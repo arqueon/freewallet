@@ -78,7 +78,10 @@ const CONTACT_CAS_ATTEMPTS = 3
  * The unknown-epoch counters and `setCiphers` are the descriptor-refresh
  * contract: after a read reports unknown-epoch Resources the facade rebuilds
  * the ciphers under a freshly fetched descriptor, swaps them in via
- * `setCiphers`, and re-reads.
+ * `setCiphers`, and re-reads. The contacts point reads (`loadContact`, and
+ * the read inside `updateContact`) report it by throwing the cipher's
+ * `UnknownEpochError` itself, before anything is written, so the facade can
+ * run the same refresh and re-run the whole operation.
  */
 export interface SyncedCollectionStore {
   addCredential(options: {
@@ -1031,7 +1034,10 @@ export class RemoteDirectStore implements SyncedCollectionStore {
    * Loads one contact by resource id -- a single remote GET plus at most one
    * decrypt. Mirrors the scan's per-Resource tolerance: a missing Resource, or
    * one whose envelope will not decrypt under the current keys, resolves to
-   * `undefined` exactly as the scan would have skipped it.
+   * `undefined` exactly as the scan would have skipped it. The one exception
+   * is an unknown-epoch envelope, which throws the cipher's
+   * `UnknownEpochError`: possibly-fresh data behind a stale descriptor, which
+   * the facade's descriptor refresh may pick up.
    *
    * @param options {object}
    * @param options.id {string}
@@ -1046,7 +1052,10 @@ export class RemoteDirectStore implements SyncedCollectionStore {
       logicalKey: 'contacts',
       resourceId: id
     })
-    const { head, err } = await this.#decryptContactHead({ id, data })
+    const { head, failure, err } = await this.#decryptContactHead({ id, data })
+    if (failure === 'unknown-epoch') {
+      throw err
+    }
     if (err) {
       log.warn('Skipping unreadable remote contacts resource', { id, err })
       return undefined
@@ -1164,7 +1173,9 @@ export class RemoteDirectStore implements SyncedCollectionStore {
    * `contactId` sealed in the existing head is preserved verbatim. Throws when
    * the existing head is unreachable (missing Resource, undecryptable envelope,
    * no served ETag): rewriting it blind would sever the contact from its
-   * history.
+   * history. A head sealed under an unknown key epoch throws the cipher's
+   * `UnknownEpochError` unwrapped, before any write, so the facade can refresh
+   * the descriptor and re-run the whole update.
    *
    * @param options {object}
    * @param options.id {string}
@@ -1201,10 +1212,17 @@ export class RemoteDirectStore implements SyncedCollectionStore {
             'compare-and-swap against.'
         )
       }
-      const { head: existingHead, err } = await this.#decryptContactHead({
+      const {
+        head: existingHead,
+        failure,
+        err
+      } = await this.#decryptContactHead({
         id,
         data
       })
+      if (failure === 'unknown-epoch') {
+        throw err
+      }
       if (err || !existingHead) {
         throw new Error(
           `Cannot update contact "${id}": its stored head is unreadable.`,

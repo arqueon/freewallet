@@ -6146,6 +6146,11 @@ export class StorageManager {
   }
 
   /**
+   * Loads one contact by resource id. A head sealed under an unknown key
+   * epoch drives the same one-time descriptor refresh `listContacts` does,
+   * and the load is re-run. A head the refresh could not open resolves to
+   * `undefined`, as the scan would have skipped it.
+   *
    * @param options {object}
    * @param options.id {string}
    * @returns {Promise<StoredContact | undefined>}
@@ -6155,7 +6160,57 @@ export class StorageManager {
   }: {
     id: string
   }): Promise<StoredContact | undefined> {
-    return await this.#store.loadContact({ id })
+    try {
+      return await this.#contactWithEpochRefresh({
+        operation: () => this.#store.loadContact({ id })
+      })
+    } catch (err) {
+      if (classifyDecryptFailure(err) !== 'unknown-epoch') {
+        throw err
+      }
+      log.warn('Skipping unknown-epoch contacts resource', { id, err })
+      return undefined
+    }
+  }
+
+  /**
+   * Runs one contacts point operation (a load, or an update's
+   * read-modify-write) under the shared unknown-epoch refresh. Both backends
+   * throw the cipher's `UnknownEpochError` from such an operation before
+   * writing anything, so it is the refresh signal here: the descriptor is
+   * re-read once, the ciphers are rebuilt, and the whole operation runs again.
+   * A re-run therefore cannot write twice. When the refresh is already spent
+   * this session, or could not help, the error is rethrown.
+   *
+   * @param options {object}
+   * @param options.operation {() => Promise<T>}
+   * @returns {Promise<T>}
+   */
+  async #contactWithEpochRefresh<T>({
+    operation
+  }: {
+    operation: () => Promise<T>
+  }): Promise<T> {
+    let failure: unknown
+    const value = await this.#readWithEpochRefresh<T | undefined>({
+      collectionId: CONTACTS_COLLECTION,
+      read: async () => {
+        failure = undefined
+        try {
+          return { value: await operation(), unknownEpoch: false }
+        } catch (err) {
+          if (classifyDecryptFailure(err) !== 'unknown-epoch') {
+            throw err
+          }
+          failure = err
+          return { value: undefined, unknownEpoch: true }
+        }
+      }
+    })
+    if (failure !== undefined) {
+      throw failure
+    }
+    return value as T
   }
 
   /**
@@ -6205,10 +6260,11 @@ export class StorageManager {
     action?: 'update' | 'restore'
   }): Promise<StoredContact> {
     const writerId = this.#persistence.getWriterId()
-    const stored = await this.#store.updateContact({
-      id,
-      contact,
-      writerId
+    // A head sealed under an epoch this session has not seen fails the update
+    // before its write, so the refresh re-runs it whole and the revision
+    // below is recorded once.
+    const stored = await this.#contactWithEpochRefresh({
+      operation: () => this.#store.updateContact({ id, contact, writerId })
     })
     await this.#recordContactRevision({
       contactId: stored.contactId,
@@ -6228,7 +6284,7 @@ export class StorageManager {
    * @returns {Promise<void>}
    */
   async deleteContact({ id }: { id: string }): Promise<void> {
-    const existing = await this.#store.loadContact({ id })
+    const existing = await this.loadContact({ id })
     await this.#store.deleteContact({ id })
     if (existing) {
       await this.#recordContactRevision({
