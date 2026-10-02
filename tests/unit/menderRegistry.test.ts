@@ -69,12 +69,14 @@ describe('census completeness', () => {
 })
 
 describe('the transient-reachable set', () => {
-  it('is the nineteen entries the design pins', () => {
+  it('is the twenty entries the design pins', () => {
     const reachable = transientReachableInvariants({
       registry: freewalletMenderRegistry
     })
+    // Row 35 joined when the connections writer sweep became an encounter
+    // site at the directory listing read, which a transient session reaches.
     expect(reachable.map(rowOf)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 25, 26, 32
+      1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 25, 26, 32, 35
     ])
   })
 })
@@ -86,14 +88,16 @@ describe('the gap allowlist', () => {
       derived
         .filter(gap => gap.kind === 'none')
         .map(gap => rowOf(gap.invariant))
-    ).toEqual([26, 28, 29, 30, 31, 32, 34, 35])
+    ).toEqual([26, 28, 29, 30, 31, 32, 34, 36])
     // Row 2 moved out of `none` when the transient chain's collection
     // fan-out began reporting its collection half.
     // Rows 11 and 27 moved out of `none` when stage B gave each an
     // addressable converger the pointer-heal registration reports. Rows 26
     // and 32 are the two detectors, `none` since a detector is not a mender.
-    // Row 35 entered `none` with its declaration: this wallet runs no
-    // writer-roster sweep yet.
+    // Row 35 entered `none` with its declaration and left it when the
+    // connections writer sweep became an encounter site at the directory
+    // listing read. Row 36 entered `none` with its declaration: nothing
+    // backfills the connections directory.
     expect(
       derived
         .filter(gap => gap.kind === 'unreachable')
@@ -225,6 +229,11 @@ describe('the code counterpart', () => {
         row: 27,
         file: 'src/stores/storageManager.ts',
         symbol: 'promoteAccountKeystore'
+      },
+      {
+        row: 35,
+        file: 'src/session/connectionWriters.ts',
+        symbol: 'sweepHeldConnectionWriters'
       }
     ]
 

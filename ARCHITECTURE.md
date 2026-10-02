@@ -44,20 +44,26 @@ src/lib/            Pure business logic (no React)
   writerId.ts, prefsStorage.ts, log.ts   The writerId binding over the
                     package's mint, the global UI prefs seam, the
                     @interop/logger wiring
-  connectedApps.ts  Connected-app and agent listings for the Applications page
+  connectedApps.ts  Connected-app and agent listings for the Applications
+                    page, read from the `connections` directory, and the
+                    app and agent revocations
   viewMappers/      Transform raw credential data into display-ready values
   walletRequest/    VPR classification + response assembly for CHAPI requests
     getRequest.ts   The CHAPI get popup's pre-consent refusal matrix,
                     the attested requesting origin included
-    respond.ts      Compose, persist the Grant or Login activity, then
-                    deliver (the CHAPI `get` approval sequence); the persist
-                    runs before any grant's collection is provisioned
+    respond.ts      Record the consent (the party's `connections` entry,
+                    then the Grant or Login activity), escrow, then deliver
+                    (the CHAPI `get` approval sequence, shared with the
+                    interaction-URL page); the record precedes any escrow
     externalRequest.ts  The interaction-URL entry point's pure half: the
                     deep-link parser, exchange opening, and pre-consent
                     refusal matrix
 src/stores/         Global state
   authStore.ts      Zustand store -- holds the live Session object
   storageManager.ts StorageManager facade (local-first routing)
+  connectionsStore.ts   The `connections` directory's store seam: the
+                    remote-direct adapter on a session with a Space, the
+                    local one on a guest or no-WAS session
   browserStore.ts   BrowserStore -- the local RxDB active replica
   remoteDirectStore.ts   The replica-less backend (transient and popup sessions)
   wasRemoteStore.ts WASRemoteStore -- the remote WAS backend
@@ -90,7 +96,8 @@ src/session/        Session bootstrap and the account ceremonies -- the
                     registryReseal.ts, userKeySweep.ts, userKeyAdoption.ts,
                     userKeyCascade.ts, standingDelegationRefresh.ts,
                     pointerHeal.ts, appKeySweep.ts, clientAnnexGc.ts,
-                    credentialCoverage.ts
+                    credentialCoverage.ts, connectionWriters.ts (the
+                    writer registration and the writer sweep)
   Menders           menders/ -- the mender registry: the invariant table,
                     the two chains' registration lists, the runner that
                     executes one, the gap allowlist, and the encounter
@@ -281,9 +288,9 @@ cascade"](docs/architecture/client-revocation.md).
 The storage tier a session may write to is decided once at login, by the
 typed persistence strategy at `session.persistence`. The variant IS the
 type, so a write site consults no flag. The unlock-methods registry cache,
-the passkey-safety notice, the descriptor and meta caches, and the
-`writerId` mint ride it. Both continuity pin stores ride it in memory
-whichever variant it is.
+the passkey-safety notice, the descriptor and meta caches, the `writerId`
+mint, and the writer first-seen record ride it. Both continuity pin stores
+ride it in memory whichever variant it is.
 
 The in-memory variant is the default, carried by every transient login. Its
 whole reach is the pre-session in-memory store family, and it dies with the
@@ -369,14 +376,26 @@ only public-collection and private-collection targets are granted from a
 link. A plain URL target naming an existing encrypted collection whose
 current key epoch does not list the agent is refused too, since that grant
 would read only ciphertext. The refusal is shown on the page, and the popup
-still delegates such a grant with its ciphertext note.
+still delegates such a grant with its ciphertext note. So is a request whose
+grantee `controller` is the did:key of a wallet client the verified account
+document lists or ever listed (`enrolledClient`,
+`decisions/0037-an-interaction-url-may-not-name-an-enrolled-client.md`).
+
+Both paths record a consent the same way (`composeAndDeliverResponse` in
+`src/lib/walletRequest/respond.ts`). Once the delegations are signed, the
+party's `connections` entry is written with the grants. That entry is the
+revocation index. The Grant activity is written after it, as audit trail.
+Both precede any escrow into a key epoch and any delivery, and a failed
+entry write fails the request closed
+(`decisions/0034-the-directory-is-the-grant-index.md`).
 
 Sharing is the other direction, granting a third party read and decrypt
 access to one of the wallet's own encrypted collections through a
 `https://w3id.org/byoe#shared-wallet-collection` descriptor. A share grants
 both axes together, the read-only Collection zcap
 (`delegateShareGrant`) and the epoch-key recipient entry
-(`shareCollection`, which refuses any zcap but that one).
+(`shareCollection`, which refuses any zcap but that one). The share grant is
+recorded on the reader's `connections` entry, marked `grantKind: 'share'`.
 
 The three flows are in ["CHAPI integration"](docs/architecture/chapi.md),
 ["App Connect (one-popup app login)"](docs/architecture/app-connect.md), and
@@ -421,6 +440,44 @@ rather than on the resource id. `public-credentials` is plaintext and keyed
 directly by `cid`. Each encrypted collection's key epochs come from the
 verified head of its own governing log rather than from a metadata member
 the host serves (see "Per-collection descriptor logs" in docs/architecture/keys-and-descriptor-logs.md).
+
+The `connections` directory is the one encrypted collection outside
+replication. It holds one entry per party the wallet has dealt with: an app,
+an agent, or a wallet client, with `contact` reserved. Each entry sits at a
+resource id keyed by an HMAC of the party's DID under the collection's
+blinded-index key, so the host cannot probe for a guessed DID. An entry
+carries the party's names, every grant the wallet delegated to it, an app's
+`appKey` (the `app-connections` Resource holding its key), and a wallet
+client's registered writers. The grants make it the revocation index. The
+directory is never replicated, and the sync controller never touches it
+(`decisions/0035-the-directory-rides-the-session-backend-and-is-never-replicated.md`).
+It rides the session's backend through one store seam
+(`src/stores/connectionsStore.ts`). On a session with a Space it is read and
+written remote-direct under the session's bound capability. Every write is
+a read-modify-write under `ifMatch` or a create under `ifNoneMatch`, and a
+write re-reads only its own entry. On a guest or a no-WAS session it is a
+local RxDB collection, the only copy, under a locally minted blinded-index
+key. A page reads the directory once, and every lookup by DID matches in
+memory, so the host sees no GET at the id a DID derives to.
+
+The directory binding refuses a `connections` collection whose current epoch
+lists a recipient outside the account's user key generations, one carrying a
+`generator` stamp, and one with no blinded-index key. Each marks a collection
+some requester could already read. The directory is never grantable. Every
+rule over the encrypted collections reads one roster-wide set,
+`ENCRYPTED_WALLET_COLLECTION_IDS`, which holds the directory beside the
+synced ones: descriptor acquisition, the stranded report, the user key
+cascade's base set, the credential-anchored mend, and the shares listing.
+
+An entry is retired when its relationship ends: an app disconnect, an agent
+revoke, a wallet-client disconnect, or a forget. Retirement empties its
+grants, drops its `appKey`, and stamps `retired`. It keeps the names, so a
+departed party still resolves. A later consent from the same party
+un-retires the entry. The `wallet-activity` Grant, Login, Revoke,
+CollectionShare, CollectionUnshare, and ClientRevoke rows stay as audit
+trail. The History page and the content migration's dedupe read them, and
+nothing that decides about a party does
+(`decisions/0034-the-directory-is-the-grant-index.md`).
 
 When `VITE_WAS_SERVER_URL` (the server's Spaces Repository URL; the base
 URL is its parent) is set and the session is not a guest, a remote WAS
@@ -480,14 +537,15 @@ agent's did:key as `id`, and the request's self-declared `agent.name` as
 `name` when it carries one. That stamp has no `origin` or `url`. The
 listing carries the object whole to every surface. A surface names the
 creator by `generator.name` first. A stamp with no `origin` names an agent,
-which holds no app key and writes no App Connect Grant, so an unnamed one
-is shown by its shortened `generator.id` and never looked up. For an app
-stamp without a name, one reader, `lookupCollectionCreators`
+so an unnamed one is shown by its shortened `generator.id` and never looked
+up. For an app stamp without a name, one reader, `lookupCollectionCreators`
 (`src/lib/connectedApps.ts`), names the app behind `generator.id`, for the
 consent row, the Storage page's listing, and the collection contents page.
-A connected app answers from its app key. A disconnected one answers from
-the App Connect Grant activities that recorded grants to its DID. A creator
-neither names is shown by its `generator.origin`.
+It matches the stamp in memory, against one directory listing, to the
+`kind: 'app'` entry whose `id` is that DID. A retired entry still answers,
+since retirement keeps the names. Only an app the Applications page lists
+carries the entry resource id the caption links with. A creator no entry
+names is shown by its `generator.origin`.
 
 Content migration brings another account's backup bundle into this one. The
 Storage page's "Import from another wallet" action
@@ -578,13 +636,19 @@ the stream, so the save fails and does not finish the file.
 A user's remote Space is identified by an independent random `spaceId`
 minted at signup and carried in the account pointer; unlock Spaces keep
 `spaceId = base64url(SHA-256(unlock did:key))` as a discovery convention.
-The six standard collections above are created on first login.
+The six standard collections above are created on first login. The
+`connections` directory sits in the same provision roster outside the
+synced collections. Signup provisions it on every path, and only a
+remembered login re-walks the roster, so an account created before the
+directory existed has none and its consents fail closed
+(`decisions/0036-no-backfill-for-the-directory.md`).
 
 ## Route map
 
 Every row from `/dashboard` through `/settings` is protected;
 `/docs/:fileName` and the catch-all are not. `DocsPage` renders
-`public/docs/*.md`.
+`public/docs/*.md`. `ApplicationDetailPage` is keyed by the party's
+`connections` entry resource id, and opens an app or an agent.
 
 | Path                                                       | Component                |
 | ---------------------------------------------------------- | ------------------------ |
@@ -609,7 +673,7 @@ Every row from `/dashboard` through `/settings` is protected;
 | `/contacts/:contactId/edit`                                | `ContactFormPage`        |
 | `/contacts/:contactId/history`                             | `ContactHistoryPage`     |
 | `/applications`                                            | `ApplicationsPage`       |
-| `/applications/:cid`                                       | `ApplicationDetailPage`  |
+| `/applications/:resourceId`                                | `ApplicationDetailPage`  |
 | `/storage`                                                 | `StoragePage`            |
 | `/storage/collections/:collectionId`                       | `CollectionContentsPage` |
 | `/storage/collections/:collectionId/resources/:resourceId` | `CollectionResourcePage` |
@@ -635,12 +699,12 @@ mender is also declared as an invariant in the mender registry
 The declarations are data and the registrations are code
 (`src/session/menders/registrations.ts`): the runner executes one chain's
 list in order and reports each entry into `session.mends`, and a routing or
-ceremony-tail entry reports from its own call site instead. Two
+ceremony-tail entry reports from its own call site instead. Three
 registrations run mid-visit, through the encounter runner, where a session
-meets the evidence: a collection the storage records as stranded, and a
-stale registry seal found at the Settings mount. Their entries go to the
-page that asked and to the event channel. `session.mends` does not carry
-them. Every ceremony
+meets the evidence: a collection the storage records as stranded, a stale
+registry seal found at the Settings mount, and the `connections` writer
+sweep at every directory listing read. Their entries go to the page that
+asked and to the event channel. `session.mends` does not carry them. Every ceremony
 and every reported mend entry also emits on the ceremony event channel
 (wallet-core's `ceremonyEvents` and `menderEvent`), which the debug-logs
 skill documents.
@@ -667,6 +731,15 @@ skill documents.
 A WAS signup's remembered and passkey flavors continue into the
 self-enrollment row, and the credential-anchored genesis heal branch also
 mends a remembered signup torn before its self-enrollment.
+
+Two of these ceremonies retire the client's `connections` entry,
+best-effort. A client revocation retires the removed client's entry after
+the cascade, ahead of its ClientRevoke row. A run torn before that leaves an
+unretired entry for a client the document no longer lists, and no listing
+shows it. A forget retires this client's entry before the ceremony writes
+its removal entry. A tear between them leaves a retired entry for a client
+the document still lists. That entry still names the row, and a re-run or
+this browser's next remembered login converges it.
 
 This list is mirrored by the mender registry's declared gap allowlist
 (`src/session/menders/gaps.ts`). Each bullet below names its invariant id,
@@ -730,10 +803,12 @@ built:
   in the registry (invariant
   `registry-passphrase-entry-names-the-standing-credential`). The seedless
   torn-retirement repair cannot clear it (wallet-core's `decisions/0015`).
-- A registered-writers entry past its inactivity window (invariant
-  `no-registered-writer-outlives-its-expiry`). The converger is
-  wallet-core's sweep-on-read, and this wallet does not read the writer
-  roster yet, so nothing here runs it.
+- A party holding authority with no `connections` entry (invariant
+  `every-party-with-authority-has-a-connection-entry`): one whose entry a
+  deleted and re-created directory lost, or one that connected before the
+  directory existed. Nothing backfills the directory, so nothing writes the
+  missing entry. Such a party is not listed on the Applications page, and
+  its grants end only at their own expiry.
 
 Second, a residue whose only mender is a remembered login:
 
@@ -826,7 +901,10 @@ cascades, and the permanent wire-level constants.
     `revokeRecordedGrant` with its refusal reading). The verify-side halves
     stay in the base subpaths.
   - `/keys` (the user key, its wrap-set roster, the per-collection
-    descriptor log store, the client-key record codec, client labels)
+    descriptor log store, the client-key record codec)
+  - `/connections` (the `connections` directory: the entry codec, the
+    keyed resource id, the store seam and its WAS adapter, the upsert
+    helpers, and the grant index)
   - `/keyring` (the unlock layer), `/unlock` (standing unlock credentials,
     the credential rotation and retirement sequence)
   - `/genesis` (the account-genesis key mint and ceremony)
@@ -946,7 +1024,8 @@ Containment hierarchy (remote mode): **Space > Collection > Resource**.
   (`credentialSubject.appUrl`), issued to and by the seed-derived did:key
   (`CapabilityAgent.fromSeed`, `keyName: 'app-key'`). It carries the type
   `AppKeyCredential` (`https://w3id.org/byoe#AppKeyCredential`) and lives in
-  the `app-connections` collection.
+  the `app-connections` collection. The app's connection entry names that
+  Resource as `appKey`.
 - **Client / `clientId`** -- the keyed, custodied, revocable identity of an
   (app, user) pair: a keypair that can be a zcap grantee, a delegation
   `controller`, or an entry in a collection's key-epoch roster. It is a
@@ -955,16 +1034,19 @@ Containment hierarchy (remote mode): **Space > Collection > Resource**.
 - **Requester** -- the party that sends an App Connect or interaction-URL
   request and receives the grants: an app, service, or agent. A collection
   provisioned for it records it as the `generator` on the Collection
-  Metadata object, with its DID as `generator.id`. Text about the App
-  Connect exchange itself (the app-key credential, the attested origin,
-  `appUrl`) still says "app". Avoid: requesting app, calling app, client
-  app.
+  Metadata object, with its DID as `generator.id`. Its grants are recorded
+  at consent on its connection entry, of kind `app` or `agent`. Text about
+  the App Connect exchange itself (the app-key credential, the attested
+  origin, `appUrl`) still says "app". Avoid: requesting app, calling app,
+  client app.
 - **Agent** -- a requester that mints its own did:key and asks for scoped,
   expiring, revocable grants through a standalone
   `AuthorizationCapabilityQuery`, naming itself as `controller`. It holds no
   app key, no user key, and no unlock credential, and is not a wallet
-  client. Avoid: transient client (the annex inventory), agent
-  client, bot.
+  client. Its connection entry is of kind `agent`, at the DID it names. An
+  interaction URL may not name a wallet client's did:key as that
+  controller. Avoid: transient client (the annex inventory), agent client,
+  bot.
 - **`writerId`** -- an unkeyed, clearable, unrecoverable attribution label
   saying which writing agent produced a revision, used to attribute history
   and break last-write-wins ties. It is minted per browser profile in
@@ -973,13 +1055,52 @@ Containment hierarchy (remote mode): **Space > Collection > Resource**.
   declares it on the wire as the WAS `Writer-Id` header on every replication
   push. Only the browser-local persistence strategy can reach it; a
   transient session holds a per-visit label instead, and declares none,
-  since remote-direct writes send no `Writer-Id`. Avoid: replicaId, device
-  id, session id.
+  since remote-direct writes send no `Writer-Id`. One met in a second
+  session under the same account may become a registered writer. Avoid:
+  replicaId, device id, session id.
+- **Registered writer** -- a `writerId` that earned a member in the
+  `writers` list of its wallet client's connection entry, holding a platform
+  label and its liveness state. A remembered session registers its own on
+  its second session and touches it at most once a day. The writer sweep,
+  run at every directory listing read, marks a member inactive past its
+  inactivity window. It is advisory display data and no input to any
+  authorization decision. Avoid: known writer, trusted writer.
 - **Share** -- granting a third party read AND decrypt access to one of the
   wallet's own encrypted collections, asked for with a
   `https://w3id.org/byoe#shared-wallet-collection` invocation-target
-  descriptor. A share grants both axes together. See "Sharing a wallet
-  collection".
+  descriptor. A share grants both axes together, and its grant is recorded
+  on the reader's connection entry with `grantKind: 'share'`. See "Sharing
+  a wallet collection".
+- **Connections directory** -- the `connections` collection: one encrypted
+  connection entry per party the wallet has dealt with (an app, an agent, a
+  wallet client, with `contact` reserved), written by the wallet alone. It
+  is read and written directly and never replicated. Its entries' grants are
+  the revocation index, and the `wallet-activity` rows are audit trail
+  (`decisions/0034-the-directory-is-the-grant-index.md`). It replaced
+  `key-map/client-labels.json`. Avoid: party registry, connections log,
+  client labels.
+- **Connection entry** -- one party's record in the connections directory,
+  at a resource id keyed by an HMAC of its DID under the collection's
+  blinded-index key. It carries `kind`, the party's DID as `id`, `name` and
+  `label`, an app's `origin`, `url`, and `appKey`, `firstSeen` and
+  `lastSeen`, the party's `grants`, and a wallet client's `writers`. Avoid:
+  connection record, party row.
+- **Name and label** -- the two display strings on a connection entry.
+  `name` is the party's own or suggested name: an app's `app.name`, an
+  agent's self-declared `agent.name`, or a wallet client's platform label or
+  the name its approver was offered. A consent refreshes an app's or an
+  agent's. `label` is the user's own, and no consent writes it. A display reads `label` first.
+  Both are held to one rule, 1 to 64 code points once control and bidi
+  characters are stripped, and a name outside it is not stored. Avoid:
+  nickname, alias.
+- **Retirement** -- ending a party's relationship on its connection entry:
+  `retired` is stamped, the grants are emptied, and `appKey` is dropped. The
+  names are kept, so a departed party still resolves. It follows the
+  revocation that handled those grants, and refuses when the entry has
+  since gained a grant that revocation did not handle. A later consent from
+  the same party un-retires the entry. An app disconnect, an agent revoke, a
+  wallet-client disconnect, and a forget each retire one. Avoid: removal,
+  tombstone.
 - **WAS (Wallet Attached Storage)** -- an HTTP protocol for storing
   arbitrary resources in user-owned Spaces, authorized via ZCap. See [the
   spec](https://w3c-ccg.github.io/wallet-attached-storage-spec/).
@@ -989,7 +1110,9 @@ Containment hierarchy (remote mode): **Space > Collection > Resource**.
 base64url(SHA-256(unlock did:key))` (a discovery convention).
 - **Collection** -- a named grouping of Resources within a Space. Standard
   collections: `private-credentials`, `public-credentials`,
-  `wallet-activity`, `contacts`, `contacts-history`, `app-connections`.
+  `wallet-activity`, `contacts`, `contacts-history`, `app-connections`. The
+  `connections` directory sits in the same provision roster, outside the
+  synced set.
 - **Resource** -- an individual stored item (JSON or binary) within a
   Collection.
 - **Collection Metadata object** -- a Collection's configuration together
@@ -1036,8 +1159,9 @@ base64url(SHA-256(unlock did:key))` (a discovery convention).
   capability, plus annex-log access where that applies. All it can do is
   extend the world-readable log, which keeps credential use loud.
 - **Unlock-local state** -- the browser-local artifacts one unlock method
-  leaves on a browser, keyed by its unlock Space id: today the keyring cache
-  and the wrapped client-key record. `deleteUnlockLocalState` in
+  leaves on a browser, keyed by its unlock Space id: today the keyring cache,
+  the wrapped client-key record, and the writer first-seen record a
+  remembered session's writer registration reads. `deleteUnlockLocalState` in
   `src/lib/sessionKey.ts` is the one deleter. Avoid: unlock trio, local
   trio, unlock artifacts, credential residue.
 - **Ladder (update-key ladder)** -- the chain of did:webvh update keys

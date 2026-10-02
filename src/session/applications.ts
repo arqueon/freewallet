@@ -1,11 +1,15 @@
 /**
  * The Applications surface's glue: listing the apps connected through App
- * Connect and the agents granted access from an interaction-URL request,
- * alongside the account key set their grants are checked against, and revoking
- * one app's or one agent's access. The page renders and confirms; the reads,
- * the best-effort degradation, and the revocation calls live here.
+ * Connect and the agents granted access from an interaction-URL request, off
+ * one read of the `connections` directory, alongside the account key set
+ * their grants are checked against, and revoking one app's or one agent's
+ * access. The page renders and confirms; the reads, the best-effort
+ * degradation, and the revocation calls live here.
  */
-import { currentAccountSignerCheck } from '@/session/clients'
+import {
+  currentAccountSignerCheck,
+  readDirectoryListing
+} from '@/session/clients'
 import {
   listConnectedAgents,
   listConnectedApps,
@@ -26,13 +30,16 @@ const log = createLogger('fw:session:applications')
  * enrolled clients' signing keys from the verified account log, for the
  * per-row grant-state check.
  *
+ * Both listings read the one directory listing, matched in memory. The
+ * app-key health read (`listAppKeys`) runs beside it, since the page's
+ * undecryptable and no-epoch-key warnings and its purge button read the
+ * counts that scan leaves on the storage manager; a failed health read is
+ * logged and leaves the counts as they were.
+ *
  * The key-set half is best-effort: a session without a promoted account (or a
  * log that cannot be fetched right now) degrades to listing the rows without
  * an orphaned marker (`signerCheck: undefined`), never to failing the page.
- *
- * Both listings join over the activity history, so it is read and decrypted
- * once here and passed through to each -- on a replica-less session that read
- * is a remote fan-out, and running it twice per page load doubles it.
+ * A directory that cannot be listed fails the listing.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -48,14 +55,8 @@ export async function listApplicationsView({
   agents: ConnectedAgent[]
   signerCheck?: AccountSignerCheck
 }> {
-  const history = session.storage.listHistoryItems()
-  const [apps, agents, signerCheck] = await Promise.all([
-    history.then(items =>
-      listConnectedApps({ storage: session.storage, items })
-    ),
-    history.then(items =>
-      listConnectedAgents({ storage: session.storage, items })
-    ),
+  const [{ connections, spaceUrl }, signerCheck] = await Promise.all([
+    readDirectoryListing({ session }),
     (async () => {
       try {
         return await currentAccountSignerCheck({ session })
@@ -65,8 +66,21 @@ export async function listApplicationsView({
         })
         return undefined
       }
+    })(),
+    (async () => {
+      try {
+        await session.storage.listAppKeys()
+      } catch (err) {
+        log.warn('Could not read the app-key collection', { err })
+      }
     })()
   ])
+  const apps = listConnectedApps({ connections, spaceUrl })
+  const agents = await listConnectedAgents({
+    storage: session.storage,
+    connections,
+    spaceUrl
+  })
   return { apps, agents, signerCheck }
 }
 
@@ -182,8 +196,7 @@ export async function revokeAgent({
   })
   return {
     outcomeKey: agentRevokeOutcomeKey({
-      withdrew: outcome.withdrawn > 0 || outcome.rotated > 0,
-      unrevocable: outcome.unrevocable
+      withdrew: outcome.withdrawn > 0 || outcome.rotated > 0
     })
   }
 }
@@ -191,29 +204,20 @@ export async function revokeAgent({
 /**
  * The i18n key of the toast an agent revocation ends with. `withdrew` spans
  * both stages, as on the app path: a grant whose POST landed on this run, or
- * a collection this run re-keyed. A grant the server had already revoked does
- * not count. `unrevocable` counts this agent's recorded grants that had no
- * capability to POST (a legacy summary-only record). Such a grant may still
- * be live and ends only at its own expiry, so a run that left any does not
- * read as a clean revoke. An expired grant, or one the verified document
- * reads as dead, is already over and does not count.
+ * a collection this run re-keyed. A grant the server had already revoked, an
+ * expired grant, and one the verified document reads as dead do not count,
+ * since that access was already over.
  *
  * @param options {object}
  * @param options.withdrew {boolean}
- * @param options.unrevocable {number}
  * @returns {string}
  */
 export function agentRevokeOutcomeKey({
-  withdrew,
-  unrevocable
+  withdrew
 }: {
   withdrew: boolean
-  unrevocable: number
 }): string {
-  if (!withdrew) {
-    return 'applications.revokeAgentSuccessLegacy'
-  }
-  return unrevocable > 0
-    ? 'applications.revokeAgentSuccessPartial'
-    : 'applications.revokeAgentSuccess'
+  return withdrew
+    ? 'applications.revokeAgentSuccess'
+    : 'applications.revokeAgentSuccessEnded'
 }

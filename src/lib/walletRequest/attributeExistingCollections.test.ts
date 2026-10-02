@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
 import { x25519RecipientFromDidKey } from '@interop/was-client/edv'
+import type { ConnectionsListing } from '@interop/wallet-core/connections'
 import type { Session } from '@/types/auth'
 import { attributeExistingCollections } from './attributeExistingCollections'
 import { existingCollectionsFrom, resolveGrants } from './processZcaps'
@@ -47,9 +48,16 @@ function storageDouble({
   encrypted: boolean
   recipientIds: string[]
 }) {
+  const listing: ConnectionsListing = {
+    entries: [],
+    unreadable: [],
+    unparseable: []
+  }
   return {
-    listAppKeys: vi.fn(async () => ({ appKeys: [], skipped: {} })),
-    listHistoryItems: vi.fn(async () => ({ entries: [], unreadable: 0 })),
+    readConnectionsListing: vi.fn(async () => ({
+      listing,
+      spaceUrl: `${SPACE.serverUrl}space/${SPACE.spaceId}/`
+    })),
     collectionAttribution: vi.fn(async () => ({ encrypted })),
     listCollectionShares: vi.fn(async () =>
       recipientIds.map(recipientId => ({ recipientId }))
@@ -70,10 +78,12 @@ describe('attributeExistingCollections key-epoch read', () => {
       storage: storage as unknown as Session['storage']
     })
     expect(attributed?.[0]!.target.encrypted).toBe(false)
+    // The roster alone, handed no directory entries: a withheld directory
+    // must not change what the roster says.
     expect(storage.listCollectionShares).toHaveBeenCalledWith({
-      collectionId: 'notes',
-      items: { entries: [], unreadable: 0 }
+      collectionId: 'notes'
     })
+    expect(storage.readConnectionsListing).not.toHaveBeenCalled()
   })
 
   it('keeps the ciphertext note when the grantee is not listed', async () => {
@@ -185,7 +195,7 @@ describe("attributeExistingCollections on an agent's stamp", () => {
     }
   }
 
-  it('names the agent by its stamped name, with no records lookup', async () => {
+  it('names the agent by its stamped name, with no directory read', async () => {
     const resolution = privateTargetResolution(GRANTEE)
     const storage = stampedStorage({ id: AGENT, name: 'Backup Agent' })
     const attributed = await attributeExistingCollections({
@@ -197,8 +207,7 @@ describe("attributeExistingCollections on an agent's stamp", () => {
       creator: 'other',
       creatorName: 'Backup Agent'
     })
-    expect(storage.listAppKeys).not.toHaveBeenCalled()
-    expect(storage.listHistoryItems).not.toHaveBeenCalled()
+    expect(storage.readConnectionsListing).not.toHaveBeenCalled()
   })
 
   it("reads the agent's own collection as this-app", async () => {
@@ -210,5 +219,108 @@ describe("attributeExistingCollections on an agent's stamp", () => {
       storage: storage as unknown as Session['storage']
     })
     expect(attributed?.[0]!.target.existing?.creator).toBe('this-app')
+  })
+})
+
+describe("attributeExistingCollections on an app's stamp", () => {
+  const APP = 'did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG'
+  const APP_ORIGIN = 'https://notes.example'
+
+  /**
+   * The consent inputs for one private-collection descriptor naming the
+   * existing collection `notes`, from a requester other than its creator.
+   *
+   * @returns {Parameters<typeof resolveGrants>[0]}
+   */
+  function privateTargetResolution(): Parameters<typeof resolveGrants>[0] {
+    return {
+      zcapRequests: [
+        {
+          referenceId: 'notes',
+          allowedAction: ['GET'],
+          invocationTarget: {
+            type: 'https://w3id.org/byoe#private-collection',
+            name: 'notes'
+          },
+          controller: GRANTEE
+        }
+      ],
+      space: SPACE,
+      collections: existingCollectionsFrom([{ id: 'notes' }]),
+      appUrl: 'https://other.example/'
+    }
+  }
+
+  /**
+   * A storage double whose metadata read reports an app's stamp, and whose
+   * directory holds that app's entry.
+   *
+   * @param options {object}
+   * @param [options.directoryFails] {boolean}
+   * @returns {object}
+   */
+  function stampedStorage({
+    directoryFails = false
+  }: { directoryFails?: boolean } = {}) {
+    const entry = {
+      version: 1,
+      kind: 'app',
+      id: APP,
+      name: 'Notes',
+      origin: APP_ORIGIN,
+      url: `${APP_ORIGIN}/app`,
+      firstSeen: '2026-07-01T00:00:00.000Z',
+      lastSeen: '2026-07-01T00:00:00.000Z',
+      retired: '2026-08-01T00:00:00.000Z',
+      grants: [],
+      writers: []
+    }
+    return {
+      ...storageDouble({ encrypted: true, recipientIds: [] }),
+      collectionAttribution: vi.fn(async () => ({
+        encrypted: true,
+        generator: { id: APP, origin: APP_ORIGIN }
+      })),
+      readConnectionsListing: vi.fn(async () => {
+        if (directoryFails) {
+          throw new Error('directory refused')
+        }
+        return {
+          listing: {
+            entries: [{ resourceId: 'r-notes', entry, body: entry }],
+            unreadable: [],
+            unparseable: []
+          },
+          spaceUrl: `${SPACE.serverUrl}space/${SPACE.spaceId}/`
+        }
+      })
+    }
+  }
+
+  it('names the creator from its directory entry, read once', async () => {
+    const resolution = privateTargetResolution()
+    const storage = stampedStorage()
+    const attributed = await attributeExistingCollections({
+      resolution,
+      grants: resolveGrants(resolution),
+      storage: storage as unknown as Session['storage']
+    })
+    expect(attributed?.[0]!.target.existing).toMatchObject({
+      creator: 'other',
+      creatorName: 'Notes'
+    })
+    expect(storage.readConnectionsListing).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves the creator unresolved when the directory read fails', async () => {
+    const resolution = privateTargetResolution()
+    const storage = stampedStorage({ directoryFails: true })
+    const attributed = await attributeExistingCollections({
+      resolution,
+      grants: resolveGrants(resolution),
+      storage: storage as unknown as Session['storage']
+    })
+    expect(attributed?.[0]!.target.existing?.creator).toBe('other')
+    expect(attributed?.[0]!.target.existing?.creatorName).not.toBe('Notes')
   })
 })

@@ -179,10 +179,13 @@ export function CollectionContentsPage() {
   // The application that created this collection, for the header's
   // "Created by" line, by its `generator` stamp: the same reader the Storage
   // page and the consent row use. A collection stamped with no app generator
-  // names no app, so the load is off there rather than decrypting the
-  // activity log for nothing.
+  // names no app, so the lookup is off there rather than reading the
+  // directory for nothing.
   const generator = collection?.generator
-  const creators = useCollectionCreators({ storage, generators: [generator] })
+  const creators = useCollectionCreators({
+    session,
+    generators: [generator]
+  })
   const creator = recordedCreatorOf({ generator, creators })
 
   const resources = contentsError ? [] : (contents?.resources ?? [])

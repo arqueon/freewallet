@@ -209,6 +209,7 @@
       "confirmTitle": "¿Olvidar este navegador?",
       "confirmMessage": "Este navegador se eliminará de su cuenta y todos los datos de billetera guardados en él se borrarán. La eliminación queda registrada en el historial público de su cuenta, y los datos cifrados de la cuenta se recifran primero, de modo que nada de lo que se escriba a partir de ahora será legible desde los restos de este navegador. Su cuenta no se ve afectada: iniciar sesión de nuevo reconecta este navegador como nuevo.",
       "confirmCeiling": "Lo que no se puede deshacer: los datos que este navegador ya descargó pueden seguir siendo recuperables del dispositivo por medios forenses, y el perfil del navegador conserva un rastro de que aquí se usó una billetera. Esto puede tardar un momento; mantenga esta pestaña abierta.",
+      "confirmAction": "Olvidar este navegador",
       "progress": "Olvidando este navegador: recifrando la cuenta y registrando la eliminación. Mantenga esta pestaña abierta.",
       "lastClientTitle": "¿Olvidar el único navegador conectado?",
       "lastClientMessage": "Este es el único navegador conectado a esta cuenta. Olvidarlo elimina el navegador de la cuenta y borra todos los datos de billetera guardados en él, dejando la cuenta sin ningún navegador conectado: queda anclada únicamente a su frase de contraseña y sus llaves de acceso, el mismo estado en que empieza una cuenta nueva. La transición queda registrada en el historial público de su cuenta, y los datos cifrados de la cuenta se recifran primero.",
@@ -446,7 +447,7 @@
     "orphanedNotice": "El acceso de almacenamiento concedido a {{name}} ya no funciona: se configuró desde un monedero que desde entonces se desconectó de esta cuenta. Para volver a usar esta aplicación, ábrala y conéctela de nuevo a su monedero. También puede revocarla aquí para eliminar su clave de aplicación e impedir que lea lo que se escriba a partir de ahora.",
     "clientsCrossPointer": "¿Busca los navegadores y teléfonos conectados a esta cuenta? Se gestionan en",
     "clientsCrossPointerLink": "Ajustes > Monederos conectados",
-    "detailTitle": "Detalle de la aplicación: {{name}}",
+    "connectionDetailTitle": "Detalle de la conexión: {{name}}",
     "connected": "Conectada",
     "origin": "Origen:",
     "subjectDid": "Id de cliente:",
@@ -478,8 +479,7 @@
     "revokeAgentTitle": "¿Revocar el acceso del agente?",
     "revokeAgentConfirm": "Al revocar el acceso se anulan los permisos de almacenamiento concedidos a {{name}}, de modo que ya no podrá leer ni escribir en las colecciones que se le dieron, aunque es posible que aún conserve copias de los datos que ya obtuvo. El agente tendrá que volver a solicitar acceso. Esta acción no se puede deshacer.",
     "revokeAgentSuccess": "Acceso del agente revocado.",
-    "revokeAgentSuccessLegacy": "Agente eliminado. El acceso restante caducará por sí solo.",
-    "revokeAgentSuccessPartial": "Acceso del agente revocado. Parte de su acceso no se pudo retirar y solo terminará cuando caduque.",
+    "revokeAgentSuccessEnded": "Agente eliminado. Su acceso al almacenamiento ya había terminado.",
     "revokeAgentFailed": "No se pudo revocar el acceso del agente. Inténtelo de nuevo."
   },
   "dashboard": {
@@ -641,7 +641,8 @@
       "wallet-activity": "Registro de actividad de la billetera",
       "id": "Identidad",
       "key-map": "Mapa de claves",
-      "unlock-methods": "Métodos de desbloqueo"
+      "unlock-methods": "Métodos de desbloqueo",
+      "connections": "Conexiones"
     },
     "groupWalletContents": "Contenido de la billetera",
     "groupAppCollections": "Colecciones de aplicaciones",
@@ -1065,6 +1066,7 @@
       "barredGrant": "Esta solicitud pide un acceso que esta billetera no concede desde un enlace: aquí solo se pueden conceder colecciones creadas para el solicitante, no colecciones compartidas de la billetera.",
       "unreadableTarget": "Esta solicitud nombra una colección cifrada por su URL, lo que no concede ninguna clave para leerla. El solicitante solo obtendría datos ilegibles. Pide a su desarrollador que solicite la colección con un descriptor https://w3id.org/byoe#private-collection, que sí concede esa clave.",
       "multipleGrantees": "Esta solicitud pide acceso en nombre de más de una clave de programa. Un enlace puede conceder acceso a un solo solicitante a la vez, por lo que fue rechazada.",
+      "enrolledClient": "Esta solicitud pide acceso en nombre de una billetera que está o estuvo conectada a su cuenta. Un enlace no puede conceder acceso a una de sus propias billeteras, por lo que fue rechazada.",
       "zcapUnavailable": "Esta solicitud necesita almacenamiento remoto, con el que esta billetera no está configurada.",
       "processFailed": "Algo salió mal al preparar la respuesta. Inténtelo de nuevo.",
       "exchangeFailed": "No se pudo entregar la respuesta al servidor donde reside esta solicitud."

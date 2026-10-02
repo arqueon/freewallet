@@ -5,12 +5,11 @@ import { TEST_SERVICE_DESCRIPTION } from '../shared/wasServiceFixture'
 import { memoryResourceLogPinStore } from '@interop/vh-resource-log'
 import type { ZcapClient } from '@interop/ezcap'
 import type { IZcap } from '@interop/data-integrity-core'
-import type { SpaceMetadata, WasClient } from '@interop/was-client'
-
-vi.mock('@interop/wallet-core/keys', async importOriginal => ({
-  ...(await importOriginal<typeof import('@interop/wallet-core/keys')>()),
-  wasClientLabelsStore: vi.fn(() => ({ isLabelsStore: true }))
-}))
+import type {
+  CollectionEncryption,
+  SpaceMetadata,
+  WasClient
+} from '@interop/was-client'
 
 vi.mock('../../src/app.config', async importOriginal => ({
   ...(await importOriginal<typeof import('../../src/app.config')>()),
@@ -18,10 +17,7 @@ vi.mock('../../src/app.config', async importOriginal => ({
   WAS_SYNC_BATCH_SIZE: 2
 }))
 
-import {
-  ensureIndexedFirstEpoch,
-  wasClientLabelsStore
-} from '@interop/wallet-core/keys'
+import { ensureIndexedFirstEpoch } from '@interop/wallet-core/keys'
 import { createEdvDocCipher, ownerRecipient } from '@interop/was-client/edv'
 import { memoryDescriptorStores } from './fakeDescriptorStores'
 import { generateVaultKeys } from '../../src/stores/testing/vaultKeys'
@@ -1027,16 +1023,19 @@ describe('WASRemoteStore.ensureUserCollections', () => {
   })
 })
 
-describe('WASRemoteStore.clientLabelsStore', () => {
+describe('WASRemoteStore.keyedCollectionHandle', () => {
   /**
    * Builds a store with the bound invocation capability a transient session
-   * hands over: the generation delegation its every request rides.
+   * hands over (the generation delegation its every request rides), over a
+   * recording fake client.
    *
    * @param [capability] {IZcap}
-   * @returns {WASRemoteStore}
+   * @returns {object}
    */
-  function storeWithCapability(capability?: IZcap): WASRemoteStore {
-    return new WASRemoteStore({
+  function storeWithCapability(capability?: IZcap) {
+    const collection = vi.fn().mockReturnValue({ isHandle: true })
+    const space = vi.fn().mockReturnValue({ collection })
+    const store = new WASRemoteStore({
       serviceDescription: TEST_SERVICE_DESCRIPTION,
       pinStore: memoryResourceLogPinStore(),
       storageServerUrl: 'https://example.test',
@@ -1045,36 +1044,71 @@ describe('WASRemoteStore.clientLabelsStore', () => {
       controller: 'did:webvh:zQmScid:example.test:space:space-id:id',
       ...(capability ? { capability } : {})
     })
+    store.was = { space } as unknown as WasClient
+    return { store, space, collection }
   }
 
-  it('rides the bound capability on the ladder kind', () => {
+  const ENCRYPTION = {
+    scheme: 'edv',
+    currentEpoch: 'epoch-0'
+  } as unknown as CollectionEncryption
+
+  /**
+   * Opens the `connections` handle through `store`.
+   *
+   * @param store {WASRemoteStore}
+   * @returns {Promise<void>}
+   */
+  async function openHandle(store: WASRemoteStore): Promise<void> {
+    const { keyAgreementKey, keyResolver } = await generateVaultKeys({
+      controller: 'did:key:z6MkOwner'
+    })
+    store.keyedCollectionHandle({
+      collectionId: 'connections',
+      encryption: ENCRYPTION,
+      keyAgreementKey,
+      keyResolver
+    })
+  }
+
+  it('rides the bound capability on a transient session', async () => {
     // A transient session's only authority over the Space is the generation
-    // delegation, so the labels read and write must invoke under it or the
-    // listing shows no labels and a rename is refused.
+    // delegation, so the directory's reads and writes invoke under it.
     const capability = { id: 'urn:zcap:generation' } as unknown as IZcap
-    storeWithCapability(capability).clientLabelsStore()
-    expect(vi.mocked(wasClientLabelsStore)).toHaveBeenCalledWith(
-      expect.objectContaining({ spaceId: 'space-id', capability })
-    )
+    const { store, space } = storeWithCapability(capability)
+    await openHandle(store)
+    expect(space).toHaveBeenCalledWith('space-id', { capability })
   })
 
-  it('root-invokes on the enrolled kind', () => {
-    storeWithCapability().clientLabelsStore()
-    const options = vi.mocked(wasClientLabelsStore).mock.calls.at(-1)![0]
-    expect(options).not.toHaveProperty('capability')
-    expect(options.spaceId).toBe('space-id')
+  it('root-invokes with no capability bound', async () => {
+    const { store, space } = storeWithCapability()
+    await openHandle(store)
+    expect(space).toHaveBeenCalledWith('space-id', { capability: undefined })
   })
 
-  it('reads the capability at each build, so a renewal reaches the next one', () => {
-    const store = storeWithCapability({
+  it('reads the capability at each build, so a renewal reaches the next one', async () => {
+    const { store, space } = storeWithCapability({
       id: 'urn:zcap:generation'
     } as unknown as IZcap)
     const renewed = { id: 'urn:zcap:generation-fresh' } as unknown as IZcap
     store.adoptInvocationCapability({ capability: renewed })
-    store.clientLabelsStore()
-    expect(vi.mocked(wasClientLabelsStore)).toHaveBeenLastCalledWith(
-      expect.objectContaining({ capability: renewed })
-    )
+    await openHandle(store)
+    expect(space).toHaveBeenLastCalledWith('space-id', { capability: renewed })
+  })
+
+  it('carries the descriptor and the reader keys as the handle override', async () => {
+    const { store, collection } = storeWithCapability()
+    await openHandle(store)
+    const [collectionId, options] = collection.mock.calls.at(-1)!
+    expect(collectionId).toBe('connections')
+    expect(options.encryption).toMatchObject({
+      scheme: 'edv',
+      currentEpoch: 'epoch-0',
+      keys: {
+        keyAgreementKey: expect.anything(),
+        keyResolver: expect.any(Function)
+      }
+    })
   })
 })
 

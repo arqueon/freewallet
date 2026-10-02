@@ -44,12 +44,11 @@ vi.mock('@interop/wallet-core/enrollment', () => ({
   completeEnrollmentCore: vi.fn(async () => ({ userKey: null }))
 }))
 
-vi.mock('@interop/wallet-core/keys', async importOriginal => ({
-  ...(await importOriginal<typeof import('@interop/wallet-core/keys')>()),
-  setClientLabel: vi.fn(async () => {
-    state.calls.push('setClientLabel')
+vi.mock('@/session/clients', () => ({
+  recordWalletClientEntry: vi.fn(async () => {
+    state.calls.push('recordWalletClientEntry')
     if (state.labelFails) {
-      throw new Error('the labels store root-invokes')
+      throw new Error('the connections directory is refused')
     }
   })
 }))
@@ -79,7 +78,7 @@ vi.mock('@/session/accountCeremonyContext', () => ({
 
 import { approveEnrollment as approveEnrollmentCore } from '@interop/wallet-core/enrollment'
 import type { EnrollmentRequest } from '@interop/wallet-core/enrollment'
-import { setClientLabel } from '@interop/wallet-core/keys'
+import { recordWalletClientEntry } from '@/session/clients'
 import { accountCeremonyContext } from '@/session/accountCeremonyContext'
 import { reprimeVerifiedAccountLog } from '@/session/verifiedLog'
 import { approveEnrollment } from '@/lib/enrollment'
@@ -104,7 +103,6 @@ const BRIDGE_ID_STORE = { isUnlockLogStore: true }
 const ROOT_ID_STORE = { isWebvhIdStore: true }
 const LADDER_ROSTER_STORE = { isLadderRosterStore: true }
 const ENROLLED_ROSTER_STORE = { isEnrolledRosterStore: true }
-const LABELS_STORE = { isClientLabelsStore: true }
 
 /**
  * The connect code the enrollee minted, as the parse hands it over. Nothing
@@ -130,7 +128,7 @@ function ceremonyContext(): object | null {
   if (state.kind === 'none') {
     return null
   }
-  const remoteStore = { clientLabelsStore: vi.fn(() => LABELS_STORE) }
+  const remoteStore = { isRemoteStore: true }
   if (state.kind === 'enrolled') {
     return {
       kind: 'enrolled',
@@ -223,7 +221,8 @@ describe('the ladder kind (a transient session on a standing credential)', () =>
       'invalidateVerifiedLog',
       'approveEnrollmentCore',
       'invalidateVerifiedLog',
-      'reprimeVerifiedAccountLog'
+      'reprimeVerifiedAccountLog',
+      'recordWalletClientEntry'
     ])
     expect(vi.mocked(reprimeVerifiedAccountLog)).toHaveBeenCalledWith({
       session,
@@ -268,7 +267,7 @@ describe('the enrolled kind (a remembered session)', () => {
   })
 })
 
-describe('the preconditions and the best-effort label', () => {
+describe('the preconditions and the best-effort entry write', () => {
   it('throws before the ceremony when neither kind resolves', async () => {
     state.kind = 'none'
     await expect(
@@ -278,23 +277,35 @@ describe('the preconditions and the best-effort label', () => {
     expect(vi.mocked(accountCeremonyContext)).toHaveBeenCalledOnce()
   })
 
-  it('writes the chosen label to the labels store', async () => {
+  it("writes the offered name and the approver's edited label on the new client's entry", async () => {
+    const session = approvingSession()
     await approveEnrollment({
       request: REQUEST,
-      session: approvingSession(),
+      session,
+      name: 'Wallet 2',
       label: 'Old laptop'
     })
-    expect(vi.mocked(setClientLabel)).toHaveBeenCalledWith({
-      store: LABELS_STORE,
-      signingKeyMultibase: 'z6MkEnrolleeClient',
+    expect(vi.mocked(recordWalletClientEntry)).toHaveBeenCalledWith({
+      session,
+      did: 'did:key:z6MkEnrolleeClient',
+      name: 'Wallet 2',
       label: 'Old laptop'
     })
   })
 
-  it('completes the approval when the label write fails', async () => {
-    // Expected on the ladder kind today: the labels store root-invokes,
-    // which a transient session's annex key cannot do. The listing degrades
-    // to unlabeled rows rather than the ceremony reporting a failure.
+  it('writes the offered name alone when the approver did not edit it', async () => {
+    const session = approvingSession()
+    await approveEnrollment({ request: REQUEST, session, name: 'Wallet 2' })
+    expect(vi.mocked(recordWalletClientEntry)).toHaveBeenCalledWith({
+      session,
+      did: 'did:key:z6MkEnrolleeClient',
+      name: 'Wallet 2'
+    })
+  })
+
+  it('completes the approval when the entry write fails', async () => {
+    // The listing degrades to an unnamed row rather than the ceremony
+    // reporting a failure.
     state.labelFails = true
     const approved = await approveEnrollment({
       request: REQUEST,
@@ -302,16 +313,21 @@ describe('the preconditions and the best-effort label', () => {
       label: 'Old laptop'
     })
     expect(approved.clientDid).toBe('did:key:z6MkEnrolleeClient')
-    expect(state.calls).toContain('setClientLabel')
+    expect(state.calls).toContain('recordWalletClientEntry')
   })
 
-  it('skips the label write for a blank label', async () => {
+  it('writes no blank name or label', async () => {
+    const session = approvingSession()
     await approveEnrollment({
       request: REQUEST,
-      session: approvingSession(),
+      session,
+      name: ' ',
       label: '   '
     })
-    expect(vi.mocked(setClientLabel)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordWalletClientEntry)).toHaveBeenCalledWith({
+      session,
+      did: 'did:key:z6MkEnrolleeClient'
+    })
   })
 })
 

@@ -29,6 +29,7 @@ import type {
   IVPRDetails as ISpecVPRDetails
 } from '@interop/wallet-request'
 import { errorNameOf } from '@interop/wallet-core/menders'
+import { isEd25519DidKey } from '@interop/was-client/edv'
 import { classifyRequest, queriesOf } from './classify'
 import {
   urlNamesExistingCollection,
@@ -93,6 +94,8 @@ const ALLOWED_TARGET_CLASSES: readonly string[] = [
  * `invalidLink` and the exchange-state reasons (`gone`, `unreachable`,
  * `malformedRequest`) come from opening the request; the rest come from the
  * pre-consent check over the VPR the exchange handed back.
+ * `enrolledClient` is decided once the account document is read
+ * ({@link refuseEnrolledClientController}).
  */
 export type ExternalRequestRefusal =
   | 'invalidLink'
@@ -107,6 +110,7 @@ export type ExternalRequestRefusal =
   | 'barredGrant'
   | 'unreadableTarget'
   | 'multipleGrantees'
+  | 'enrolledClient'
 
 /**
  * A request this entry point refuses before anything is shown or written.
@@ -235,8 +239,9 @@ class ExchangeNetworkError extends Error {
  * classification, which would otherwise throw for the missing origin), a
  * `DIDAuthentication` query (freewallet requires a `domain` for DID Auth and
  * there is no origin to match one against), a `domain` on any request, a
- * request with no capability query, capability queries naming more than one
- * grantee `controller`, and a presentation endpoint on another origin than
+ * request with no capability query, a grantee `controller` that is not a bare
+ * Ed25519 did:key, capability queries naming more than one grantee
+ * `controller`, and a presentation endpoint on another origin than
  * the exchange's. The delivery
  * host is resolved exactly the way delivery resolves it, so the consent
  * screen names where the response will actually go.
@@ -280,6 +285,15 @@ export function precheckExternalRequest({
   if (profile.zcapRequests.length === 0) {
     throw new ExternalRequestRefusedError('nothingRequested')
   }
+  // Every grantee must be a bare Ed25519 did:key. The enrolled-client check
+  // matches the controller exactly against bare client did:keys, so a
+  // verification method id (`did:key:z6Mk...#z6Mk...`) naming a client's key
+  // would otherwise pass it on a grant class that never derives a recipient.
+  if (
+    profile.zcapRequests.some(({ controller }) => !isEd25519DidKey(controller))
+  ) {
+    throw new ExternalRequestRefusedError('malformedRequest')
+  }
   // Every grant is delegated to its query's own `controller`, while the
   // Applications page lists and revokes an agent by one controller per
   // approval. A second grantee would hold grants no row names.
@@ -307,6 +321,39 @@ export function precheckExternalRequest({
     throw new ExternalRequestRefusedError('foreignDelivery', { cause: err })
   }
   return { profile, deliveryHost }
+}
+
+/**
+ * Refuses, before consent renders, a request whose grantee `controller` is
+ * the did:key of a wallet client the verified account document lists or
+ * ever listed. A revoked client's did:key stays public in the account log
+ * for good, and a link naming it would put live grants on that client's
+ * retired `connections` entry, which no listing shows and no disconnect
+ * reaches. No legitimate requester names a wallet client's key. Run once the
+ * session can read the account document, after the precheck.
+ *
+ * @param options {object}
+ * @param options.profile {WalletRequestProfile}   the prechecked request
+ * @param options.clientDids {ReadonlySet<string>}   the did:keys of every
+ *   wallet client the verified account document lists or ever listed, or
+ *   this session's own did:key on an account with no account document
+ * @throws {ExternalRequestRefusedError}   `enrolledClient`
+ */
+export function refuseEnrolledClientController({
+  profile,
+  clientDids
+}: {
+  profile: WalletRequestProfile
+  clientDids: ReadonlySet<string>
+}): void {
+  if (
+    profile.zcapRequests.some(
+      ({ controller }) =>
+        typeof controller === 'string' && clientDids.has(controller)
+    )
+  ) {
+    throw new ExternalRequestRefusedError('enrolledClient')
+  }
 }
 
 /**

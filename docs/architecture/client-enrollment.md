@@ -43,8 +43,10 @@ canonical in wallet-core's ARCHITECTURE.md.
    update key while holding no wrap. It is one request wide on the happy
    path, mended by a re-run with the same connect code or by the
    escrow-direction convergence of any later ladder-branch ceremony, and
-   visible as a row in Connected wallets. The label write is best-effort on
-   both kinds.
+   visible as a row in Connected wallets. The write of the new client's
+   `connections` entry is best-effort on both kinds: `name` takes the name
+   the approver was offered, and `label` is set only when the approver
+   edited it.
 
 3. **Enrollee** ("finish connecting") verifies the enrollment from the
    world-readable log against the pointer's DID, makes its first roster read

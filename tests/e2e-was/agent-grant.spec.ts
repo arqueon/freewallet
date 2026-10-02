@@ -19,7 +19,13 @@ import {
 } from '@interop/wallet-request'
 import type { IZcap } from '@interop/wallet-request'
 import { externalRequestPath } from '@/lib/walletRequest/externalRequest'
-import { fillSettled, signupViaWizard } from './helpers'
+import {
+  fillSettled,
+  readConnectionsDirectory,
+  sessionSpaceId,
+  signupViaWizard
+} from './helpers'
+import { listStoredResourceIds } from './storedLogs'
 
 /**
  * The agent-grant e2e (WAS mode): a CLI agent asking for storage access
@@ -40,7 +46,10 @@ import { fillSettled, signupViaWizard } from './helpers'
  * under the generation delegation rather than the Space root. A fourth case
  * asks for a private collection, which the wallet provisions encrypted with
  * the agent's key-agreement key escrowed beside the user's, and checks that
- * revoking the agent rotates the collection's key off it.
+ * revoking the agent rotates the collection's key off it. A fifth case
+ * revokes an agent and then grants to the same did:key again: its one
+ * `connections` entry is retired by the revoke and un-retired by the new
+ * consent, and the Applications page lists the agent again.
  */
 
 const WAS_URL = 'http://localhost:3002'
@@ -506,5 +515,117 @@ test.describe('agent grant over an interaction URL', () => {
     }
     expect(revokedStatus).toBeDefined()
     expect(revokedStatus!).toBeGreaterThanOrEqual(400)
+  })
+
+  test('a revoked agent granted again from the same did:key reuses its one entry', async ({
+    page
+  }, testInfo) => {
+    test.slow()
+
+    const agent = await mintAgent()
+    const collectionName = 'web'
+    await signupViaWizard(page, testInfo)
+    const agentEntries = async () =>
+      (await readConnectionsDirectory(page)).filter(
+        entry => entry.kind === 'agent'
+      )
+
+    // The first grant writes the agent's entry, holding that grant.
+    const first = await storeAgentRequest({
+      controller: agent.id,
+      collectionName
+    })
+    await page.goto(`/#${externalRequestPath({ url: first.interactionUrl })}`)
+    await expect(
+      page.getByRole('button', { name: 'Grant access' })
+    ).toBeVisible({ timeout: 30_000 })
+    await page.getByRole('button', { name: 'Grant access' }).click()
+    await expect(
+      page.getByText('Access granted', { exact: false })
+    ).toBeVisible({ timeout: 60_000 })
+    const firstZcaps = await grantedZcaps({ exchangeUrl: first.exchangeUrl })
+    expect(firstZcaps.length).toBe(1)
+    const firstZcapId = firstZcaps[0]!.id
+
+    const granted = await agentEntries()
+    expect(granted).toHaveLength(1)
+    const entry = granted[0]!
+    expect(entry.id).toBe(agent.id)
+    expect(entry.retired).toBeUndefined()
+    expect(entry.grantZcapIds).toEqual([firstZcapId])
+
+    // Revoke the agent on the Applications page: the row leaves the listing.
+    await page.goto('/#/applications')
+    await expect(page.getByText(E2E_AGENT_NAME)).toBeVisible({
+      timeout: 30_000
+    })
+    await page.getByRole('button', { name: 'Revoke Agent Access' }).click()
+    await expect(page.getByText('Revoke agent access?')).toBeVisible()
+    await page
+      .getByRole('button', { name: 'Revoke access', exact: true })
+      .click()
+    await expect(page.getByText(/Agent (access revoked|removed)/)).toBeVisible({
+      timeout: 60_000
+    })
+    await expect(page.getByText('No connected applications yet.')).toBeVisible()
+
+    // The entry is retired in place, with its grants emptied.
+    const revoked = await agentEntries()
+    expect(revoked).toHaveLength(1)
+    expect(revoked[0]!.resourceId).toBe(entry.resourceId)
+    expect(revoked[0]!.retired).toBeDefined()
+    expect(revoked[0]!.grantZcapIds).toEqual([])
+
+    // A new request from the same did:key. The live session answers it.
+    const second = await storeAgentRequest({
+      controller: agent.id,
+      collectionName
+    })
+    await page.goto(`/#${externalRequestPath({ url: second.interactionUrl })}`)
+    await expect(
+      page.getByRole('button', { name: 'Grant access' })
+    ).toBeVisible({ timeout: 30_000 })
+    await page.getByRole('button', { name: 'Grant access' }).click()
+    await expect(
+      page.getByText('Access granted', { exact: false })
+    ).toBeVisible({ timeout: 60_000 })
+    const secondZcaps = await grantedZcaps({ exchangeUrl: second.exchangeUrl })
+    expect(secondZcaps.length).toBe(1)
+    const secondZcap = secondZcaps[0]!
+    expect(secondZcap.id).not.toBe(firstZcapId)
+
+    // The new grant works.
+    const published = await publishAndFetch({
+      agent,
+      zcap: secondZcap,
+      resourceId: 'again.html'
+    })
+    expect(published.status).toBe(200)
+
+    // Still one entry, at the same resource id, un-retired and holding only
+    // the new grant.
+    const regranted = await agentEntries()
+    expect(regranted).toHaveLength(1)
+    expect(regranted[0]!.resourceId).toBe(entry.resourceId)
+    expect(regranted[0]!.retired).toBeUndefined()
+    expect(regranted[0]!.grantZcapIds).toEqual([secondZcap.id])
+
+    // The server stores that one Resource for it.
+    const stored = await listStoredResourceIds({
+      spaceId: await sessionSpaceId(page),
+      collectionId: 'connections'
+    })
+    expect(stored).toContain(entry.resourceId)
+
+    // The Applications page lists the agent again, with its one grant.
+    await page.goto('/#/dashboard')
+    await page.goto('/#/applications')
+    await expect(page.getByText(E2E_AGENT_NAME)).toBeVisible({
+      timeout: 30_000
+    })
+    await expect(
+      page.getByRole('button', { name: 'Revoke Agent Access' })
+    ).toHaveCount(1)
+    await expect(page.getByText('1 storage grant')).toBeVisible()
   })
 })

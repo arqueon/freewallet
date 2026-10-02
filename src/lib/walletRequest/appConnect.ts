@@ -143,7 +143,12 @@ export function appConnectZcapRequests({
  *    seed-derived did:key, self-issued) and saves it to `app-connections`, a
  *    wallet-internal store under the same consent, no second popup;
  * 3. delegates the requested capabilities to the credential's subject DID;
- * 4. composes the response VP carrying the credential, the embedded grants,
+ * 4. runs `beforeProvision` exactly once, with the signed grants and the
+ *    app-key Resource id, before anything is escrowed or composed: inside
+ *    `processZcaps` when a grant needs provisioning or a share, and right
+ *    after the delegations otherwise (a zero-grant connect included), so the
+ *    caller's record of the connect always precedes delivery;
+ * 5. composes the response VP carrying the credential, the embedded grants,
  *    and the `firstRun` marker.
  *
  * @param options {object}
@@ -157,9 +162,12 @@ export function appConnectZcapRequests({
  * @param [options.expectedSubjectDid] {string}   the app-key subject DID the
  *   consent screen displayed; approval fails closed when the authoritative
  *   re-match resolves a different DID
- * @param [options.beforeProvision] {Function}   awaited with the signed
- *   grants and this connect's `appConnect` result before any collection is
- *   provisioned (see `processZcaps`)
+ * @param [options.beforeProvision] {Function}   awaited exactly once with
+ *   the signed grants (`zcaps`), the share grants' ids (`shareZcapIds`), and
+ *   this connect's `appConnect` result with the app-key Resource id
+ *   (`appKey`), before any collection is provisioned or the VP composed
+ * @param [options.onEscrowed] {Function}   called with the grant ids each
+ *   landed escrow covers (see `processZcaps`)
  * @returns {Promise<WalletResponse>}
  */
 export async function processAppConnect({
@@ -171,7 +179,8 @@ export async function processAppConnect({
   didAuthRequested,
   cryptosuite,
   expectedSubjectDid,
-  beforeProvision
+  beforeProvision,
+  onEscrowed
 }: {
   appConnect: IAppConnectRequest
   session: Session
@@ -183,8 +192,10 @@ export async function processAppConnect({
   expectedSubjectDid?: string
   beforeProvision?: (options: {
     zcaps: IZcap[]
-    appConnect: { firstRun: boolean; subjectDid: string }
+    shareZcapIds: string[]
+    appConnect: { firstRun: boolean; subjectDid: string; appKey: string }
   }) => Promise<void>
+  onEscrowed?: (options: { zcapIds: string[] }) => void
 }): Promise<WalletResponse> {
   const { app, capabilityQueries } = appConnect
   const { appKeys, skipped } = await session.storage.listAppKeys()
@@ -212,6 +223,9 @@ export async function processAppConnect({
   const firstRun = !existing
   let credential: IVerifiableCredential
   let subjectDid: string
+  // The `app-connections` Resource holding the key, which the app's
+  // `connections` entry records as `appKey`.
+  let appKey: string
   if (existing) {
     credential = existing
     const existingDid = appKeySubjectDid(credential)
@@ -219,6 +233,11 @@ export async function processAppConnect({
       throw new Error('The stored app-key credential has no subject DID.')
     }
     subjectDid = existingDid
+    const matched = appKeys.find(({ vc }) => vc === existing)
+    if (!matched) {
+      throw new Error('The matched app-key credential has no stored Resource.')
+    }
+    appKey = matched.resourceId
   } else {
     const issued = await mintAppKeyCredential({ app, origin })
     credential = issued.credential
@@ -228,7 +247,8 @@ export async function processAppConnect({
     // the credential's content id). Through the mint path's own store
     // method -- `addCredential` refuses every marker credential,
     // wallet-minted or not.
-    await session.storage.addMintedAppKey({ credential })
+    const minted = await session.storage.addMintedAppKey({ credential })
+    appKey = minted.resourceId
   }
 
   // The consent screen displayed a recipient DID, so the delegation must go
@@ -246,6 +266,23 @@ export async function processAppConnect({
     capabilityQueries,
     controller: subjectDid
   })
+  // The hook runs once: inside `processZcaps` when a grant needs escrow, and
+  // below otherwise.
+  let recorded = false
+  const record = async ({
+    zcaps,
+    shareZcapIds
+  }: {
+    zcaps: IZcap[]
+    shareZcapIds: string[]
+  }): Promise<void> => {
+    recorded = true
+    await beforeProvision?.({
+      zcaps,
+      shareZcapIds,
+      appConnect: { firstRun, subjectDid, appKey }
+    })
+  }
   const zcaps: IZcap[] =
     zcapRequests.length > 0
       ? await processZcaps({
@@ -257,14 +294,16 @@ export async function processAppConnect({
           // `app.appUrl` is the validated request's canonical app URL, the
           // value the app-key credential's `credentialSubject.appUrl` holds.
           app: { name: app.name, origin, appUrl: app.appUrl },
-          // `firstRun` is settled by now, so the caller's early record of
-          // this connect carries the same shape as a post-compose one.
-          ...(beforeProvision && {
-            beforeProvision: zcaps =>
-              beforeProvision({ zcaps, appConnect: { firstRun, subjectDid } })
-          })
+          beforeProvision: record,
+          ...(onEscrowed && { onEscrowed })
         })
       : []
+  // Nothing needed escrow (a zero-grant connect, or grants on collections
+  // that stand), so the connect is recorded here, still before the VP is
+  // composed.
+  if (!recorded) {
+    await record({ zcaps, shareZcapIds: [] })
+  }
 
   const verifiablePresentation = await composeVP({
     session,

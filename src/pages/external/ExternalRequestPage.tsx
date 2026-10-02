@@ -14,10 +14,12 @@
  * the session app-wide. Everything the entry point refuses -- the exchange
  * states, DID Auth, a `domain`, an `AppConnectQuery`, a delivery endpoint on
  * another origin, a grant class outside the allowlist, a plain URL on an
- * encrypted collection the agent cannot read -- is decided in
+ * encrypted collection the agent cannot read, a grantee that is one of the
+ * account's own wallet clients -- is decided in
  * `src/lib/walletRequest/externalRequest.ts` before consent renders, each
- * with its own copy. The grant is recorded on a Grant activity under the
- * fixed `n/a (API request)` origin marker before anything is delivered.
+ * with its own copy. The grant is recorded on the agent's `connections`
+ * entry, then on a Grant activity under the fixed `n/a (API request)` origin
+ * marker, before anything is escrowed or delivered.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
@@ -55,11 +57,13 @@ import {
   namesExistingCollectionByUrl,
   openExternalRequest,
   precheckExternalRequest,
+  refuseEnrolledClientController,
   unreadableGrants,
   type ExternalRequestRefusal
 } from '@/lib/walletRequest/externalRequest'
 import { useAttributedGrants } from '@/hooks/useAttributedGrants'
 import { findKnownAgents } from '@/lib/connectedApps'
+import { listedClientDids, readDirectoryListing } from '@/session/clients'
 import { formatDate } from '@/lib/viewMappers/formatDate'
 import { ChapiInitializing } from '@/pages/chapi/ChapiInitializing'
 import { CHAPILoginForm } from '@/pages/chapi/CHAPILoginForm'
@@ -127,7 +131,7 @@ export function ExternalRequestPage() {
   const { grants: resolvedGrants, attributeGrants } = useAttributedGrants()
   const [loginError, setLoginError] = useState<string | null>(null)
   // The requester DIDs this account has granted before and not revoked,
-  // read off the activity history after consent renders.
+  // read off the `connections` directory after consent renders.
   const [knownAgents, setKnownAgents] = useState<
     Map<string, { name?: string; grantedAt?: string }>
   >(new Map())
@@ -193,6 +197,14 @@ export function ExternalRequestPage() {
       block('barredGrant')
       return
     }
+    // A link naming the did:key of a wallet client the account document lists
+    // or ever listed is refused before consent: its grants would land on that
+    // client's `connections` entry, where no listing shows them. A log that
+    // cannot be read fails the preparation closed.
+    refuseEnrolledClientController({
+      profile: requestProfile,
+      clientDids: await listedClientDids({ session: loggedIn })
+    })
     // Best-effort, as on the popup: an unread epoch refuses nothing.
     const attribution = attributeGrants({
       resolution,
@@ -218,8 +230,10 @@ export function ExternalRequestPage() {
 
   /**
    * Looks up which requester DIDs this account has granted before, for the
-   * display-only known-agent hint. Runs after consent renders and does not
-   * hold it. A failed history read logs and shows no hint.
+   * display-only known-agent hint: one read of the `connections` directory,
+   * matched in memory, so the host sees no read at the requester's id. Runs
+   * after consent renders and does not hold it. A failed read logs and shows
+   * no hint.
    *
    * @param options {object}
    * @param options.loggedIn {Session}
@@ -233,9 +247,15 @@ export function ExternalRequestPage() {
     requestProfile: WalletRequestProfile
   }) {
     try {
-      const items = await loggedIn.storage.listHistoryItems()
+      const { connections, spaceUrl } = await readDirectoryListing({
+        session: loggedIn
+      })
       setKnownAgents(
-        findKnownAgents({ items, controllers: requesterDids(requestProfile) })
+        findKnownAgents({
+          connections,
+          spaceUrl,
+          controllers: requesterDids(requestProfile)
+        })
       )
     } catch (err) {
       log.warn('Known-agent lookup failed', { err })
@@ -351,6 +371,11 @@ export function ExternalRequestPage() {
     } catch (err) {
       // The login form is gone by now, so a failed preparation is a page
       // block, not a login error.
+      if (err instanceof ExternalRequestRefusedError) {
+        log.warn('External request refused', { err })
+        block(err.refusal)
+        return
+      }
       log.error('External request preparation failed', { err })
       block('processFailed')
     }
@@ -373,8 +398,8 @@ export function ExternalRequestPage() {
         session,
         profile,
         // No requesting origin exists on this entry point; the fixed marker
-        // is what the Grant activity records and what the Applications
-        // listing keys agent rows on.
+        // is what the Grant activity records. The agent's `connections`
+        // entry, keyed by its did:key, is what the Applications page lists.
         requestOrigin: EXTERNAL_REQUEST_ORIGIN,
         selectedVCs: [],
         exchangeUrl,

@@ -36,7 +36,7 @@ const AGENT_DID = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
 const CONNECTED: CollectionCreator = {
   name: 'Editor',
   appUrl: 'https://app.example/editor',
-  cid: 'cid-1'
+  resourceId: 'entry-1'
 }
 
 describe('attributeCollectionsToApps', () => {

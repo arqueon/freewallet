@@ -43,8 +43,9 @@ export function OnboardConsentPanel({
   const [approveError, setApproveError] = useState(false)
 
   /**
-   * Runs the enrollment ceremony for the response the other wallet posted,
-   * saving the chosen label once it lands.
+   * Runs the enrollment ceremony for the response the other wallet posted.
+   * Once it lands, the new client's entry takes the suggested label as its
+   * name, and the approver's text as its label only when it was edited.
    */
   const handleApprove = async () => {
     if (approving) {
@@ -53,7 +54,13 @@ export function OnboardConsentPanel({
     setApproving(true)
     setApproveError(false)
     try {
-      await approveEnrollment({ request: consent.request, session, label })
+      const suggested = consent.label ?? ''
+      await approveEnrollment({
+        request: consent.request,
+        session,
+        name: suggested,
+        ...(label !== suggested ? { label } : {})
+      })
       onApproved()
     } catch (err) {
       log.error('Onboarding the new wallet client failed', { err })

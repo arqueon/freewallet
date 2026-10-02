@@ -176,13 +176,16 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
     item: 'FW-466',
     kind: 'none'
   },
-  // 22. Listed after row 16 so the ARCHITECTURE.md order holds.
+  // 22. Retired: the `connections` writer sweep runs at the directory
+  // listing read, an encounter site on both session kinds. The number stays,
+  // so the rows below keep theirs.
+  // 23. Listed after row 16 so the ARCHITECTURE.md order holds.
   {
-    invariant: 'no-registered-writer-outlives-its-expiry',
+    invariant: 'every-party-with-authority-has-a-connection-entry',
     tornState:
-      'A registered-writers entry past its inactivity window, on an account this wallet visits: this wallet does not read the writer roster, so nothing here sweeps it.',
+      'A party with authority and no connections entry: one whose entry a deleted and re-created directory lost, or one that connected before the directory existed.',
     standsOn: ['ladder-anchored', 'enrolled'],
-    item: 'FW-141',
+    item: 'FW-569',
     kind: 'none'
   },
   // 17

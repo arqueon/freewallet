@@ -1,13 +1,16 @@
 /**
- * The detail view for a single connected application (`/applications/:cid`):
- * its display name, origin, self-issued subject DID, connected date, and the
- * storage grants recorded on the latest connect (each with its target,
- * allowed actions, expiry, and whether it has already lapsed). An app whose
- * recorded grants were all signed by a since-disconnected wallet client is
- * flagged as orphaned -- those grants stopped verifying with the account-log
- * edit (the current-key-set rule), and reconnecting is the recovery path.
- * Repeats the Applications section's Revoke action; on success it navigates
- * back to the list (the toast survives the navigation).
+ * The detail view for one connected party, an app or an agent
+ * (`/applications/:resourceId`, keyed by its `connections` entry's resource
+ * id): its display name, origin (an app's), DID, connected date (the
+ * entry's `firstSeen`), and every storage grant on the entry, live and
+ * expired, newest first (each with its target, allowed actions, expiry, and
+ * whether it has already lapsed). A party whose grants were all signed by a
+ * since-disconnected wallet client is flagged as orphaned -- those grants
+ * stopped verifying with the account-log edit (the current-key-set rule),
+ * and reconnecting is the recovery path. Repeats the Applications section's
+ * Revoke action; on success it navigates back to the list (the toast
+ * survives the navigation). A directory that cannot be listed shows the
+ * list page's load warning rather than the not-found text.
  */
 import { useState } from 'react'
 import { Link as RouterLink, useNavigate, useParams } from 'react-router'
@@ -27,10 +30,15 @@ import { useAsyncLoad } from '@/hooks/useAsyncLoad'
 import { useAuthStore } from '@/stores/authStore'
 import { showToast } from '@/stores/toastStore'
 import { dashboardStyles, storageStyles } from '@/styles/appStyles'
-import { listApplicationsView, revokeApplication } from '@/session/applications'
+import {
+  listApplicationsView,
+  revokeAgent,
+  revokeApplication
+} from '@/session/applications'
 import {
   deriveGrantsState,
   type AppGrant,
+  type ConnectedAgent,
   type ConnectedApp
 } from '@/lib/connectedApps'
 import { createLogger } from '@/lib/log'
@@ -62,21 +70,28 @@ function grantTargetLabel(target: string): string {
 export function ApplicationDetailPage() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
-  const { cid } = useParams()
+  const { resourceId } = useParams()
   const session = useAuthStore(state => state.session)
 
   const [revokeDialogOpen, setRevokeDialogOpen] = useState(false)
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
 
-  const { data: view, loading } = useAsyncLoad(
+  const {
+    data: view,
+    loading,
+    error: loadError
+  } = useAsyncLoad(
     async () => {
-      if (!session || !cid) {
+      if (!session || !resourceId) {
         return null
       }
-      const { apps, signerCheck } = await listApplicationsView({ session })
+      const { apps, agents, signerCheck } = await listApplicationsView({
+        session
+      })
       return {
-        app: apps.find(entry => entry.cid === cid) ?? null,
+        app: apps.find(entry => entry.resourceId === resourceId) ?? null,
+        agent: agents.find(entry => entry.resourceId === resourceId) ?? null,
         signerCheck,
         // Captured once when the app loads, so grant expiry is evaluated
         // against a stable timestamp rather than an impure `Date.now()` call
@@ -84,9 +99,9 @@ export function ApplicationDetailPage() {
         loadedAt: Date.now()
       }
     },
-    [session, cid],
+    [session, resourceId],
     {
-      enabled: !!session && !!cid,
+      enabled: !!session && !!resourceId,
       onError: err => {
         log.error('Could not load the connected application', { err })
       }
@@ -94,28 +109,37 @@ export function ApplicationDetailPage() {
   )
 
   const app: ConnectedApp | null = view?.app ?? null
+  const agent: ConnectedAgent | null = view?.agent ?? null
   // The account DID and the enrolled clients' signing keys from the verified
   // account log, for the grant-state check; undefined when the check is
   // unavailable.
   const signerCheck = view?.signerCheck
   const loadedAt = view?.loadedAt ?? 0
 
-  const grantsState = app
-    ? deriveGrantsState({ grants: app.grants, signerCheck })
+  // What the page shows, the same for an app and an agent: the display name
+  // (the shortened DID when the entry names none), the DID, and the grants.
+  const party = app
+    ? { did: app.subjectDid, name: app.name, grants: app.grants }
+    : agent && { did: agent.controller, name: agent.name, grants: agent.grants }
+  const partyName = party
+    ? (party.name ?? t('settings.clients.keyFingerprint', { did: party.did }))
+    : ''
+  const connectedAt = app ? app.connectedAt : agent?.connectedAt
+
+  const grantsState = party
+    ? deriveGrantsState({ grants: party.grants, signerCheck })
     : 'unknown'
 
   async function handleRevoke() {
-    if (!app || !session) {
+    if (!session || (!app && !agent)) {
       return
     }
     setRevoking(true)
     setRevokeError(false)
     try {
-      const { outcomeKey } = await revokeApplication({
-        session,
-        app,
-        grantsState
-      })
+      const { outcomeKey } = app
+        ? await revokeApplication({ session, app, grantsState })
+        : await revokeAgent({ session, agent: agent! })
       showToast({ message: t(outcomeKey) })
       navigate('/applications')
     } catch (err) {
@@ -132,8 +156,8 @@ export function ApplicationDetailPage() {
   return (
     <DashboardLayout
       title={
-        app
-          ? t('applications.detailTitle', { name: app.name })
+        party
+          ? t('applications.connectionDetailTitle', { name: partyName })
           : t('applications.title')
       }
     >
@@ -148,30 +172,41 @@ export function ApplicationDetailPage() {
       </Button>
       {loading ? (
         <LoadingSpinner />
-      ) : !app ? (
+      ) : !party ? (
         <Stack sx={{ gap: 2, mt: 1 }}>
-          <Typography color="text.secondary">
-            {t('applications.notFound')}
-          </Typography>
+          {/* A directory that could not be listed is not a missing party:
+              show the same warning the list page does. */}
+          {loadError ? (
+            <Alert severity="warning">{t('applications.loadError')}</Alert>
+          ) : (
+            <Typography color="text.secondary">
+              {t('applications.notFound')}
+            </Typography>
+          )}
         </Stack>
       ) : (
         <Stack sx={{ gap: 2, mt: 1 }}>
           {grantsState === 'orphaned' && (
             <Alert severity="warning">
-              {t('applications.orphanedNotice', { name: app.name })}
+              {t('applications.orphanedNotice', { name: partyName })}
             </Alert>
           )}
-          <Stack
-            direction="row"
-            sx={{ gap: 1, alignItems: 'baseline', flexWrap: 'wrap' }}
-          >
-            <Typography variant="subtitle2" color="text.secondary">
-              {t('applications.origin')}
-            </Typography>
-            <Typography variant="body2" sx={dashboardStyles.sharedRecipientDid}>
-              {app.origin}
-            </Typography>
-          </Stack>
+          {app?.origin !== undefined && (
+            <Stack
+              direction="row"
+              sx={{ gap: 1, alignItems: 'baseline', flexWrap: 'wrap' }}
+            >
+              <Typography variant="subtitle2" color="text.secondary">
+                {t('applications.origin')}
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={dashboardStyles.sharedRecipientDid}
+              >
+                {app.origin}
+              </Typography>
+            </Stack>
+          )}
 
           <Stack
             direction="row"
@@ -181,7 +216,7 @@ export function ApplicationDetailPage() {
               {t('applications.subjectDid')}
             </Typography>
             <Typography variant="body2" sx={dashboardStyles.sharedRecipientDid}>
-              {app.subjectDid}
+              {party.did}
             </Typography>
           </Stack>
 
@@ -190,9 +225,9 @@ export function ApplicationDetailPage() {
               {t('applications.connected')}
             </Typography>
             <Typography variant="body2">
-              {app.connectedAt
+              {connectedAt
                 ? formatDate({
-                    isoDate: app.connectedAt,
+                    isoDate: connectedAt,
                     locale: i18n.language
                   })
                 : t('applications.connectedDateUnknown')}
@@ -203,13 +238,13 @@ export function ApplicationDetailPage() {
             <Typography variant="subtitle2" color="text.secondary">
               {t('applications.grants')}
             </Typography>
-            {app.grants.length === 0 ? (
+            {party.grants.length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {t('applications.noGrants')}
               </Typography>
             ) : (
               <Stack sx={{ gap: 1, mt: 1 }}>
-                {app.grants.map((grant, index) => (
+                {party.grants.map((grant, index) => (
                   <Card
                     key={grant.id || index}
                     variant="outlined"
@@ -272,7 +307,7 @@ export function ApplicationDetailPage() {
                 setRevokeDialogOpen(true)
               }}
             >
-              {t('applications.revoke')}
+              {t(app ? 'applications.revoke' : 'applications.revokeAgent')}
             </Button>
           </Stack>
         </Stack>
@@ -280,7 +315,8 @@ export function ApplicationDetailPage() {
 
       <RevokeAppDialog
         open={revokeDialogOpen}
-        appName={app?.name ?? ''}
+        appName={partyName}
+        agent={!app && !!agent}
         orphaned={grantsState === 'orphaned'}
         revoking={revoking}
         error={revokeError}

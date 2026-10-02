@@ -55,10 +55,6 @@ import { blobBytes, createEdvEncryption } from '@interop/was-client/edv'
 import { errorNameOf } from '@interop/wallet-core/menders'
 import { publicCredentialUrl as buildPublicCredentialUrl } from '@interop/wallet-core/space'
 import {
-  wasClientLabelsStore,
-  type ClientLabelsStore
-} from '@interop/wallet-core/keys'
-import {
   isWebvhDid,
   wasWebvhIdStore,
   type WebvhIdStore
@@ -438,6 +434,45 @@ export class WASRemoteStore {
    */
   collectionHandle({ collectionId }: { collectionId: string }): Collection {
     return this.#space().collection(collectionId)
+  }
+
+  /**
+   * The `Collection` handle for one encrypted collection of this Space, with
+   * the collection's descriptor and the reader's keys as a per-handle
+   * encryption override, as {@link declareCollectionIndexes} builds it: this
+   * store's client holds no keystore, so the handle carries its own. A `get`
+   * through it opens the envelope, and a `put` seals the body under the
+   * descriptor's current epoch at the id it names. Every request rides this
+   * store's bound invocation capability when one is held (the generation
+   * delegation of a transient session) and the root capability otherwise,
+   * read at the call, so a mid-session renewal reaches the next handle.
+   *
+   * The `connections` directory's store builds over this handle, with the
+   * descriptor resolved at each directory call.
+   *
+   * @param options {object}
+   * @param options.collectionId {string}   the WAS collection id
+   * @param options.encryption {CollectionEncryption}   the collection's
+   *   current descriptor
+   * @param options.keyAgreementKey {IKeyAgreementKey}   a recipient of the
+   *   current epoch
+   * @param options.keyResolver {IKeyResolver}
+   * @returns {Collection}
+   */
+  keyedCollectionHandle({
+    collectionId,
+    encryption,
+    keyAgreementKey,
+    keyResolver
+  }: {
+    collectionId: string
+    encryption: CollectionEncryption
+    keyAgreementKey: IKeyAgreementKey
+    keyResolver: IKeyResolver
+  }): Collection {
+    return this.#space().collection(collectionId, {
+      encryption: { ...encryption, keys: { keyAgreementKey, keyResolver } }
+    })
   }
 
   /**
@@ -831,28 +866,6 @@ export class WASRemoteStore {
     return this.#space()
       .collection(KEY_MAP_COLLECTION.id, { encryption: 'plaintext' })
       .resource(DID_KEYS_RESOURCE)
-  }
-
-  /**
-   * Returns the store over the enrolled-client display labels
-   * (`key-map/client-labels.json`) for the wallet-core label helpers, bound to
-   * this store's current signing client.
-   *
-   * The labels read and write ride this store's bound invocation capability
-   * when one is held, so a session whose only authority over the Space is a
-   * delegated subtree zcap (the generation delegation a transient session
-   * invokes under) can list, set, and drop labels. An enrolled client holds
-   * none and root-invokes, as before. The capability is read here rather than
-   * captured, so a mid-session renewal reaches the next store built.
-   *
-   * @returns {ClientLabelsStore}
-   */
-  clientLabelsStore(): ClientLabelsStore {
-    return wasClientLabelsStore({
-      was: this.was,
-      spaceId: this.spaceId,
-      ...(this.#capability ? { capability: this.#capability } : {})
-    })
   }
 
   /**

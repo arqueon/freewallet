@@ -7,7 +7,12 @@ import {
   WALLET_SPACE_SYNCED_SPECS,
   WALLET_SPACE_SYSTEM_SPECS
 } from '@interop/wallet-core/space'
-import { SYSTEM_COLLECTIONS, WALLET_STANDARD_COLLECTIONS } from './app.config'
+import {
+  ENCRYPTED_WALLET_COLLECTION_IDS,
+  isProtectedCollection,
+  SYSTEM_COLLECTIONS,
+  WALLET_STANDARD_COLLECTIONS
+} from './app.config'
 
 describe('roster projections', () => {
   it('projects grantable verbatim onto the standard collections', () => {
@@ -23,6 +28,39 @@ describe('roster projections', () => {
       SYSTEM_COLLECTIONS.map(({ id, grantable }) => [id, grantable])
     ).toEqual(
       WALLET_SPACE_SYSTEM_SPECS.map(spec => [spec.collectionId, spec.grantable])
+    )
+  })
+})
+
+describe('the roster-wide collection sets', () => {
+  it('names the connections directory among the encrypted collections', () => {
+    expect([...ENCRYPTED_WALLET_COLLECTION_IDS].sort()).toEqual([
+      'app-connections',
+      'connections',
+      'contacts',
+      'contacts-history',
+      'private-credentials',
+      'wallet-activity'
+    ])
+  })
+
+  it('protects every roster collection, the connections directory included', () => {
+    for (const id of [
+      'connections',
+      'private-credentials',
+      'app-connections',
+      'key-map',
+      'id'
+    ]) {
+      expect(isProtectedCollection(id), id).toBe(true)
+    }
+    expect(isProtectedCollection('app-notes')).toBe(false)
+    expect(isProtectedCollection(undefined)).toBe(false)
+  })
+
+  it('keeps the synced sets synced-only', () => {
+    expect(WALLET_STANDARD_COLLECTIONS.map(({ id }) => id)).not.toContain(
+      'connections'
     )
   })
 })

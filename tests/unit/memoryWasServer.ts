@@ -7,9 +7,12 @@
  * `PUT` stores the body under a fresh `ETag`, refusing an `If-None-Match: *`
  * create over a stored path, or an `If-Match` on a stale `ETag`, with 412.
  * `GET` serves it back (404 when absent). `DELETE` removes a resource
- * together with every chunk stored under it. `failWhen` makes a chosen
+ * together with every chunk stored under it. A `POST` of the `changes`
+ * profile to a collection's `query` path serves the collection's documents
+ * feed in one page, each document with its `ETag`. `failWhen` makes a chosen
  * request fail with its `status` (default 503), to tear a write or fill the
- * Space.
+ * Space. Every request is recorded in `requests`, with the capability it
+ * invoked under.
  */
 import { WasClient } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
@@ -26,6 +29,7 @@ export interface MemoryRequestArgs {
   json?: unknown
   body?: unknown
   headers?: Record<string, string>
+  capability?: unknown
 }
 
 /**
@@ -45,6 +49,7 @@ export function memoryWasServer(): {
     spaceId: string
     collectionId: string
   }) => Array<{ id: string; data: unknown }>
+  requests: MemoryRequestArgs[]
 } {
   const store = new Map<string, Uint8Array>()
   const etags = new Map<string, string>()
@@ -56,11 +61,43 @@ export function memoryWasServer(): {
   const fail = (status: number): never => {
     throw { status, response: { status } }
   }
+  const requests: MemoryRequestArgs[] = []
   const request = async (args: MemoryRequestArgs): Promise<unknown> => {
+    requests.push(args)
     const path = new URL(args.url!).pathname
     const method = args.method ?? 'GET'
     if (failWhen.test?.(args, path)) {
       fail(failWhen.status ?? 503)
+    }
+    if (
+      method === 'POST' &&
+      path.endsWith('/query') &&
+      (args.json as { profile?: unknown } | undefined)?.profile === 'changes'
+    ) {
+      const prefix = path.slice(0, -'query'.length)
+      const documents = [...store]
+        .filter(
+          ([stored]) =>
+            stored.startsWith(prefix) &&
+            !stored.slice(prefix.length).includes('/')
+        )
+        .map(([stored, bytes]) => ({
+          id: stored.slice(prefix.length),
+          _deleted: false,
+          updatedAt: '2026-10-01T00:00:00.000Z',
+          version: 1,
+          etag: etags.get(stored),
+          data: JSON.parse(new TextDecoder().decode(bytes))
+        }))
+      const page = { documents, checkpoint: null }
+      return {
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        data: page,
+        async json() {
+          return page
+        }
+      }
     }
     const ifMatch = args.headers?.['if-match']
     if (ifMatch !== undefined && etags.get(path) !== ifMatch) {
@@ -151,5 +188,5 @@ export function memoryWasServer(): {
         data: JSON.parse(new TextDecoder().decode(bytes))
       }))
   }
-  return { store, client, failWhen, documentsOf }
+  return { store, client, failWhen, documentsOf, requests }
 }

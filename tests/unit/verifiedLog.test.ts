@@ -57,13 +57,18 @@ vi.mock('@interop/wallet-core/clients', async importOriginal => ({
       sharedState.lastVerifiedLog = verifiedLog
       return []
     }
-  )
+  ),
+  // The rename reads the enrolled clients off the same memo.
+  currentAccountSigningKeys: vi.fn(async () => new Set(['z6MkSomeClient']))
 }))
 
-vi.mock('@interop/wallet-core/keys', async importOriginal => ({
-  ...(await importOriginal<typeof import('@interop/wallet-core/keys')>()),
-  setClientLabel: vi.fn(async () => {
+vi.mock('@interop/wallet-core/connections', async importOriginal => ({
+  ...(await importOriginal<
+    typeof import('@interop/wallet-core/connections')
+  >()),
+  setConnectionLabel: vi.fn(async () => {
     sharedState.labelWrites += 1
+    return { resourceId: 'entry', outcome: 'updated' }
   })
 }))
 
@@ -94,9 +99,13 @@ function sessionWith({ pointer = POINTER } = {}): Session {
     isGuest: false,
     storage: {
       remoteStore: {
-        clientLabelsStore: () => ({}),
         webvhIdStore: () => ({})
-      }
+      },
+      connectionsDirectory: async () => ({
+        store: {},
+        hmacKey: new Uint8Array(32),
+        spaceUrl: 'https://was.example.test/space/space-123/'
+      })
     },
     persistence: browserLocalSessionPersistence(),
     profile: {

@@ -27,7 +27,6 @@ import {
   isWebvhDid,
   type ClientWebvhUpdateKeys
 } from '@interop/wallet-core/webvh'
-import { setClientLabel } from '@interop/wallet-core/keys'
 import { browserLocalSessionPersistence } from '@/session/persistence'
 import { WAS_SERVER_URL } from '@/app.config'
 import { KEYRING_KDF } from '@interop/wallet-core/keyring'
@@ -42,6 +41,7 @@ import {
   reprimeVerifiedAccountLog
 } from '@/session/verifiedLog'
 import { accountCeremonyContext } from '@/session/accountCeremonyContext'
+import { recordWalletClientEntry } from '@/session/clients'
 import type { Session } from '@/types/auth'
 import { createLogger } from '@/lib/log'
 import { wasServiceDescription } from '@/lib/wasService'
@@ -69,24 +69,35 @@ const log = createLogger('fw:enrollment')
  * escrow-direction convergence of any later ladder-branch ceremony, and by a
  * disconnect from the Connected wallets listing the row now appears in.
  *
+ * Once the ceremony lands, the new client's `connections` entry is written:
+ * `name` is the name the approver was offered: the enrollee's suggested label
+ * on the onboarding transport, or the Connected wallets panel's "Wallet N"
+ * default on a pasted connect code, which carries none. `label` is set only
+ * when the approver edited it. The document carries
+ * key material only. Best-effort: a failed entry write does not fail the
+ * completed ceremony.
+ *
  * @param options {object}
  * @param options.request {EnrollmentRequest}   the parsed connect code
  * @param options.session {Session}   the approving session
- * @param [options.label] {string}   a display label for the new client,
- *   chosen here at approval (the document carries key material, never
- *   labels, so it lands in `key-map/client-labels.json`); best-effort -- a
- *   label write failure never fails the completed ceremony
+ * @param [options.name] {string}   the name the approver was offered for the
+ *   new client
+ * @param [options.label] {string}   the approver's own name for the new
+ *   client, passed only when the approver edited the offered one
  * @returns {Promise<object>}   the account's did:webvh, plus the newly
  *   enrolled client's own identity as the ceremony states it (its did:key and
- *   its signing-key multibase -- what a label or a listing row is filed under)
+ *   its signing-key multibase -- what an entry or a listing row is filed
+ *   under)
  */
 export async function approveEnrollment({
   request,
   session,
+  name,
   label
 }: {
   request: EnrollmentRequest
   session: Session
+  name?: string
   label?: string
 }): Promise<{ did: string; clientDid: string; signingKeyMultibase: string }> {
   const context = await accountCeremonyContext({ session })
@@ -97,7 +108,7 @@ export async function approveEnrollment({
         'passphrase or passkey; this session holds neither.'
     )
   }
-  const { remoteStore, pointer } = context
+  const { pointer } = context
   const { profile } = session
   // The party that unwraps each epoch to re-wrap it for the enrollee: this
   // client's own key-agreement key when one is enrolled here, the acting
@@ -130,16 +141,15 @@ export async function approveEnrollment({
   // that peek it (the Key Management chip, the DIDAuth holder dispatch) would
   // read cold until some other section fetched. Best-effort.
   await reprimeVerifiedAccountLog({ session, pointer })
-  if (label?.trim()) {
-    try {
-      await setClientLabel({
-        store: remoteStore.clientLabelsStore(),
-        signingKeyMultibase: approved.signingKeyMultibase,
-        label
-      })
-    } catch (err) {
-      log.warn("Could not save the new client's label", { err })
-    }
+  try {
+    await recordWalletClientEntry({
+      session,
+      did: approved.clientDid,
+      ...(name?.trim() ? { name } : {}),
+      ...(label?.trim() ? { label } : {})
+    })
+  } catch (err) {
+    log.warn("Could not write the new client's connections entry", { err })
   }
   return approved
 }

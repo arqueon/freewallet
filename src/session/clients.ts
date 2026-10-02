@@ -1,15 +1,15 @@
 /**
  * The Settings "wallets connected to this account" listing: Freewallet's
  * session-shaped glue over the shared enrolled-client surface in
- * `@interop/wallet-core/clients`. The listing, the label merge, and the
+ * `@interop/wallet-core/clients`. The listing, the name join, and the
  * disconnect-eligibility policy live there, so both wallets show the same rows
  * and refuse the same ones for the same reasons; what stays here is only what
  * a `Session` knows -- whether this account is manageable at all, where its
- * log lives, which key is this browser's, and dropping a disconnected client's
- * label afterwards.
+ * log lives, which key is this browser's, and how its `connections`
+ * directory is reached.
  *
  * - `listAccountClients` -- the shared listing, with this session's own client
- *   marked and the label store supplied.
+ *   marked and the directory's wallet-client entries supplied for names.
  * - `currentAccountSignerCheck` -- the same verified log reduced to the
  *   account DID, the enrolled clients' signing-key multibases, and the
  *   delegated-clients pointer, for the Applications surface to check
@@ -18,19 +18,31 @@
  *   grant dies with the generation it chains under). The gating on whether
  *   a session HAS a promoted account is app-side, so this wrapper resolves
  *   `undefined` rather than throwing for a guest.
- * - `renameAccountClient` -- writes one label (chosen at enrollment approval,
- *   editable afterwards; the document carries key material, never labels).
+ * - `renameAccountClient` -- sets the user's `label` on the client's
+ *   wallet-client entry (the document carries key material only).
+ * - `recordWalletClientEntry` / `recordOwnWalletClientEntry` -- write a
+ *   wallet-client entry's names: the approver's at enrollment, and a client
+ *   naming itself at signup and self-enrollment.
  * - `disconnectAccountClient` -- drives the client-revocation epoch cascade
- *   from a listed row, then drops the disconnected client's label as hygiene.
+ *   from a listed row; the cascade retires the client's entry.
  *
  * Both read paths take their log from the session's verified-log memo
  * (`src/session/verifiedLog.ts`) instead of re-verifying `did.jsonl` per
- * surface, so a label rename -- which reloads the listing afterwards -- costs
- * a labels read and nothing else.
+ * surface, so a rename -- which reloads the listing afterwards -- costs one
+ * directory read and nothing else.
  */
-import { clientSigningKeyMultibase } from '@interop/wallet-core/webvh'
+import {
+  clientSigningKeyMultibase,
+  enrolledClientVmIds,
+  isWebvhDid
+} from '@interop/wallet-core/webvh'
+import { vmFragmentOf } from '@interop/vh-resource-log'
 import { delegatedClientsPointer } from '@interop/wallet-core/clientAnnex'
-import { removeClientLabel, setClientLabel } from '@interop/wallet-core/keys'
+import {
+  setConnectionLabel,
+  type ConnectionEntry,
+  type ReadConnection
+} from '@interop/wallet-core/connections'
 import { epochKeyIdFor } from '@interop/was-client/edv'
 import {
   currentAccountSigningKeys as sharedCurrentAccountSigningKeys,
@@ -39,6 +51,7 @@ import {
 } from '@interop/wallet-core/clients'
 import type { AccountClientView } from '@interop/wallet-core/clients'
 import type { Session } from '@/types/auth'
+import { DEFAULT_CLIENT_LABEL } from '@/app.config'
 import type { AccountSignerCheck } from '@/lib/connectedApps'
 import {
   accountCeremonyContext,
@@ -48,9 +61,11 @@ import {
 } from '@/session/accountCeremonyContext'
 import {
   revokeEnrolledClient,
+  walletClientDid,
   type RevocationOutcome
 } from '@/session/revocation'
 import { reportCeremonyTail } from '@/session/menders/ceremonyTail'
+import { listConnectionsDirectory } from '@/session/menders/encounterSites'
 import { verifiedAccountLog } from '@/session/verifiedLog'
 import { createLogger } from '@/lib/log'
 
@@ -126,10 +141,184 @@ async function requireClientListing(
 }
 
 /**
+ * The `connections` directory's entries, from one listing read: every
+ * parseable entry at its own resource id. The read is the writer sweep's
+ * encounter site, which starts behind it. Throws when the directory is
+ * refused or absent, or the listing fails; the client listing reads that as
+ * unnamed rows.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @returns {Promise<ConnectionEntry[]>}
+ */
+export async function readDirectoryEntries({
+  session
+}: {
+  session: Session
+}): Promise<ConnectionEntry[]> {
+  const { connections } = await readDirectoryListing({ session })
+  return connections.map(({ entry }) => entry)
+}
+
+/**
+ * The `connections` directory as a page reads it: one listing read, every
+ * parseable entry at its own resource id, and this Space's container URL the
+ * grant checks read (absent on a session with no Space). Every lookup by DID
+ * a page makes resolves against this one read, in memory. The read is the
+ * writer sweep's encounter site, which starts behind it. Throws when the
+ * directory is refused or absent, or the listing fails.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @returns {Promise<{ connections: ReadConnection[]; spaceUrl?: string }>}
+ */
+export async function readDirectoryListing({
+  session
+}: {
+  session: Session
+}): Promise<{ connections: ReadConnection[]; spaceUrl?: string }> {
+  const listing = await listConnectionsDirectory({ session })
+  if (!listing) {
+    throw new Error('The connections directory could not be listed.')
+  }
+  if (listing.unreadable.length > 0 || listing.unparseable.length > 0) {
+    // The listings show the entries they can read; a party behind an entry
+    // this session cannot open is missing from them until it reads.
+    log.warn('Some connections entries could not be read', {
+      unreadable: listing.unreadable.length,
+      unparseable: listing.unparseable.length
+    })
+  }
+  const { spaceUrl } = session.storage
+  return {
+    connections: listing.entries,
+    ...(spaceUrl !== undefined ? { spaceUrl } : {})
+  }
+}
+
+/**
+ * The did:keys of every wallet client the account document lists or ever
+ * listed, from the locally verified did:webvh log: each log entry's document
+ * read for its enrolled clients' verification methods. A revoked client's
+ * did:key stays public in the log for good, so the set covers it. When this
+ * session's account pointer is absent or names no did:webvh, there is no
+ * account document. The only wallet client is then this session's own key,
+ * so the set holds its did:key (and is empty when the session holds no
+ * did:key agent). Throws when the log cannot be fetched or verified.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @returns {Promise<Set<string>>}
+ */
+export async function listedClientDids({
+  session
+}: {
+  session: Session
+}): Promise<Set<string>> {
+  const pointer = session.profile.accountPointer
+  if (!pointer || !isWebvhDid(pointer.did)) {
+    const ownDid = session.profile.keyAgent?.id
+    return new Set(ownDid?.startsWith('did:key:') ? [ownDid] : [])
+  }
+  const { log: accountLog } = await verifiedAccountLog({ session, pointer })
+  const dids = new Set<string>()
+  for (const entry of accountLog) {
+    for (const vmId of enrolledClientVmIds({ doc: entry.state })) {
+      const signingKeyMultibase = vmFragmentOf(vmId)
+      if (signingKeyMultibase) {
+        dids.add(walletClientDid({ signingKeyMultibase }))
+      }
+    }
+  }
+  return dids
+}
+
+/**
+ * Writes a wallet client's names on its `wallet-client` entry: `name`, its
+ * self-declared or suggested name, and `label`, the user's own. An omitted
+ * member is left as stored, and a blank `label` removes it. An absent entry
+ * is created only for a client the verified account document lists, which
+ * is read here.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param options.did {string}   the client's did:key
+ * @param [options.name] {string}
+ * @param [options.label] {string}
+ * @returns {Promise<void>}
+ */
+export async function recordWalletClientEntry({
+  session,
+  did,
+  name,
+  label
+}: {
+  session: Session
+  did: string
+  name?: string
+  label?: string
+}): Promise<void> {
+  const { pointer } = await requireClientListing(session)
+  const enrolledSigningKeys = await sharedCurrentAccountSigningKeys({
+    pointer: {
+      did: pointer.did,
+      spaceId: pointer.spaceId,
+      host: pointer.host
+    },
+    verifiedLog: await verifiedAccountLog({ session, pointer })
+  })
+  const { store, hmacKey } = await session.storage.connectionsDirectory()
+  await setConnectionLabel({
+    store,
+    hmacKey,
+    did,
+    kind: 'wallet-client',
+    ...(name !== undefined ? { name } : {}),
+    ...(label !== undefined ? { label } : {}),
+    enrolledSigningKeys
+  })
+}
+
+/**
+ * Writes this session's own client's entry, named by the default platform
+ * label: the client names itself at signup and at a self-enrollment, which
+ * have no approving screen. Best-effort: a failure is logged and the
+ * listing shows the row unnamed. Only an enrolled client has an entry of its
+ * own, so any other session writes nothing.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @returns {Promise<void>}
+ */
+export async function recordOwnWalletClientEntry({
+  session
+}: {
+  session: Session
+}): Promise<void> {
+  try {
+    if (!canManageAccountClients({ session })) {
+      return
+    }
+    const context = enrolledCeremonyContext({ session })
+    if (!context) {
+      return
+    }
+    await recordWalletClientEntry({
+      session,
+      did: context.keyAgent.id,
+      name: DEFAULT_CLIENT_LABEL
+    })
+  } catch (err) {
+    log.warn("Could not write this client's connections entry", { err })
+  }
+}
+
+/**
  * Lists the account's enrolled wallet clients from the locally verified
- * did:webvh log, with labels merged and this session's own client marked. A
- * label-read failure degrades to unlabeled rows (the listing itself only
- * fails when the log cannot be fetched or verified).
+ * did:webvh log, with names joined from the directory's wallet-client
+ * entries and this session's own client marked. A directory-read failure
+ * degrades to unnamed rows (the listing itself only fails when the log
+ * cannot be fetched or verified).
  *
  * @param options {object}
  * @param options.session {Session}
@@ -141,7 +330,7 @@ export async function listAccountClients({
   session: Session
 }): Promise<AccountClientView[]> {
   const context = await requireClientListing(session)
-  const { remoteStore, pointer } = context
+  const { pointer } = context
   return await sharedListAccountClients({
     pointer: {
       did: pointer.did,
@@ -152,7 +341,7 @@ export async function listAccountClients({
       session,
       pointer
     }),
-    labelsStore: remoteStore.clientLabelsStore(),
+    readDirectoryEntries: () => readDirectoryEntries({ session }),
     // "This browser" marks the row this session runs AS. A transient session
     // runs as no enrolled client at all, so no row is marked and the chip
     // does not render.
@@ -233,7 +422,8 @@ export async function accountUserKeyGenerationKids({
 }
 
 /**
- * Sets (or clears, with a blank value) one enrolled client's display label.
+ * Sets (or clears, with a blank value) the user's `label` for one enrolled
+ * client, on its wallet-client entry.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -250,10 +440,9 @@ export async function renameAccountClient({
   signingKeyMultibase: string
   label: string
 }): Promise<void> {
-  const { remoteStore } = await requireClientListing(session)
-  await setClientLabel({
-    store: remoteStore.clientLabelsStore(),
-    signingKeyMultibase,
+  await recordWalletClientEntry({
+    session,
+    did: walletClientDid({ signingKeyMultibase }),
     label
   })
 }
@@ -261,8 +450,8 @@ export async function renameAccountClient({
 /**
  * Disconnects an enrolled wallet client: the full revocation cascade
  * (`revokeEnrolledClient` -- document edit, user key rotation, collection
- * re-epoch, recovery re-mints, live adoption), then the label dropped as
- * best-effort hygiene. `revokedClientKeysFor` refuses a row whose active
+ * re-epoch, recovery re-mints, live adoption, and the client's directory
+ * entry retired ahead of the audit row). `revokedClientKeysFor` refuses a row whose active
  * update key the log attribution could not isolate -- disconnecting with a
  * guessed key could revoke another party's authority.
  *
@@ -279,28 +468,22 @@ export async function disconnectAccountClient({
   client: AccountClientView
 }): Promise<RevocationOutcome> {
   const context = await requireClientListing(session)
-  const { remoteStore } = context
   // Wait out the login-time registry passes rather than racing their
   // read-modify-writes (the cascade re-wraps the registry); on a settled
   // session the chain resolved long ago.
   await session.registryReady
+  // The history record names the client as the listing does: the user's
+  // label first, then the client's own name.
+  const historyLabel = client.label ?? client.name
   const outcome = await revokeEnrolledClient({
     session,
     context,
     client: revokedClientKeysFor({ client }),
-    ...(client.label !== undefined ? { label: client.label } : {})
+    ...(historyLabel !== undefined ? { label: historyLabel } : {})
   })
   // The cascade's ceremony-tail entry, reported from the ceremony's own call
   // site: it carries no registration, so no login chain's runner ever sees
   // it.
   reportCeremonyTail({ ceremony: 'client-revocation', mended: outcome.mended })
-  try {
-    await removeClientLabel({
-      store: remoteStore.clientLabelsStore(),
-      signingKeyMultibase: client.signingKeyMultibase
-    })
-  } catch (err) {
-    log.warn("Could not drop the disconnected client's label", { err })
-  }
   return outcome
 }

@@ -75,7 +75,7 @@ import {
 import type { CeremonyId } from '@interop/wallet-core'
 import {
   DID_KEYS_RESOURCE,
-  ENCRYPTED_STANDARD_COLLECTIONS,
+  ENCRYPTED_WALLET_COLLECTION_IDS,
   KEY_MAP_COLLECTION,
   KMS_SERVER_URL,
   WAS_SERVER_URL
@@ -761,7 +761,7 @@ export async function ladderMendAuthority({
  *   no tear of their own
  * @param [options.collectionIds] {string[]}   the encrypted-collection set
  *   the roster arm's completion probe and epoch fan-out cover; defaults to
- *   this wallet's own encrypted standard collections, which is what the
+ *   the provision roster's encrypted collections, which is what the
  *   establishment installed epoch[0] on
  * @returns {Promise<CredentialAnchoredMendReport>}
  */
@@ -784,7 +784,7 @@ export async function mendCredentialAnchoredAccount({
   registry,
   userKey,
   repairShaped,
-  collectionIds = ENCRYPTED_STANDARD_COLLECTIONS.map(({ id }) => id)
+  collectionIds = [...ENCRYPTED_WALLET_COLLECTION_IDS]
 }: {
   credential: UnlockCredential
   ladderSeed: Uint8Array

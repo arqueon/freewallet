@@ -111,7 +111,7 @@ import {
   upsertPassphraseUnlockMethod
 } from '@/session/unlockMethods'
 import { transientSessionStores } from '@/session/persistence'
-import { ENCRYPTED_STANDARD_COLLECTIONS } from '@/app.config'
+import { ENCRYPTED_WALLET_COLLECTION_IDS } from '@/app.config'
 
 const ACCOUNT_DID =
   'did:webvh:QmScidForTests:was.example.test:space:space-123:id'
@@ -445,11 +445,11 @@ describe('mendCredentialAnchoredAccount -- the mend binding', () => {
     expect(options.delegatedRead).toBe(delegatedRead)
     expect(options.registry).toBe(registry)
     expect(options.repairShaped).toBe(true)
-    // The roster arm's completion probe and fan-out cover this wallet's own
-    // encrypted collections, the set the establishment installed epoch[0] on.
-    expect(options.collectionIds).toEqual(
-      ENCRYPTED_STANDARD_COLLECTIONS.map(({ id }) => id)
-    )
+    // The roster arm's completion probe and fan-out cover the provision
+    // roster's encrypted collections, the `connections` directory among
+    // them: the set the establishment installed epoch[0] on.
+    expect(options.collectionIds).toEqual([...ENCRYPTED_WALLET_COLLECTION_IDS])
+    expect(options.collectionIds).toContain('connections')
   })
 
   it('refuses with no WAS server before wallet-core is ever called', async () => {

@@ -2,9 +2,12 @@ import { test, expect, type Browser, type Page } from '@playwright/test'
 import {
   fillSettled,
   forceRememberBrowser,
+  readConnectionsDirectory,
+  sessionSpaceId,
   signupViaWizard,
   submitTransientLogin
 } from './helpers'
+import { readCollectionEpoch, readUserKeyRoster } from './storedLogs'
 
 /**
  * The Settings "Connected wallets" surface e2e (WAS mode): the enrolled
@@ -15,7 +18,10 @@ import {
  * self-enrolls with the standing passphrase and lists as a second wallet,
  * named inline from the panel; disconnecting it drives the full revocation
  * cascade, the list updates, and the disconnected browser's next login is
- * refused.
+ * refused. A client enrolled through the connect code carries the approver's
+ * name in its `connections` entry: the rename updates that entry, and the
+ * disconnect retires it and re-keys the directory with the other encrypted
+ * collections.
  *
  * Argon2id unlock derivations run several times across the ceremonies, on top
  * of a full signup -- hence `test.slow()` and the generous timeouts.
@@ -255,6 +261,159 @@ test.describe('The Settings connected-wallets surface', () => {
     } finally {
       await enrollee.context().close()
       await terminal.context().close()
+    }
+  })
+
+  test('an enrolled client entry follows its label, retires on disconnect, and the directory re-keys', async ({
+    page,
+    browser
+  }, testInfo) => {
+    test.slow()
+
+    // Client 1: a remembered signup, the approver.
+    const { passphrase } = await signupViaWizard(page, testInfo)
+    const spaceId = await sessionSpaceId(page)
+
+    const enrollee = await coldClientPage(browser)
+    try {
+      // Client 2 (cold) asks to be connected, through the non-production
+      // connect-offer seam (see the rebind test above).
+      await enrollee.goto('/#/login')
+      await enrollee.evaluate(() => {
+        ;(
+          window as unknown as { __E2E_OFFER_CONNECT_CARD__?: boolean }
+        ).__E2E_OFFER_CONNECT_CARD__ = true
+      })
+      await fillSettled(enrollee.locator('input[type="password"]'), passphrase)
+      await enrollee
+        .getByRole('button', { name: 'Log in', exact: true })
+        .click()
+      await expect(
+        enrollee.getByRole('button', { name: 'Connect this browser' })
+      ).toBeVisible({ timeout: 60_000 })
+      await enrollee
+        .getByRole('button', { name: 'Connect this browser' })
+        .click()
+      const codeField = enrollee.getByTestId('enroll-connect-code')
+      await expect(codeField).toBeVisible({ timeout: 30_000 })
+      const connectCode = (await codeField.inputValue()).trim()
+
+      // Client 1 approves under a name it edits: the field comes prefilled
+      // with the code's suggested name, which the entry keeps as `name`, and
+      // the edited text becomes the entry's `label`.
+      await page.goto('/#/settings')
+      await page.getByRole('button', { name: 'Connect another wallet' }).click()
+      await fillSettled(page.getByTestId('enroll-code-input'), connectCode)
+      const labelField = page.getByTestId('enroll-label-input')
+      const offeredName = (await labelField.inputValue()).trim()
+      await fillSettled(labelField, 'Second browser')
+      await page.getByRole('button', { name: 'Approve', exact: true }).click()
+      await expect(
+        page.getByText('The new browser was enrolled', { exact: false })
+      ).toBeVisible({ timeout: 120_000 })
+      await enrollee
+        .getByRole('button', { name: 'I approved it -- finish connecting' })
+        .click()
+      await expect(enrollee).toHaveURL(/#\/dashboard/, { timeout: 120_000 })
+
+      // The Connected wallets panel names the new client by its label.
+      await page.goto('/#/dashboard')
+      await page.goto('/#/settings')
+      await expect(walletCards(page)).toHaveCount(2, { timeout: 30_000 })
+      // Addressed as the card that is NOT this browser, which stays stable
+      // while edit mode swaps the name text for the name field.
+      const enrolleeCard = walletCards(page).filter({
+        hasNotText: 'This browser'
+      })
+      await expect(enrolleeCard.getByText('Second browser')).toBeVisible()
+
+      // The entry carries the edited label beside the offered name.
+      const labeled = (await readConnectionsDirectory(page)).filter(
+        entry => entry.kind === 'wallet-client' && entry.label !== undefined
+      )
+      expect(labeled).toHaveLength(1)
+      const entry = labeled[0]!
+      expect(entry.label).toBe('Second browser')
+      expect(entry.id).toMatch(/^did:key:/)
+      expect(entry.retired).toBeUndefined()
+      if (offeredName.length > 0) {
+        expect(entry.name).toBe(offeredName)
+      }
+
+      // Rename it inline: the entry's `label` follows, at the same resource
+      // id, and a remounted panel shows the new name.
+      await enrolleeCard.getByRole('button', { name: 'Edit' }).click()
+      await fillSettled(
+        enrolleeCard.getByLabel('Wallet name', { exact: true }),
+        'Kitchen tablet'
+      )
+      await enrolleeCard
+        .getByRole('button', { name: 'Save', exact: true })
+        .click()
+      await expect(page.getByText('Kitchen tablet')).toBeVisible({
+        timeout: 30_000
+      })
+      const renamed = (await readConnectionsDirectory(page)).find(
+        candidate => candidate.resourceId === entry.resourceId
+      )
+      expect(renamed?.label).toBe('Kitchen tablet')
+      expect(renamed?.id).toBe(entry.id)
+      await page.goto('/#/dashboard')
+      await page.goto('/#/settings')
+      await expect(
+        walletCards(page)
+          .filter({ hasNotText: 'This browser' })
+          .getByText('Kitchen tablet')
+      ).toBeVisible({ timeout: 30_000 })
+
+      // The key generation the directory is sealed under before the
+      // disconnect: the user key the roster names as current.
+      const rosterBefore = await readUserKeyRoster({ spaceId })
+      const directoryBefore = await readCollectionEpoch({
+        spaceId,
+        collectionId: 'connections'
+      })
+      expect(directoryBefore.generations).toContain(rosterBefore.currentEpoch)
+
+      // Disconnect it: the full revocation cascade.
+      const kitchenCard = walletCards(page).filter({
+        hasText: 'Kitchen tablet'
+      })
+      await kitchenCard
+        .getByRole('button', { name: 'Disconnect', exact: true })
+        .click()
+      await page
+        .getByRole('button', { name: 'Disconnect wallet', exact: true })
+        .click()
+      await expect(walletCards(page)).toHaveCount(1, { timeout: 120_000 })
+      await expect(page.getByText('Kitchen tablet')).not.toBeVisible()
+
+      // The entry is retired in place, and keeps its label, so history that
+      // names the departed client still resolves.
+      const retired = (await readConnectionsDirectory(page)).find(
+        candidate => candidate.resourceId === entry.resourceId
+      )
+      expect(retired?.retired).toBeDefined()
+      expect(retired?.label).toBe('Kitchen tablet')
+
+      // The cascade re-keyed the directory. Its key epochs wrap to user key
+      // generations only, never to a client key directly, so "no longer
+      // readable by the revoked client" shows as the directory moving to the
+      // rotated user key and off the one the revoked client held.
+      const rosterAfter = await readUserKeyRoster({ spaceId })
+      expect(rosterAfter.currentEpoch).not.toBe(rosterBefore.currentEpoch)
+      const directoryAfter = await readCollectionEpoch({
+        spaceId,
+        collectionId: 'connections'
+      })
+      expect(directoryAfter.entries).toBeGreaterThan(directoryBefore.entries)
+      expect(directoryAfter.currentEpoch).not.toBe(directoryBefore.currentEpoch)
+      expect(directoryAfter.generations).toContain(rosterAfter.currentEpoch)
+      expect(directoryAfter.generations).not.toContain(
+        rosterBefore.currentEpoch
+      )
+    } finally {
+      await enrollee.context().close()
     }
   })
 })

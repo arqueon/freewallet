@@ -4,13 +4,14 @@
  * encrypted set -- `app-connections` and `wallet-activity` carry key-epoch
  * rosters and are deliberately never shareable, since their Resources are the
  * connected apps' private seeds and the account's grant history. The shares
- * listing (`listSharedCollections` in `src/session/shares.ts`) reads the whole
- * encrypted set instead, so a reader escrowed into a collection that is not
- * shareable stays visible and removable.
+ * listing (`listSharedCollections` in `src/session/shares.ts`) reads the
+ * whole roster-wide encrypted set instead, so a reader escrowed into a
+ * collection that is not shareable stays visible and removable.
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
   ENCRYPTED_STANDARD_COLLECTIONS,
+  ENCRYPTED_WALLET_COLLECTION_IDS,
   WALLET_STANDARD_COLLECTIONS
 } from '@/app.config'
 import { listSharedCollections } from '@/session/shares'
@@ -71,9 +72,12 @@ describe('listSharedCollections', () => {
 
     const listing = await listSharedCollections({ session })
 
+    // The roster-wide encrypted set: the `connections` directory is listed
+    // too, and shows no readers, since its roster holds only the user key.
     expect(Object.keys(listing).sort()).toEqual(
-      ids(ENCRYPTED_STANDARD_COLLECTIONS).sort()
+      [...ENCRYPTED_WALLET_COLLECTION_IDS].sort()
     )
+    expect(listing['connections']).toEqual([])
     // A reader escrowed before the collection stopped being shareable.
     expect(listing['wallet-activity']).toEqual([reader])
   })

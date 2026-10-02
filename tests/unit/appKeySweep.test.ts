@@ -99,15 +99,24 @@ function fakeStorage(stored: StoredCredential[]) {
     listCredentials: vi.fn(async () => [...held]),
     // The sweep retires a stranded key's live authority before deleting its
     // credential; the revoke-before-delete ordering has its own suite
-    // (`src/session/appKeySweep.test.ts`), so here they just succeed.
-    listHistoryItems: vi.fn(async () => ({ entries: [], unreadable: 0 })),
+    // (`src/session/appKeySweep.test.ts`), so here they just succeed. A
+    // stranded key predates the directory, which holds no entry for it.
+    readConnectionsListing: vi.fn(async () => ({
+      listing: { entries: [], unreadable: [], unparseable: [] }
+    })),
     listCollections: vi.fn(async () => []),
-    revokeAppCollectionRecipients: vi.fn(async () => ({
+    revokeCollectionRecipients: vi.fn(async () => ({
       collections: 0,
       rotated: 0,
-      failed: 0
+      failed: 0,
+      revokedIds: []
     })),
-    revokeAppGrants: vi.fn(async () => ({ revoked: 0, skipped: 0 })),
+    revokeConnectionGrants: vi.fn(async () => ({
+      revoked: 0,
+      withdrawn: 0,
+      skipped: 0,
+      revokedIds: []
+    })),
     // The orphan public-copy pass has its own suite too; here the account has
     // no public copies, so it is a no-op.
     listPublicCredentials: vi.fn(async () => []),
@@ -173,12 +182,17 @@ describe('sweepStrandedAppKeys', () => {
   })
 
   it('deletes a genuine legacy app key whose seed derives its subject', async () => {
-    const { storage, held } = fakeStorage([
+    const { storage, held, calls } = fakeStorage([
       { cid: 'c-legacy', vc: await legacyAppKey() }
     ])
 
     expect((await sweepStrandedAppKeys({ storage })).deleted).toBe(1)
     expect(held).toEqual([])
+    // It has no entry, so no grant was handed to the revocation.
+    expect(calls.revokeConnectionGrants).toHaveBeenCalledWith({
+      grants: [],
+      revokedByRotation: []
+    })
   })
 
   it('keeps sweeping after a delete fails, reporting only what was deleted', async () => {

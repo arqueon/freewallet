@@ -12,9 +12,11 @@ import {
   PRIVATE_CREDENTIALS_COLLECTION,
   PUBLIC_CREDENTIALS_COLLECTION,
   WALLET_ACTIVITY_COLLECTION,
+  WALLET_SPACE_PROVISION_ROSTER,
   WALLET_SPACE_SYNCED_SPECS,
   WALLET_SPACE_SYSTEM_SPECS
 } from '@interop/wallet-core/space'
+import { encryptedWalletCollectionIds } from '@interop/wallet-core/space/collections'
 
 const env = import.meta.env
 
@@ -195,16 +197,27 @@ export const WALLET_STANDARD_COLLECTIONS: Array<{
 })
 
 /**
- * The encrypted standard collections -- the ones carrying an EDV encryption
- * descriptor, and so a key-epoch roster. The one home of that predicate: the
- * cipher build, the descriptor acquisition, and the user-key cascade fan-out
- * import this set rather than re-running the filter, and the shares listing
- * reads every one of them for readers. Deliberately distinct from the
- * `shareable` flag: every collection here has keys to rotate, but not every
- * one of them may be offered to a new reader.
+ * The encrypted synced collections -- the standard collections carrying an
+ * EDV encryption descriptor. The synced cipher map is built over this set,
+ * one cipher per RxDB key. Every other rule over the encrypted collections
+ * reads {@link ENCRYPTED_WALLET_COLLECTION_IDS}, which also holds the
+ * directly read `connections` directory.
  */
 export const ENCRYPTED_STANDARD_COLLECTIONS =
   WALLET_STANDARD_COLLECTIONS.filter(({ encryption }) => encryption)
+
+/**
+ * The encrypted collections of the full wallet Space provision roster: every
+ * synced encrypted collection plus the `connections` directory, which is read
+ * and written directly and never replicated. The one home of that set: the
+ * descriptor acquisition, the local descriptor mint, the stranded report,
+ * the user key cascade's base set, the credential-anchored mend, and the
+ * shares listing read it. Deliberately distinct from the `shareable` flag:
+ * every collection here has keys to rotate, but not every one of them may be
+ * offered to a new reader.
+ */
+export const ENCRYPTED_WALLET_COLLECTION_IDS: readonly string[] =
+  encryptedWalletCollectionIds()
 
 // The WAS collections replicated by the sync controller: every standard
 // collection, projected down to the (key, id) pair the collection-agnostic
@@ -249,11 +262,12 @@ export {
   UNLOCK_METHODS_RESOURCE
 } from '@interop/wallet-core/space'
 
-// Default display label written for the first enrolled client at signup
-// (`key-map/client-labels.json`). Later clients get their labels at
-// enrollment approval; this one has no approving screen, so the wallet
-// names itself. Stored data, not display-time i18n: a label must read the
-// same from every client that lists it.
+// The default platform label: the `name` a wallet client's `connections`
+// entry carries when the client names itself (the first enrolled client at
+// signup, and a self-enrollment at login). A client enrolled from another
+// wallet takes the connect code's suggested name instead. Stored data, not
+// display-time i18n: a name must read the same from every client that
+// lists it.
 export const DEFAULT_CLIENT_LABEL = 'Freewallet'
 
 /**
@@ -290,14 +304,12 @@ export const PASSKEY_RP_ID = env.VITE_PASSKEY_RP_ID || undefined
 // wallet provisions and maintains for itself, holding identity, key, and
 // unlock-method state rather than wallet contents. The list is
 // `@interop/wallet-core/space`'s shared Space layout
-// (`WALLET_SPACE_SYSTEM_SPECS`, the non-synced half of the provisioning
-// roster), so every wallet provisioning an account's Space agrees on what a
-// system collection is. It is the one list every system-collection rule
-// derives from -- the protected-grant ceiling (an app may read but never write
-// them), the app-revocation exclusion (they are never app-provisioned, so
-// recipient rotation skips them), and the storage browser's grouping -- so a
-// future system collection cannot be added to one of those and silently missed
-// by the others.
+// (`WALLET_SPACE_SYSTEM_SPECS`, the provisioning roster's system specs), so
+// every wallet provisioning an account's Space agrees on what a
+// system collection is. The protection rule (an app may read but never write
+// them, and recipient rotation skips them) and the storage browser's grouping
+// read the whole provision roster instead, so a system collection is covered
+// there by its roster membership.
 //
 // `grantable` is projected verbatim from the spec, as on the standard
 // collections: `key-map` and `unlock-methods` are never grantable, while `id`
@@ -313,11 +325,12 @@ export const SYSTEM_COLLECTIONS: Array<{
 }))
 
 /**
- * Whether a collection id names a protected wallet collection: a standard
- * collection (`WALLET_STANDARD_COLLECTIONS`) or one of the account's system
- * collections (`SYSTEM_COLLECTIONS`). A grantee may read one but not write
- * it, and none is ever provisioned for a grantee, so revocation's recipient
- * rotation skips them.
+ * Whether a collection id names a protected wallet collection: any
+ * collection of the wallet Space provision roster
+ * (`WALLET_SPACE_PROVISION_ROSTER`), the synced collections, the
+ * `connections` directory, and the system collections alike. A grantee may
+ * read one but not write it, and none is ever provisioned for a grantee, so
+ * revocation's recipient rotation skips them.
  *
  * @param collectionId {string | undefined}
  * @returns {boolean}
@@ -327,8 +340,9 @@ export function isProtectedCollection(
 ): boolean {
   return (
     !!collectionId &&
-    (SYSTEM_COLLECTIONS.some(entry => entry.id === collectionId) ||
-      WALLET_STANDARD_COLLECTIONS.some(entry => entry.id === collectionId))
+    WALLET_SPACE_PROVISION_ROSTER.some(
+      spec => spec.collectionId === collectionId
+    )
   )
 }
 

@@ -1,40 +1,34 @@
 import type { TFunction } from 'i18next'
 import { CONTACTS_COLLECTION } from '@interop/social-core'
 import type { StorageCollection, StorageResource } from '@/lib/storage'
-import {
-  KNOWN_EXTENSIONS,
-  COMMON_CONTENT_TYPES,
-  SYSTEM_COLLECTIONS,
-  WALLET_STANDARD_COLLECTIONS
-} from '@/app.config'
+import { WALLET_SPACE_PROVISION_ROSTER } from '@interop/wallet-core/space'
+import { KNOWN_EXTENSIONS, COMMON_CONTENT_TYPES } from '@/app.config'
 
 // The Storage page's collection categories: the user's credential and contact
 // collections first, then collections registered by connected
-// applications/sites, then the wallet's own plumbing (activity logs, identity,
-// unlock methods).
+// applications/sites, then the wallet's own plumbing (activity logs, the
+// `connections` directory, identity, unlock methods). Every collection of the
+// wallet Space provision roster outside the contents group is plumbing.
 const CONTENTS_COLLECTION_IDS = [
   'private-credentials',
   'public-credentials',
   CONTACTS_COLLECTION
 ]
-const SYSTEM_COLLECTION_IDS = [
-  ...WALLET_STANDARD_COLLECTIONS.map(({ id }) => id).filter(
-    id => !CONTENTS_COLLECTION_IDS.includes(id)
-  ),
-  ...SYSTEM_COLLECTIONS.map(({ id }) => id)
-]
+const SYSTEM_COLLECTION_IDS = WALLET_SPACE_PROVISION_ROSTER.map(
+  ({ collectionId }) => collectionId
+).filter(id => !CONTENTS_COLLECTION_IDS.includes(id))
 
 // The wallet's canonical (untranslated) names for the collections it
-// provisions itself, used as the fallback for the localized
-// `storage.collectionNames.<id>` keys. Preferred over the server-stored name
-// so a rename here takes effect on existing spaces too (the stored name is
-// set once at provisioning).
-const CANONICAL_COLLECTION_NAMES = new Map<string, string>([
-  ...WALLET_STANDARD_COLLECTIONS.map(
-    ({ id, name }) => [id, name] as [string, string]
-  ),
-  ...SYSTEM_COLLECTIONS.map(({ id, name }) => [id, name] as [string, string])
-])
+// provisions itself, read off the provision roster, used as the fallback for
+// the localized `storage.collectionNames.<id>` keys. Preferred over the
+// server-stored name so a rename here takes effect on existing spaces too
+// (the stored name is set once at provisioning).
+const CANONICAL_COLLECTION_NAMES = new Map<string, string>(
+  WALLET_SPACE_PROVISION_ROSTER.map(({ collectionId, name }) => [
+    collectionId,
+    name
+  ])
+)
 
 /**
  * Whether the wallet provisions this collection itself (a contents or a system

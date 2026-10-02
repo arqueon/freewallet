@@ -1,11 +1,12 @@
 /**
- * The CHAPI `get` response sequence: compose the presentation, persist the
- * Grant or Login activity, and only then deliver anything externally. A
- * request whose grants provision a collection persists the Grant earlier,
- * after its
- * delegations are signed and before the grantee is escrowed into any key
- * epoch. The ordering is the security-critical part and lives here rather
- * than in the popup page, so it is stated once and exercisable without a DOM.
+ * The CHAPI `get` response sequence, shared with the interaction-URL page:
+ * record the consent, then escrow, then compose and deliver. The record is
+ * the party's `connections` entry, written first with the grants on it (the
+ * revocation index), then the Grant or Login activity (the audit trail). Both
+ * are written once the delegations are signed and before the grantee is
+ * escrowed into any key epoch or any presentation leaves the wallet. The
+ * ordering is the security-critical part and lives here rather than in the
+ * popup page, so it is stated once and exercisable without a DOM.
  */
 import type { WalletResponse } from '@interop/wallet-request'
 import type { IVPRDetails as ISpecVPRDetails } from '@interop/wallet-request'
@@ -20,6 +21,14 @@ import type {
 } from './types'
 import { ZcapUnavailableError } from './processZcaps'
 import { AppKeysUnreadableError } from './appConnect'
+import {
+  connectionResourceId,
+  parseConnectionEntry,
+  recordGrants,
+  removeGrants,
+  retireConnection,
+  type ConnectionKind
+} from '@interop/wallet-core/connections'
 import { createLogger } from '@/lib/log'
 
 const log = createLogger('fw:request:respond')
@@ -147,26 +156,264 @@ async function recordRequestActivity({
 }
 
 /**
- * Composes the response VP (selected VCs plus any delegated grants), records
- * the Grant activity when capabilities were granted, and only then delivers
- * the VP externally -- POSTing it to the VC API exchange when the request came
- * from one. Returning the presentation over the CHAPI channel stays with the
- * caller, since only it holds the CHAPI event.
+ * The party a consent records grants for, the `connections` entry's
+ * subject: an App Connect app, by its app key's subject DID, with its
+ * attested origin, its canonical app URL, its app-key Resource id, and its
+ * self-declared name; or an interaction-URL agent, by the one controller its
+ * grants were delegated to, with its self-declared name. `undefined` for a
+ * request that names no party and delegates nothing (a plain DID Auth, a
+ * credential request).
+ */
+type ConsentParty = {
+  did: string
+  kind: ConnectionKind
+  name?: string
+  origin?: string
+  url?: string
+  appKey?: string
+}
+
+/**
+ * The party a request's consent records grants for (see
+ * {@link ConsentParty}).
  *
- * Ordering: history/zcap persistence precedes every external delivery, so the
- * requester can never hold live delegated capabilities that lack a
- * revocation hook. It also precedes every key-epoch escrow: when a grant
- * provisions a collection, the Grant is persisted from inside
- * `processRequest`, once the delegations are signed and before the grantee
- * is added to the collection's key epochs, and it is not written again after
- * compose. When the rest of `processRequest` then fails, that Grant is
- * removed again, since nothing was delivered and its grants stay inert. The
- * Grant activity is the stored record App Connect
- * revocation re-reads the zcap documents from, and both the exchange POST and
- * the CHAPI response hand the requester the VP with its embedded,
- * already-signed `zcap` array. Persisting last would let a delivered grant
- * outlive a failed (or torn-down) history write with no way to revoke it from
- * the sharing panel.
+ * @param options {object}
+ * @param options.profile {WalletRequestProfile}   the classified request
+ * @param options.requestOrigin {string}   the attested requesting origin
+ * @param options.zcaps {IZcap[]}   the capabilities actually delegated
+ * @param [options.appConnect] {object}   the App Connect result: the app
+ *   key's subject DID and its Resource id
+ * @returns {ConsentParty | undefined}
+ */
+function consentParty({
+  profile,
+  requestOrigin,
+  zcaps,
+  appConnect
+}: {
+  profile: WalletRequestProfile
+  requestOrigin: string
+  zcaps: IZcap[]
+  appConnect?: { subjectDid: string; appKey: string }
+}): ConsentParty | undefined {
+  if (appConnect && profile.appConnect) {
+    return {
+      did: appConnect.subjectDid,
+      kind: 'app',
+      name: profile.appConnect.app.name,
+      origin: requestOrigin,
+      url: profile.appConnect.app.appUrl,
+      appKey: appConnect.appKey
+    }
+  }
+  // The standalone path delegates every grant to its query's one
+  // `controller` (the page's precheck refuses more than one).
+  const controller = zcaps
+    .map(zcap => zcap.controller)
+    .find((did): did is string => typeof did === 'string')
+  if (controller === undefined) {
+    return undefined
+  }
+  return {
+    did: controller,
+    kind: 'agent',
+    ...(profile.agent?.name !== undefined && { name: profile.agent.name })
+  }
+}
+
+/**
+ * What stood at the party's `connections` entry before this request's
+ * consent wrote to it: no entry, a retired one, or a live one. A rollback
+ * reads it to decide whether the entry goes back to retired.
+ */
+type PriorEntryState = 'absent' | 'retired' | 'live'
+
+/**
+ * Reads the party's entry ahead of the consent's write and reports its state
+ * (see {@link PriorEntryState}). The read is at the id the write itself
+ * reads, so the host learns nothing new from it. A body the codec cannot
+ * parse counts as `live`, so a rollback never retires it. A failed read
+ * throws, which fails the request closed with nothing written.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param options.party {ConsentParty}
+ * @returns {Promise<PriorEntryState>}
+ */
+async function priorEntryState({
+  session,
+  party
+}: {
+  session: Session
+  party: ConsentParty
+}): Promise<PriorEntryState> {
+  const { store, hmacKey } = await session.storage.connectionsDirectory()
+  const stored = await store.get({
+    resourceId: await connectionResourceId({ hmacKey, did: party.did })
+  })
+  if (stored === undefined) {
+    return 'absent'
+  }
+  return parseConnectionEntry(stored.body)?.retired !== undefined
+    ? 'retired'
+    : 'live'
+}
+
+/**
+ * Writes the consent's grants on the party's `connections` entry: created,
+ * or merged into, un-retired, `lastSeen` moved, each grant marked `share` or
+ * `grant` (`recordGrants`). The entry is the revocation index, so this write
+ * precedes every escrow and every delivery, and a failure throws so the
+ * request fails closed. An entry at the party's id of another `kind` refuses
+ * with wallet-core's `ConnectionKindMismatchError`, which fails the request
+ * the same way.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param options.party {ConsentParty}
+ * @param options.zcaps {IZcap[]}   the capabilities actually delegated
+ * @param options.shareZcapIds {string[]}   the ids of the share grants among
+ *   them
+ * @returns {Promise<void>}
+ */
+async function recordConsentEntry({
+  session,
+  party,
+  zcaps,
+  shareZcapIds
+}: {
+  session: Session
+  party: ConsentParty
+  zcaps: IZcap[]
+  shareZcapIds: string[]
+}): Promise<void> {
+  const shares = new Set(shareZcapIds)
+  const { store, hmacKey, spaceUrl } =
+    await session.storage.connectionsDirectory()
+  await recordGrants({
+    store,
+    hmacKey,
+    did: party.did,
+    kind: party.kind,
+    ...(spaceUrl !== undefined && { spaceUrl }),
+    grants: zcaps.map(zcap => ({
+      zcap,
+      grantKind: shares.has(zcap.id) ? ('share' as const) : ('grant' as const)
+    })),
+    ...(party.name !== undefined && { name: party.name }),
+    ...(party.origin !== undefined && { origin: party.origin }),
+    ...(party.url !== undefined && { url: party.url }),
+    ...(party.appKey !== undefined && { appKey: party.appKey })
+  })
+}
+
+/**
+ * Undoes a failed request's consent on the party's entry. Each grant the
+ * request recorded whose escrow did not land is removed, by capability id. A
+ * grant whose escrow landed is kept: its grantee holds the decryption
+ * material, so it stays recorded and listed, and the user has a row to revoke
+ * it from.
+ *
+ * The consent also un-retired the entry and set its `appKey`. So when no
+ * grant of this request escrowed, and the entry was absent or retired before
+ * the consent, the entry is retired again (`retireConnection`). Otherwise the
+ * Applications page would list a connected party that received nothing. An
+ * entry the consent created is retired rather than deleted: it keeps the
+ * party's names, and a later consent un-retires it. An entry that was live
+ * before stays live. So does any entry once one of this request's grants
+ * escrowed, since that grantee needs a row to revoke from.
+ *
+ * Best-effort: a failure is logged, and the grants stay listed, which a
+ * revoke then handles.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param options.party {ConsentParty}
+ * @param options.zcapIds {string[]}   every grant this request recorded
+ * @param options.escrowed {ReadonlySet<string>}   the grants among them whose
+ *   escrow landed
+ * @param options.prior {PriorEntryState}   the entry's state before the
+ *   consent wrote to it
+ * @returns {Promise<void>}
+ */
+async function rollBackConsentEntry({
+  session,
+  party,
+  zcapIds,
+  escrowed,
+  prior
+}: {
+  session: Session
+  party: ConsentParty
+  zcapIds: string[]
+  escrowed: ReadonlySet<string>
+  prior: PriorEntryState
+}): Promise<void> {
+  const undelivered = zcapIds.filter(id => !escrowed.has(id))
+  const anyEscrowed = undelivered.length < zcapIds.length
+  const retire = !anyEscrowed && prior !== 'live'
+  if (undelivered.length === 0 && !retire) {
+    return
+  }
+  try {
+    const { store, hmacKey, spaceUrl } =
+      await session.storage.connectionsDirectory()
+    if (undelivered.length > 0) {
+      await removeGrants({
+        store,
+        hmacKey,
+        did: party.did,
+        zcapIds: undelivered
+      })
+    }
+    if (retire) {
+      await retireConnection({
+        store,
+        hmacKey,
+        did: party.did,
+        handledZcapIds: zcapIds,
+        ...(spaceUrl !== undefined && { spaceUrl })
+      })
+    }
+  } catch (err) {
+    log.error('Could not roll back the consent on the connection', { err })
+  }
+}
+
+/**
+ * Composes the response VP (selected VCs plus any delegated grants), records
+ * the consent, and only then delivers the VP externally -- POSTing it to the
+ * VC API exchange when the request came from one. Returning the presentation
+ * over the CHAPI channel stays with the caller, since only it holds the CHAPI
+ * event.
+ *
+ * Ordering: the consent's record precedes every escrow and every external
+ * delivery, so the requester can never hold a live delegated capability, or
+ * a key-epoch entry, that lacks a revocation hook. The record is first the
+ * party's `connections` entry carrying the grants (the revocation index),
+ * then the Grant activity (the audit trail). It is written from inside
+ * `processRequest`, once the delegations are signed and before any share is
+ * escrowed or collection provisioned: on App Connect always, a zero-grant
+ * connect included, and on the interaction-URL path whenever a grant needs
+ * escrow. A failed write fails the request closed, with nothing escrowed and
+ * nothing delivered. When the rest of `processRequest` then fails, nothing
+ * was delivered, and the consent is rolled back. Each of this request's
+ * grants on the entry whose escrow did not land is removed. A grant whose
+ * escrow landed stays recorded, since its grantee holds the decryption
+ * material and the user needs a row to revoke it from. When no grant
+ * escrowed, the Grant is removed too, and an entry that was absent or
+ * retired before the consent is retired again. When some grant escrowed, the
+ * Grant stays as the audit trail for it, and the entry stays live.
+ *
+ * A request that escrows nothing (an interaction-URL grant on a collection
+ * that stands, a plain DID Auth) is recorded after compose and before
+ * delivery, inside the same failure path: a failed entry write rolls the
+ * consent back (a put may have landed with its response lost) and fails
+ * closed, and a failed Grant write after it rolls it back again. Either
+ * rollback re-retires an entry that was absent or retired before the
+ * consent. A failed delivery to the exchange is not a failure here: the
+ * record is kept and the composed response rides on the error for manual
+ * delivery.
  *
  * @param options {object}
  * @param options.request {IVPRDetails}
@@ -207,11 +454,17 @@ export async function composeAndDeliverResponse({
   expectedAppKeyDid?: string
   delegateStandaloneZcaps?: boolean
 }): Promise<WalletResponse> {
-  // Set once the Grant activity is persisted ahead of provisioning, so the
-  // post-compose write below does not record the same request twice, and a
-  // failed approval can remove it again.
+  // Set once the consent is recorded ahead of escrow, so the post-compose
+  // record below does not run, and a failed approval can roll it back: the
+  // party whose entry took the grants, the grants it took, the entry's state
+  // before the write, and the Grant activity's id.
   let persisted = false
   let persistedGrantId: string | undefined
+  let recordedEntry:
+    | { party: ConsentParty; zcapIds: string[]; prior: PriorEntryState }
+    | undefined
+  // The grants whose escrow landed, which a rollback keeps.
+  const escrowed = new Set<string>()
   let response: WalletResponse
   try {
     response = await processRequest({
@@ -221,11 +474,38 @@ export async function composeAndDeliverResponse({
       selectedVCs,
       expectedAppKeyDid,
       delegateStandaloneZcaps,
-      // Revocation finds a grantee through the Grant activity's recorded
-      // grants, so the record must exist before provisioning escrows the
-      // grantee into a key epoch. A failed write fails the request closed:
-      // nothing is escrowed and nothing is delivered.
-      beforeProvision: async ({ zcaps, appConnect }) => {
+      // Revocation finds a grantee through its `connections` entry, so the
+      // entry must carry the grants before provisioning escrows the grantee
+      // into a key epoch. A failed write fails the request closed: nothing
+      // is escrowed and nothing is delivered.
+      beforeProvision: async ({ zcaps, shareZcapIds, appConnect }) => {
+        const party = consentParty({
+          profile,
+          requestOrigin,
+          zcaps,
+          appConnect
+        })
+        try {
+          if (party) {
+            // Set before the write, so a put that landed with its response
+            // lost is still rolled back; a removal over an entry that never
+            // took the grants writes nothing.
+            recordedEntry = {
+              party,
+              zcapIds: zcaps.map(zcap => zcap.id),
+              prior: await priorEntryState({ session, party })
+            }
+            await recordConsentEntry({ session, party, zcaps, shareZcapIds })
+          } else if (zcaps.length > 0) {
+            throw new Error(
+              'A request that delegated capabilities names no party to ' +
+                'record them on.'
+            )
+          }
+        } catch (err) {
+          log.error('Could not record the consent', { err })
+          throw err
+        }
         try {
           persistedGrantId = await recordRequestActivity({
             session,
@@ -236,16 +516,39 @@ export async function composeAndDeliverResponse({
           })
         } catch (err) {
           log.error('Could not record the grant history entry', { err })
-          throw err
+          // A zero-grant connect delegated nothing, so its entry is the whole
+          // record a disconnect needs, and the audit row's loss does not fail
+          // it. Any grant fails closed without its audit row.
+          if (zcaps.length > 0) {
+            throw err
+          }
         }
         persisted = true
+      },
+      onEscrowed: ({ zcapIds }) => {
+        for (const id of zcapIds) {
+          escrowed.add(id)
+        }
       }
     })
   } catch (err) {
-    // Nothing was delivered, so a Grant persisted ahead of provisioning
-    // records grants the requester never received. Remove it, so the
-    // Applications page does not list them and a retry leaves one Grant.
-    if (persistedGrantId) {
+    // Nothing was delivered, so the consent recorded ahead of escrow names
+    // grants the requester never received. The entry drops each of them
+    // whose escrow did not land, so the Applications page does not list
+    // them. When nothing escrowed, the entry goes back to retired if it was
+    // before, and the Grant is removed, so a retry leaves one Grant. When a
+    // grant escrowed, the Grant stays: it is the audit trail for the
+    // escrowed grants, and it also names the undelivered ones.
+    if (recordedEntry) {
+      await rollBackConsentEntry({
+        session,
+        party: recordedEntry.party,
+        zcapIds: recordedEntry.zcapIds,
+        escrowed,
+        prior: recordedEntry.prior
+      })
+    }
+    if (persistedGrantId && escrowed.size === 0) {
       try {
         await session.storage.deleteHistoryActivity({ id: persistedGrantId })
       } catch (deleteErr) {
@@ -271,14 +574,44 @@ export async function composeAndDeliverResponse({
   }
   const grantedZcaps = response.zcaps ?? []
 
-  // The Grant activity is the stored record App Connect revocation re-reads
-  // the zcap documents from, so it must be persisted BEFORE any external
-  // delivery -- both the exchange POST below and the CHAPI response hand the
-  // requester the VP with its embedded, already-signed `zcap` array, so
-  // the revocation hook has to exist first. Persisting last would let a
-  // delivered grant outlive a failed (or torn-down) history write with no way
-  // to revoke it from the sharing panel.
+  // A request that escrowed nothing is recorded here, still BEFORE any
+  // external delivery -- both the exchange POST below and the CHAPI response
+  // hand the requester the VP with its embedded, already-signed `zcap`
+  // array, so the revocation hook has to exist first.
   if (!persisted) {
+    const party = consentParty({ profile, requestOrigin, zcaps: grantedZcaps })
+    const zcapIds = grantedZcaps.map(zcap => zcap.id)
+    // This path runs only when nothing was recorded ahead of escrow, so
+    // nothing escrowed.
+    const nothingEscrowed = new Set<string>()
+    let prior: PriorEntryState | undefined
+    if (party) {
+      try {
+        prior = await priorEntryState({ session, party })
+        await recordConsentEntry({
+          session,
+          party,
+          zcaps: grantedZcaps,
+          shareZcapIds: []
+        })
+      } catch (err) {
+        // Fail closed: nothing is delivered, so the already-signed
+        // delegations stay inert rather than unrevocable. A put that landed
+        // with its response lost is rolled back too; a removal over an entry
+        // that never took the grants writes nothing.
+        log.error('Could not record the consent', { err })
+        if (prior !== undefined) {
+          await rollBackConsentEntry({
+            session,
+            party,
+            zcapIds,
+            escrowed: nothingEscrowed,
+            prior
+          })
+        }
+        throw new WalletResponseFailure('processFailed', { cause: err })
+      }
+    }
     try {
       await recordRequestActivity({
         session,
@@ -290,11 +623,20 @@ export async function composeAndDeliverResponse({
     } catch (err) {
       log.error('Could not record the request history entry', { err })
       if (grantedZcaps.length > 0) {
-        // Fail closed: nothing is delivered, so the already-signed
-        // delegations stay inert rather than unrevocable. (Conversely, a
-        // history write that lands but is followed by a failed exchange POST
-        // leaves only a phantom entry -- cleanable from the sharing panel --
-        // which is the more recoverable failure of the two.)
+        // Fail closed, and roll the consent on the entry back again.
+        // (Conversely, a record that lands but is followed by a failed
+        // exchange POST leaves grants the requester may never hold --
+        // revocable from the Applications page -- which is the more
+        // recoverable failure of the two.)
+        if (party && prior !== undefined) {
+          await rollBackConsentEntry({
+            session,
+            party,
+            zcapIds,
+            escrowed: nothingEscrowed,
+            prior
+          })
+        }
         throw new WalletResponseFailure('processFailed', { cause: err })
       }
     }
@@ -306,7 +648,9 @@ export async function composeAndDeliverResponse({
   // empty compose (`{}`) cannot reach this point with an exchange open --
   // Continue is disabled when there is nothing to share -- but if it ever
   // did, skipping the POST is still right: the exchange protocol has no
-  // decline message, so an unanswered exchange expires on its own.
+  // decline message, so an unanswered exchange expires on its own. The
+  // recorded consent stands, since the composed response is offered for
+  // manual delivery.
   if (exchangeUrl && response.verifiablePresentation) {
     try {
       // `deliverPresentation` owns the reply inspection (a multi-step reply is

@@ -6,13 +6,28 @@
  * half is the orphan pass: a public copy with no private Resource behind it (a
  * pre-upgrade app key kept through the delete dialog's "keep public copy"
  * choice) is retracted on its own, while a copy that still has a private
- * Resource is left to that Resource's delete. The sweep's detection rules have
- * their own suite (`tests/unit/appKeySweep.test.ts`).
+ * Resource is left to that Resource's delete. The grants come from the
+ * app's `connections` entry, read once for the whole sweep; a stranded key
+ * predates the directory, so it normally has no entry and revokes no grant.
+ * The sweep's detection rules have their own suite
+ * (`tests/unit/appKeySweep.test.ts`).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  readConnections,
+  type ConnectionGrant
+} from '@interop/wallet-core/connections'
 import { sweepStrandedAppKeys } from '@/session/appKeySweep'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import type { StorageManager } from '@/stores/storageManager'
+import {
+  SPACE_URL,
+  fixtureDirectory,
+  grantZcap,
+  recordConsent,
+  type FixtureDirectory
+} from '../../tests/unit/connectionFixtures'
+import { HMAC_KEY } from '../../tests/unit/memoryConnections'
 
 const calls: string[] = []
 
@@ -58,46 +73,74 @@ function plainCredential(): IVerifiableCredential {
 }
 
 /**
- * A storage double whose methods record their call order.
+ * A storage double whose methods record their call order, over an in-memory
+ * `connections` directory.
  *
  * @param options {object}
  * @param options.credentials {Array<{ cid: string; vc: IVerifiableCredential }>}
  * @param [options.publicCopies] {Array<{ cid: string; vc: IVerifiableCredential }>}
  *   the world-readable public copies, private Resource or not
- * @returns {StorageManager}
+ * @param [options.directory] {FixtureDirectory}   the directory; empty when
+ *   omitted
+ * @returns {object}
  */
 function storageDouble({
   credentials,
-  publicCopies = []
+  publicCopies = [],
+  directory = fixtureDirectory()
 }: {
   credentials: Array<{ cid: string; vc: IVerifiableCredential }>
   publicCopies?: Array<{ cid: string; vc: IVerifiableCredential }>
+  directory?: FixtureDirectory
 }) {
   const storage = {
     listCredentials: vi.fn(async () => credentials),
-    listHistoryItems: vi.fn(async () => {
-      calls.push('listHistoryItems')
-      return { entries: [], unreadable: 0 }
+    readConnectionsListing: vi.fn(async () => {
+      calls.push('readConnectionsListing')
+      const listing = await readConnections({
+        store: directory.store,
+        hmacKey: HMAC_KEY
+      })
+      return { listing: listing!, spaceUrl: SPACE_URL }
     }),
     listCollections: vi.fn(async () => {
       calls.push('listCollections')
       return []
     }),
-    revokeAppCollectionRecipients: vi.fn(
-      async ({ subjectDid }: { subjectDid: string }) => {
-        calls.push(`rotate:${subjectDid}`)
+    revokeCollectionRecipients: vi.fn(
+      async ({
+        did
+      }: {
+        did: string
+        grants: ConnectionGrant[]
+        directory?: unknown
+        collections?: unknown[]
+      }) => {
+        calls.push(`rotate:${did}`)
         return {
           collections: 1,
           rotated: 1,
           failed: 0,
-          revokedIds: [`z-rotated:${subjectDid}`]
+          revokedIds: [`z-rotated:${did}`]
         }
       }
     ),
-    revokeAppGrants: vi.fn(async ({ subjectDid }: { subjectDid: string }) => {
-      calls.push(`revoke:${subjectDid}`)
-      return { revoked: 0, skipped: 0 }
-    }),
+    revokeConnectionGrants: vi.fn(
+      async ({
+        grants
+      }: {
+        grants: ConnectionGrant[]
+        revokedByRotation?: readonly string[]
+      }) => {
+        calls.push(`revoke:${grants.map(grant => grant.zcapId).join(',')}`)
+        return {
+          revoked: grants.length,
+          withdrawn: grants.length,
+          skipped: 0,
+          revokedIds: grants.map(grant => grant.zcapId)
+        }
+      }
+    ),
     deleteCredential: vi.fn(async ({ cid }: { cid: string }) => {
       calls.push(`delete:${cid}`)
     }),
@@ -128,44 +171,80 @@ describe('sweepStrandedAppKeys', () => {
     })
 
     expect(deleted).toBe(1)
+    // A stranded key predates the directory: it has no entry, so the
+    // rotation runs over its stamped collections alone and no grant is
+    // POSTed.
     expect(calls).toEqual([
-      'listHistoryItems',
+      'readConnectionsListing',
       'listCollections',
       'rotate:did:key:z6MkfakeAppSubject',
-      'revoke:did:key:z6MkfakeAppSubject',
+      'revoke:',
       'delete:cid-1'
     ])
-    expect(storage.revokeAppCollectionRecipients).toHaveBeenCalledWith({
-      origin: 'https://app.example',
-      subjectDid: 'did:key:z6MkfakeAppSubject',
-      items: { entries: [], unreadable: 0 },
-      collections: []
-    })
-    expect(storage.revokeAppGrants).toHaveBeenCalledWith({
-      origin: 'https://app.example',
-      subjectDid: 'did:key:z6MkfakeAppSubject',
-      items: { entries: [], unreadable: 0 },
+    expect(storage.revokeCollectionRecipients).toHaveBeenCalledWith(
+      expect.objectContaining({
+        did: 'did:key:z6MkfakeAppSubject',
+        grants: [],
+        collections: []
+      })
+    )
+    expect(storage.revokeConnectionGrants).toHaveBeenCalledWith({
+      grants: [],
       revokedByRotation: ['z-rotated:did:key:z6MkfakeAppSubject']
     })
   })
 
-  it('fetches the activity history and the collection listing once for the whole sweep', async () => {
+  it("revokes the grants of a stranded key's entry when one stands", async () => {
+    const directory = fixtureDirectory()
+    const subject = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
+    await recordConsent({
+      directory,
+      did: subject,
+      kind: 'app',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: subject })],
+      origin: 'https://app.example'
+    })
+    const storage = storageDouble({
+      credentials: [{ cid: 'cid-1', vc: appKeyFixture({ subject }) }],
+      directory
+    })
+
+    await sweepStrandedAppKeys({
+      storage: storage as unknown as StorageManager
+    })
+
+    expect(calls).toEqual([
+      'readConnectionsListing',
+      'listCollections',
+      `rotate:${subject}`,
+      'revoke:urn:zcap:one',
+      'delete:cid-1'
+    ])
+  })
+
+  it('reads the directory and the collection listing once for the whole sweep', async () => {
     const storage = storageDouble({
       credentials: [
         { cid: 'cid-1', vc: appKeyFixture({ subject: 'did:key:zFirst' }) },
         { cid: 'cid-2', vc: appKeyFixture({ subject: 'did:key:zSecond' }) }
+      ],
+      publicCopies: [
+        { cid: 'cid-orphan', vc: appKeyFixture({ subject: 'did:key:zOrphan' }) }
       ]
     })
 
-    const { deleted } = await sweepStrandedAppKeys({
+    const { deleted, retracted } = await sweepStrandedAppKeys({
       storage: storage as unknown as StorageManager
     })
 
     expect(deleted).toBe(2)
-    expect(storage.listHistoryItems).toHaveBeenCalledTimes(1)
-    expect(calls.filter(entry => entry === 'listHistoryItems')).toHaveLength(1)
+    expect(retracted).toBe(1)
+    expect(storage.readConnectionsListing).toHaveBeenCalledTimes(1)
     expect(storage.listCollections).toHaveBeenCalledTimes(1)
-    expect(calls.filter(entry => entry === 'listCollections')).toHaveLength(1)
+    // Both passes rotate against that one read.
+    const [first] = storage.revokeCollectionRecipients.mock.calls[0]
+    const [last] = storage.revokeCollectionRecipients.mock.calls[2]
+    expect(last.directory).toBe(first.directory)
   })
 
   it('skips the delete when the grant revocation throws', async () => {
@@ -175,7 +254,7 @@ describe('sweepStrandedAppKeys', () => {
         { cid: 'cid-2', vc: appKeyFixture({ subject: 'did:key:zSecond' }) }
       ]
     })
-    storage.revokeAppGrants.mockImplementationOnce(async () => {
+    storage.revokeConnectionGrants.mockImplementationOnce(async () => {
       throw new Error('server unreachable')
     })
 
@@ -189,13 +268,13 @@ describe('sweepStrandedAppKeys', () => {
   })
 
   it('skips the delete when the server refuses the grant revocation', async () => {
-    // `revokeAppGrants` throws a plain ValidationError for a refused POST
-    // rather than counting it skipped; the Resource keeps its revocation handle
-    // for the next login.
+    // `revokeConnectionGrants` throws a plain ValidationError for a refused
+    // POST rather than counting it skipped; the Resource keeps its
+    // revocation handle for the next login.
     const storage = storageDouble({
       credentials: [{ cid: 'cid-1', vc: appKeyFixture() }]
     })
-    storage.revokeAppGrants.mockImplementationOnce(async () => {
+    storage.revokeConnectionGrants.mockImplementationOnce(async () => {
       throw Object.assign(new Error('chain does not verify'), {
         name: 'ValidationError'
       })
@@ -209,30 +288,21 @@ describe('sweepStrandedAppKeys', () => {
     expect(calls).not.toContain('delete:cid-1')
   })
 
-  it('hands the shared history to both revocation passes', async () => {
+  it('skips every delete when the directory cannot be read', async () => {
     const storage = storageDouble({
-      credentials: [{ cid: 'cid-1', vc: appKeyFixture() }],
-      publicCopies: [
-        { cid: 'cid-orphan', vc: appKeyFixture({ subject: 'did:key:zOrphan' }) }
-      ]
+      credentials: [{ cid: 'cid-1', vc: appKeyFixture() }]
     })
+    storage.readConnectionsListing.mockRejectedValue(
+      new Error('directory refused')
+    )
 
-    await sweepStrandedAppKeys({
+    const { deleted } = await sweepStrandedAppKeys({
       storage: storage as unknown as StorageManager
     })
 
-    expect(storage.revokeAppGrants).toHaveBeenCalledWith({
-      origin: 'https://app.example',
-      subjectDid: 'did:key:z6MkfakeAppSubject',
-      items: { entries: [], unreadable: 0 },
-      revokedByRotation: ['z-rotated:did:key:z6MkfakeAppSubject']
-    })
-    expect(storage.revokeAppGrants).toHaveBeenCalledWith({
-      origin: 'https://app.example',
-      subjectDid: 'did:key:zOrphan',
-      items: { entries: [], unreadable: 0 },
-      revokedByRotation: ['z-rotated:did:key:zOrphan']
-    })
+    expect(deleted).toBe(0)
+    expect(storage.revokeCollectionRecipients).not.toHaveBeenCalled()
+    expect(storage.deleteCredential).not.toHaveBeenCalled()
   })
 
   it('skips the delete when a collection rotation failed', async () => {
@@ -242,7 +312,7 @@ describe('sweepStrandedAppKeys', () => {
         { cid: 'cid-2', vc: appKeyFixture({ subject: 'did:key:zSecond' }) }
       ]
     })
-    storage.revokeAppCollectionRecipients.mockImplementationOnce(async () => {
+    storage.revokeCollectionRecipients.mockImplementationOnce(async () => {
       calls.push('rotate:did:key:zFirst')
       return { collections: 2, rotated: 1, failed: 1, revokedIds: [] }
     })
@@ -254,8 +324,7 @@ describe('sweepStrandedAppKeys', () => {
     expect(deleted).toBe(1)
     // The interactive revoke's sequence: the grant stage still runs for the
     // key whose rotation failed, so every revocable grant is revoked now.
-    expect(calls).toContain('revoke:did:key:zFirst')
-    expect(storage.revokeAppGrants).toHaveBeenCalledTimes(2)
+    expect(storage.revokeConnectionGrants).toHaveBeenCalledTimes(2)
     expect(calls).not.toContain('delete:cid-1')
     expect(calls).toContain('delete:cid-2')
   })
@@ -272,9 +341,9 @@ describe('sweepStrandedAppKeys', () => {
     })
 
     expect(deleted).toBe(1)
-    expect(storage.listHistoryItems).not.toHaveBeenCalled()
-    expect(storage.revokeAppCollectionRecipients).not.toHaveBeenCalled()
-    expect(storage.revokeAppGrants).not.toHaveBeenCalled()
+    expect(storage.readConnectionsListing).not.toHaveBeenCalled()
+    expect(storage.revokeCollectionRecipients).not.toHaveBeenCalled()
+    expect(storage.revokeConnectionGrants).not.toHaveBeenCalled()
     expect(calls).toEqual(['delete:cid-1'])
   })
 
@@ -291,6 +360,7 @@ describe('sweepStrandedAppKeys', () => {
     expect(calls).toEqual([])
     expect(storage.deleteCredential).not.toHaveBeenCalled()
   })
+
   it('retracts an orphaned public app-key copy with no private row', async () => {
     const storage = storageDouble({
       credentials: [],
@@ -304,10 +374,10 @@ describe('sweepStrandedAppKeys', () => {
     expect(deleted).toBe(0)
     expect(retracted).toBe(1)
     expect(calls).toEqual([
-      'listHistoryItems',
+      'readConnectionsListing',
       'listCollections',
       'rotate:did:key:z6MkfakeAppSubject',
-      'revoke:did:key:z6MkfakeAppSubject',
+      'revoke:',
       'retract:pub-1'
     ])
   })

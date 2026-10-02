@@ -449,7 +449,8 @@ describe('BrowserStore (encrypted collections)', () => {
     const appKey = makeAppKey('https://app.example/editor')
     const cid = await cidFrom({ doc: appKey })
 
-    expect(await localStore.addAppKey({ cid, credential: appKey })).toBe(true)
+    const added = await localStore.addAppKey({ cid, credential: appKey })
+    expect(added.inserted).toBe(true)
 
     // Stored as an envelope under the cipher-minted id, read back by content
     // cid, and invisible to every credential-wide surface.
@@ -458,10 +459,13 @@ describe('BrowserStore (encrypted collections)', () => {
       .find()
       .exec()
     expect(resources).toHaveLength(1)
+    expect(resources[0].id).toBe(added.resourceId)
     expect(
       (resources[0].toMutableJSON().data as { jwe?: unknown }).jwe
     ).toBeDefined()
-    expect(await localStore.listAppKeys()).toEqual([{ cid, vc: appKey }])
+    expect(await localStore.listAppKeys()).toEqual([
+      { cid, vc: appKey, resourceId: added.resourceId }
+    ])
     expect(await localStore.listCredentials()).toEqual([])
   })
 
@@ -470,8 +474,13 @@ describe('BrowserStore (encrypted collections)', () => {
     const appKey = makeAppKey('https://app.example/editor')
     const cid = await cidFrom({ doc: appKey })
 
-    expect(await localStore.addAppKey({ cid, credential: appKey })).toBe(true)
-    expect(await localStore.addAppKey({ cid, credential: appKey })).toBe(false)
+    const first = await localStore.addAppKey({ cid, credential: appKey })
+    expect(first.inserted).toBe(true)
+    // A skipped duplicate names the Resource already holding the key.
+    expect(await localStore.addAppKey({ cid, credential: appKey })).toEqual({
+      inserted: false,
+      resourceId: first.resourceId
+    })
 
     expect(
       await localStore.rxCollection('appConnections').find().exec()
@@ -486,7 +495,10 @@ describe('BrowserStore (encrypted collections)', () => {
     const other = makeAppKey('https://app.example/reader')
     const cid = await cidFrom({ doc: appKey })
     const otherCid = await cidFrom({ doc: other })
-    await localStore.addAppKey({ cid: otherCid, credential: other })
+    const { resourceId: otherResourceId } = await localStore.addAppKey({
+      cid: otherCid,
+      credential: other
+    })
 
     // Two resource replicas carrying the same app key under different ids -- a
     // legacy copy replicated from remote beside a locally re-keyed one.
@@ -509,10 +521,12 @@ describe('BrowserStore (encrypted collections)', () => {
     await localStore.deleteAppKey({ cid })
 
     expect(await localStore.listAppKeys()).toEqual([
-      { cid: otherCid, vc: other }
+      { cid: otherCid, vc: other, resourceId: otherResourceId }
     ])
     // A re-add after the delete is a genuine insert, not a false dedupe.
-    expect(await localStore.addAppKey({ cid, credential: appKey })).toBe(true)
+    expect(
+      (await localStore.addAppKey({ cid, credential: appKey })).inserted
+    ).toBe(true)
     expect(await localStore.listAppKeys()).toHaveLength(2)
   })
 

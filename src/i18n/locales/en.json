@@ -209,6 +209,7 @@
       "confirmTitle": "Forget this browser?",
       "confirmMessage": "This browser will be removed from your account and all wallet data stored on it will be deleted. The removal is recorded in your account's public log, and the account's encrypted data is re-keyed first, so nothing written from now on is readable from this browser's leftovers. Your account itself is untouched -- logging in again reconnects this browser as new.",
       "confirmCeiling": "What cannot be taken back: data this browser already fetched may remain recoverable from the device by forensic means, and the browser profile itself keeps a trace that a wallet was used here. This may take a moment -- keep this tab open.",
+      "confirmAction": "Forget this browser",
       "progress": "Forgetting this browser -- re-keying the account and writing the removal. Keep this tab open.",
       "lastClientTitle": "Forget the only connected browser?",
       "lastClientMessage": "This is the only browser connected to this account. Forgetting it removes the browser from the account and deletes all wallet data stored on it, leaving the account with no connected browser: it stays anchored by your passphrase and passkeys alone, the same state a brand-new account starts in. The transition is recorded in your account's public log, and the account's encrypted data is re-keyed first.",
@@ -446,7 +447,7 @@
     "orphanedNotice": "The storage access {{name}} was granted no longer works: it was set up from a wallet that has since been disconnected from this account. To use this app again, open it and connect it to your wallet again. You can also revoke it here to remove its app key and stop it from reading anything written from now on.",
     "clientsCrossPointer": "Looking for the browsers and phones connected to this account? Those are managed under",
     "clientsCrossPointerLink": "Settings > Connected wallets",
-    "detailTitle": "App detail: {{name}}",
+    "connectionDetailTitle": "Connection detail: {{name}}",
     "connected": "Connected",
     "origin": "Origin:",
     "subjectDid": "Client Id:",
@@ -478,8 +479,7 @@
     "revokeAgentTitle": "Revoke agent access?",
     "revokeAgentConfirm": "Revoking access revokes the storage access {{name}} was granted, so it can no longer read or write the collections it was given. It may still hold copies of data it already fetched. The agent will have to ask for access again. This cannot be undone.",
     "revokeAgentSuccess": "Agent access revoked.",
-    "revokeAgentSuccessLegacy": "Agent removed. Its remaining access will expire on its own.",
-    "revokeAgentSuccessPartial": "Agent access revoked. Some of its access could not be withdrawn and ends only when it expires.",
+    "revokeAgentSuccessEnded": "Agent removed. Its storage access had already ended.",
     "revokeAgentFailed": "Could not revoke agent access. Please try again."
   },
   "dashboard": {
@@ -641,7 +641,8 @@
       "wallet-activity": "Wallet Activity Log",
       "id": "Identity",
       "key-map": "Key Map",
-      "unlock-methods": "Unlock Methods"
+      "unlock-methods": "Unlock Methods",
+      "connections": "Connections"
     },
     "groupWalletContents": "Wallet Contents",
     "groupAppCollections": "Application Collections",
@@ -1065,6 +1066,7 @@
       "barredGrant": "This request asks for access this wallet does not grant from a link: only collections created for the requester can be granted here, not shared wallet collections.",
       "unreadableTarget": "This request names an encrypted collection by its URL, which grants no key to read it. The requester would get only unreadable data. Ask its developer to request the collection with a https://w3id.org/byoe#private-collection descriptor instead, which grants that key.",
       "multipleGrantees": "This request asks for access on behalf of more than one program key. A link can grant access to one requester at a time, so it was refused.",
+      "enrolledClient": "This request asks for access on behalf of a wallet that is or was connected to your account. A link cannot grant access to one of your own wallets, so it was refused.",
       "zcapUnavailable": "This request needs remote storage, which this wallet isn't configured with.",
       "processFailed": "Something went wrong preparing the answer. Please try again.",
       "exchangeFailed": "Could not deliver the answer to the server this request lives on."

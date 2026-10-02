@@ -1,844 +1,868 @@
 /**
  * @vitest-environment node
  *
- * The agent half of the connected-grantee model: which activities list as
- * a connected agent (`listConnectedAgents` -- the Grant predicate, the Revoke
- * join, the all-expired rule (drop, or keep while a granted collection's
- * current key epoch lists the agent), and the name / key-fingerprint fallback), and
- * the revocation `revokeAgentAccess` performs (the server revocation before
- * the recorded activity, the signer check handed through so the storage
- * layer settles the skips, and the forward-floored Revoke stamp). Also the
- * consent page's known-agent lookup (`findKnownAgents`), over the same join.
+ * The connected-parties readers over the `connections` directory: which
+ * entries the Applications page lists as apps (`listConnectedApps`) and as
+ * agents (`listConnectedAgents`, with the expired-row roster check), the
+ * consent page's known-agent note (`findKnownAgents`), and the creator lookup
+ * behind every "Created by" surface (`lookupCollectionCreators`). Every
+ * fixture entry is written through wallet-core's own upsert helpers over an
+ * in-memory store and read back through its one listing read. The read rule
+ * is checked against the store's spies: every lookup by DID resolves against
+ * the listing, and none GETs the id a DID derives to.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import {
+  connectionResourceId,
+  setConnectionLabel
+} from '@interop/wallet-core/connections'
 import {
   findKnownAgents,
-  isAgentGrant,
   listConnectedAgents,
-  revokeAgentAccess,
-  revokeAppAccess,
-  type ConnectedApp
+  listConnectedApps,
+  lookupCollectionCreators
 } from '@/lib/connectedApps'
 import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
 import type { StorageManager } from '@/stores/storageManager'
-import type { User } from '@/types/auth'
+import {
+  AGENT_DID,
+  APP_DID,
+  CLIENT_DID,
+  OTHER_AGENT_DID,
+  OTHER_APP_DID,
+  PAST,
+  SPACE_URL,
+  WALLET_SIGNER,
+  directoryStorage,
+  entryOf,
+  fixtureDirectory,
+  grantZcap,
+  listedConnections,
+  recordConsent,
+  retireParty,
+  type FixtureDirectory
+} from '../../tests/unit/connectionFixtures'
+import { HMAC_KEY } from '../../tests/unit/memoryConnections'
 
-const AGENT_DID = 'did:key:z6MkAgent'
-const FUTURE = '2099-01-01T00:00:00.000Z'
-const PAST = '2000-01-01T00:00:00.000Z'
+const APP_ORIGIN = 'https://app.example'
+const APP_URL = 'https://app.example/editor'
+const FIRST_SEEN = '2026-07-01T00:00:00.000Z'
+const LAST_SEEN = '2026-08-01T00:00:00.000Z'
+const ORIGIN_ONLY_APP_DID = 'did:key:z6MkOriginOnlyApp'
+const NAMELESS_APP_DID = 'did:key:z6MkNamelessApp'
 
-/**
- * One recorded grant entry, as the request page writes it onto the Grant
- * activity's `object.zcaps`.
- */
-function grantEntry({
-  id = 'urn:zcap:one',
-  expires = FUTURE,
-  controller = AGENT_DID,
-  target = 'https://was.example/space/s/collection/notes'
-}: {
-  id?: string
-  expires?: string
-  controller?: string
-  target?: string
-} = {}) {
-  return {
-    id,
-    target,
-    allowedActions: ['read'],
-    expires,
-    zcap: {
-      id,
-      controller,
-      expires,
-      parentCapability: 'urn:zcap:root:x',
-      invocationTarget: target,
-      proof: { verificationMethod: 'did:key:z6MkWallet#z6MkWallet' }
-    }
-  }
-}
+let directory: FixtureDirectory
+
+beforeEach(() => {
+  directory = fixtureDirectory()
+})
 
 /**
- * An agent Grant activity, as the interaction-URL request page records
- * one.
+ * Records an App Connect consent for the fixture app.
+ *
+ * @param options {object}
+ * @param [options.did] {string}
+ * @param [options.grants] {Array<object>}
+ * @param [options.appKey] {string}
+ * @param [options.name] {string}
+ * @param [options.origin] {string}
+ * @param [options.url] {string}
+ * @param [options.at] {string}
+ * @returns {Promise<void>}
  */
-function agentGrant({
-  created = '2026-08-01T00:00:00.000Z',
-  name,
-  zcaps = [grantEntry()]
+async function connectApp({
+  did = APP_DID,
+  grants = [],
+  appKey,
+  name = 'Notes',
+  origin = APP_ORIGIN,
+  url = APP_URL,
+  at = LAST_SEEN
 }: {
-  created?: string
+  did?: string
+  grants?: Array<Record<string, unknown>>
+  appKey?: string
   name?: string
-  zcaps?: unknown[]
-} = {}) {
-  return {
-    id: `grant-${created}`,
-    doc: {
-      id: `grant-${created}`,
-      type: ['Grant'],
-      created,
-      object: {
-        origin: EXTERNAL_REQUEST_ORIGIN,
-        ...(name !== undefined && { actor: { name } }),
-        zcaps
-      }
-    }
-  }
+  origin?: string
+  url?: string
+  at?: string
+} = {}): Promise<void> {
+  await recordConsent({
+    directory,
+    did,
+    kind: 'app',
+    grants,
+    ...(appKey !== undefined && { appKey }),
+    name,
+    origin,
+    url,
+    at
+  })
 }
 
 /**
- * A StorageManager double serving a fixed history scan, on Space `s` of
- * `https://was.example`, whose roster read reports `rosterCollections` as
- * the collections still listing the grantee (or one failed read when
- * `rosterCollections` is an Error).
+ * Plants a grant on a stored entry the way a storage host could, skipping
+ * the write-time checks every reader repeats.
+ *
+ * @param options {object}
+ * @param options.did {string}   the entry's party
+ * @param options.zcap {object}   the planted capability
+ * @returns {Promise<void>}
  */
-function storageWith(
-  items: unknown[],
-  rosterCollections: string[] | Error = []
-): StorageManager {
-  return {
-    listHistoryItems: vi.fn(async () => ({ entries: items, unreadable: 0 })),
-    spaceLocation: { serverUrl: 'https://was.example', spaceId: 's' },
-    granteeRosterCollections: vi.fn(
-      async ({ grantees }: { grantees: Array<{ controller: string }> }) =>
-        grantees.map(({ controller }) =>
-          rosterCollections instanceof Error
-            ? { controller, collectionIds: [], failed: 1 }
-            : { controller, collectionIds: rosterCollections, failed: 0 }
-        )
-    )
-  } as unknown as StorageManager
+async function plantGrant({
+  did,
+  zcap
+}: {
+  did: string
+  zcap: Record<string, unknown>
+}): Promise<void> {
+  const resourceId = await connectionResourceId({ hmacKey: HMAC_KEY, did })
+  const row = directory.rows.get(resourceId)!
+  const body = row.body as { grants: unknown[] }
+  body.grants.push({ zcap, grantKind: 'grant', grantedAt: LAST_SEEN })
 }
 
-const NOTES_COLLECTION = 'https://was.example/space/s/notes/'
-const PUBLIC_COLLECTION = 'https://was.example/space/s/public-notes/'
+describe('listConnectedApps', () => {
+  it('lists an app holding an app key and no grant', async () => {
+    await connectApp({ appKey: 'r-app-key', at: FIRST_SEEN })
+
+    const apps = listConnectedApps({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL
+    })
+
+    expect(apps).toEqual([
+      {
+        resourceId: await connectionResourceId({
+          hmacKey: HMAC_KEY,
+          did: APP_DID
+        }),
+        name: 'Notes',
+        origin: APP_ORIGIN,
+        appUrl: APP_URL,
+        subjectDid: APP_DID,
+        appKey: 'r-app-key',
+        connectedAt: FIRST_SEEN,
+        lastConnectedAt: FIRST_SEEN,
+        grants: []
+      }
+    ])
+  })
+
+  it('does not list an app holding neither an app key nor a grant', async () => {
+    await connectApp()
+
+    expect(
+      listConnectedApps({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL
+      })
+    ).toEqual([])
+  })
+
+  it('lists every grant, live and expired, newest first', async () => {
+    await connectApp({
+      grants: [
+        grantZcap({ id: 'urn:zcap:old', controller: APP_DID, expires: PAST })
+      ],
+      at: FIRST_SEEN
+    })
+    await connectApp({
+      grants: [
+        grantZcap({
+          id: 'urn:zcap:new',
+          controller: APP_DID,
+          collection: 'drafts',
+          allowedAction: ['GET', 'PUT']
+        })
+      ],
+      at: LAST_SEEN
+    })
+
+    const [app] = listConnectedApps({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL
+    })
+
+    expect(app.connectedAt).toBe(FIRST_SEEN)
+    expect(app.lastConnectedAt).toBe(LAST_SEEN)
+    expect(app.grants).toEqual([
+      {
+        id: 'urn:zcap:new',
+        target: `${SPACE_URL}drafts/`,
+        allowedActions: ['GET', 'PUT'],
+        expires: '2099-01-01T00:00:00.000Z',
+        signerKeyId: WALLET_SIGNER,
+        grantKind: 'grant',
+        grantedAt: LAST_SEEN
+      },
+      {
+        id: 'urn:zcap:old',
+        target: `${SPACE_URL}notes/`,
+        allowedActions: ['GET'],
+        expires: PAST,
+        signerKeyId: WALLET_SIGNER,
+        grantKind: 'grant',
+        grantedAt: FIRST_SEEN
+      }
+    ])
+  })
+
+  it('does not list a retired app entry', async () => {
+    await connectApp({
+      appKey: 'r-app-key',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: APP_DID })]
+    })
+    await retireParty({ directory, did: APP_DID, zcapIds: ['urn:zcap:one'] })
+
+    expect(
+      listConnectedApps({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL
+      })
+    ).toEqual([])
+  })
+
+  it('never lists an agent or a wallet-client entry as an app', async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:agent', controller: AGENT_DID })]
+    })
+    await recordConsent({
+      directory,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      grants: [grantZcap({ id: 'urn:zcap:client', controller: CLIENT_DID })],
+      origin: APP_ORIGIN,
+      appKey: 'r-client'
+    })
+
+    expect(
+      listConnectedApps({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL
+      })
+    ).toEqual([])
+  })
+
+  it('names an app by its label, then its name, then its origin', async () => {
+    await connectApp({ did: APP_DID, appKey: 'r-1', name: 'Notes' })
+    await setConnectionLabel({
+      store: directory.store,
+      hmacKey: HMAC_KEY,
+      did: APP_DID,
+      kind: 'app',
+      label: 'My notes'
+    })
+    await connectApp({ did: OTHER_APP_DID, appKey: 'r-2', name: 'Drafts' })
+    await recordConsent({
+      directory,
+      did: ORIGIN_ONLY_APP_DID,
+      kind: 'app',
+      appKey: 'r-3',
+      origin: 'https://origin-only.example'
+    })
+    await recordConsent({
+      directory,
+      did: NAMELESS_APP_DID,
+      kind: 'app',
+      appKey: 'r-4'
+    })
+
+    const names = new Map(
+      listConnectedApps({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL
+      }).map(app => [app.subjectDid, app.name])
+    )
+
+    expect(names.get(APP_DID)).toBe('My notes')
+    expect(names.get(OTHER_APP_DID)).toBe('Drafts')
+    expect(names.get(ORIGIN_ONLY_APP_DID)).toBe('https://origin-only.example')
+    // No name at all: the view falls back to the shortened DID.
+    expect(names.has(NAMELESS_APP_DID)).toBe(true)
+    expect(names.get(NAMELESS_APP_DID)).toBeUndefined()
+  })
+
+  it('stores no name from a 65-character app name, so the origin names the app', async () => {
+    await connectApp({ appKey: 'r-app-key', name: 'n'.repeat(65) })
+
+    expect((await entryOf({ directory, did: APP_DID }))?.name).toBeUndefined()
+    const [app] = listConnectedApps({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL
+    })
+    expect(app.name).toBe(APP_ORIGIN)
+  })
+
+  it('sorts by the latest consent, newest first', async () => {
+    await connectApp({ did: APP_DID, appKey: 'r-1', at: FIRST_SEEN })
+    await connectApp({ did: OTHER_APP_DID, appKey: 'r-2', at: LAST_SEEN })
+
+    expect(
+      listConnectedApps({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL
+      }).map(app => app.subjectDid)
+    ).toEqual([OTHER_APP_DID, APP_DID])
+  })
+
+  it('drops a planted grant naming another party or another Space', async () => {
+    await connectApp({
+      grants: [grantZcap({ id: 'urn:zcap:own', controller: APP_DID })]
+    })
+    await plantGrant({
+      did: APP_DID,
+      zcap: grantZcap({ id: 'urn:zcap:foreign', controller: AGENT_DID })
+    })
+    await plantGrant({
+      did: APP_DID,
+      zcap: {
+        ...grantZcap({ id: 'urn:zcap:elsewhere', controller: APP_DID }),
+        invocationTarget: 'https://was.example/space/other/notes/'
+      }
+    })
+
+    const [app] = listConnectedApps({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL
+    })
+
+    expect(app.grants.map(grant => grant.id)).toEqual(['urn:zcap:own'])
+  })
+
+  it('lists an app by its key alone on a session with no Space', async () => {
+    await connectApp({
+      appKey: 'r-app-key',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: APP_DID })]
+    })
+
+    const [app] = listConnectedApps({
+      connections: await listedConnections(directory)
+    })
+
+    expect(app.subjectDid).toBe(APP_DID)
+    expect(app.grants).toEqual([])
+  })
+})
 
 describe('listConnectedAgents', () => {
-  it('lists an agent Grant', async () => {
-    const agents = await listConnectedAgents({
-      storage: storageWith([agentGrant({ name: 'Deploy bot' })])
+  /**
+   * Records an interaction-URL consent for an agent.
+   *
+   * @param options {object}
+   * @param [options.did] {string}
+   * @param [options.grants] {Array<object>}
+   * @param [options.name] {string}
+   * @param [options.at] {string}
+   * @returns {Promise<void>}
+   */
+  async function grantAgent({
+    did = AGENT_DID,
+    grants = [grantZcap({ id: `urn:zcap:${did}`, controller: did })],
+    name,
+    at = LAST_SEEN
+  }: {
+    did?: string
+    grants?: Array<Record<string, unknown>>
+    name?: string
+    at?: string
+  } = {}): Promise<void> {
+    await recordConsent({
+      directory,
+      did,
+      kind: 'agent',
+      grants,
+      ...(name !== undefined && { name }),
+      at
     })
+  }
+
+  /**
+   * The agent listing over the fixture directory.
+   *
+   * @param [rosterCollections] {string[] | Error}
+   * @returns {Promise<object>}   the rows and the storage double
+   */
+  async function agentsListed(rosterCollections?: string[] | Error) {
+    const storage = directoryStorage({ directory, rosterCollections })
+    const agents = await listConnectedAgents({
+      storage: storage as unknown as StorageManager,
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL
+    })
+    return { agents, storage }
+  }
+
+  it('lists an agent holding a live grant', async () => {
+    await grantAgent({ name: 'Deploy bot' })
+
+    const { agents, storage } = await agentsListed()
+
     expect(agents).toHaveLength(1)
     expect(agents[0]).toMatchObject({
+      resourceId: await connectionResourceId({
+        hmacKey: HMAC_KEY,
+        did: AGENT_DID
+      }),
       controller: AGENT_DID,
       name: 'Deploy bot',
       origin: EXTERNAL_REQUEST_ORIGIN,
-      grantedAt: '2026-08-01T00:00:00.000Z'
+      grantedAt: LAST_SEEN
     })
-    expect(agents[0].grants).toHaveLength(1)
-  })
-
-  it('falls back to the grantee key when no name was declared', async () => {
-    const agents = await listConnectedAgents({
-      storage: storageWith([agentGrant()])
-    })
-    expect(agents[0].name).toBeUndefined()
-    expect(agents[0].controller).toBe(AGENT_DID)
-  })
-
-  it('does not list an App Connect Grant', async () => {
-    const appConnect = agentGrant()
-    ;(appConnect.doc.object as Record<string, unknown>).origin =
-      'https://app.example'
-    ;(appConnect.doc.object as Record<string, unknown>).appConnect = {
-      name: 'Demo App'
-    }
-    expect(isAgentGrant({ doc: appConnect.doc })).toBe(false)
-    expect(
-      await listConnectedAgents({ storage: storageWith([appConnect]) })
-    ).toEqual([])
-  })
-
-  it('does not list a plain CHAPI DIDAuth Login', async () => {
-    const didAuth = {
-      id: 'login-didauth',
-      doc: {
-        id: 'login-didauth',
-        type: ['Login'],
-        created: '2026-08-01T00:00:00.000Z',
-        object: { origin: 'https://verifier.example' }
-      }
-    }
-    expect(isAgentGrant({ doc: didAuth.doc })).toBe(false)
-    expect(
-      await listConnectedAgents({ storage: storageWith([didAuth]) })
-    ).toEqual([])
-  })
-
-  it('does not list an agent-shaped row recorded as a Login', async () => {
-    const login = agentGrant({ name: 'Deploy bot' })
-    login.doc.type = ['Login']
-    expect(isAgentGrant({ doc: login.doc })).toBe(false)
-    expect(
-      await listConnectedAgents({ storage: storageWith([login]) })
-    ).toEqual([])
-  })
-
-  it('hides a row whose Revoke is at or after the Grant', async () => {
-    const revoke = {
-      id: 'revoke-1',
-      doc: {
-        id: 'revoke-1',
-        type: ['Revoke'],
-        created: '2026-08-01T00:00:00.000Z',
-        object: {
-          origin: EXTERNAL_REQUEST_ORIGIN,
-          controller: AGENT_DID,
-          zcaps: [{ id: 'urn:zcap:one' }]
-        }
-      }
-    }
-    expect(
-      await listConnectedAgents({
-        storage: storageWith([agentGrant(), revoke])
-      })
-    ).toEqual([])
-  })
-
-  it('lists again after a re-grant newer than the Revoke', async () => {
-    const revoke = {
-      id: 'revoke-1',
-      doc: {
-        id: 'revoke-1',
-        type: ['Revoke'],
-        created: '2026-08-01T00:00:00.000Z',
-        object: { origin: EXTERNAL_REQUEST_ORIGIN, controller: AGENT_DID }
-      }
-    }
-    const agents = await listConnectedAgents({
-      storage: storageWith([
-        agentGrant(),
-        revoke,
-        agentGrant({ created: '2026-08-02T00:00:00.000Z', name: 'Again' })
-      ])
-    })
-    expect(agents).toHaveLength(1)
-    expect(agents[0].name).toBe('Again')
-  })
-
-  it('drops an expired row whose grants name no collection of this Space', async () => {
-    const expired = agentGrant({
-      zcaps: [grantEntry({ expires: PAST })]
-    })
-    expect(
-      await listConnectedAgents({ storage: storageWith([expired]) })
-    ).toEqual([])
-  })
-
-  it('keeps and flags an expired row still listed in a current key epoch', async () => {
-    // The agent's key stays in the collection's key-epoch roster, so the row
-    // must stay reachable for Revoke, which rotates the epoch off it.
-    const expired = agentGrant({
-      zcaps: [
-        grantEntry({
-          id: 'urn:zcap:pub',
-          expires: PAST,
-          target: PUBLIC_COLLECTION
-        }),
-        grantEntry({
-          id: 'urn:zcap:enc',
-          expires: PAST,
-          target: NOTES_COLLECTION
-        })
-      ]
-    })
-    const storage = storageWith([expired], ['notes'])
-    const agents = await listConnectedAgents({ storage })
-    expect(agents).toHaveLength(1)
-    expect(agents[0].expired).toBe(true)
-    expect(agents[0].grants).toHaveLength(2)
-    expect(storage.granteeRosterCollections).toHaveBeenCalledWith({
-      grantees: [
-        {
-          controller: AGENT_DID,
-          targets: [PUBLIC_COLLECTION, NOTES_COLLECTION]
-        }
-      ]
-    })
-  })
-
-  it('reads the key epochs of every expired row in one roster read', async () => {
-    // One call covers all the expired rows, so the storage layer can read a
-    // collection several rows target once.
-    const other = 'did:key:z6MkOtherAgent'
-    const storage = storageWith(
-      [
-        agentGrant({
-          zcaps: [grantEntry({ expires: PAST, target: NOTES_COLLECTION })]
-        }),
-        agentGrant({
-          created: '2026-08-02T00:00:00.000Z',
-          zcaps: [
-            grantEntry({
-              id: 'urn:zcap:two',
-              expires: PAST,
-              controller: other,
-              target: NOTES_COLLECTION
-            })
-          ]
-        })
-      ],
-      ['notes']
-    )
-
-    const agents = await listConnectedAgents({ storage })
-
-    expect(agents.map(agent => agent.controller)).toEqual([other, AGENT_DID])
-    expect(storage.granteeRosterCollections).toHaveBeenCalledTimes(1)
-    expect(storage.granteeRosterCollections).toHaveBeenCalledWith({
-      grantees: [
-        { controller: AGENT_DID, targets: [NOTES_COLLECTION] },
-        { controller: other, targets: [NOTES_COLLECTION] }
-      ]
-    })
-  })
-
-  it('drops an expired row no current key epoch lists', async () => {
-    const expired = agentGrant({
-      zcaps: [grantEntry({ expires: PAST, target: NOTES_COLLECTION })]
-    })
-    expect(
-      await listConnectedAgents({ storage: storageWith([expired], []) })
-    ).toEqual([])
-  })
-
-  it('keeps an expired row when a key epoch cannot be read', async () => {
-    const expired = agentGrant({
-      zcaps: [grantEntry({ expires: PAST, target: PUBLIC_COLLECTION })]
-    })
-    const agents = await listConnectedAgents({
-      storage: storageWith([expired], new Error('offline'))
-    })
-    expect(agents).toHaveLength(1)
-    expect(agents[0].expired).toBe(true)
-  })
-
-  it('keeps an expired row when there is no remote store', async () => {
-    const expired = agentGrant({
-      zcaps: [grantEntry({ expires: PAST, target: PUBLIC_COLLECTION })]
-    })
-    // With no remote store, `granteeRosterCollections` reports one failed
-    // read per grantee, which keeps the row.
-    const storage = storageWith([expired], new Error('no remote store'))
-    ;(storage as unknown as { spaceLocation?: unknown }).spaceLocation =
-      undefined
-    const agents = await listConnectedAgents({ storage })
-    expect(agents).toHaveLength(1)
-    expect(agents[0].expired).toBe(true)
-    expect(storage.granteeRosterCollections).toHaveBeenCalledTimes(1)
-  })
-
-  it('reads no key epoch and flags nothing when a grant is live', async () => {
-    const storage = storageWith([
-      agentGrant({
-        zcaps: [
-          grantEntry({
-            id: 'urn:zcap:old',
-            expires: PAST,
-            target: NOTES_COLLECTION
-          }),
-          grantEntry({
-            id: 'urn:zcap:live',
-            expires: FUTURE,
-            target: NOTES_COLLECTION
-          })
-        ]
-      })
-    ])
-    const agents = await listConnectedAgents({ storage })
-    expect(agents).toHaveLength(1)
     expect(agents[0].expired).toBeUndefined()
     expect(storage.granteeRosterCollections).not.toHaveBeenCalled()
   })
 
-  it('reads expiry off the recorded capability, not the summary', async () => {
-    // The revocation lookup reads the zcap's own `expires`; a summary that
-    // disagrees (a stale display value) must not drop or keep a row on its
-    // own. A summary-only legacy record still falls back to the summary.
-    const summaryStale = grantEntry({ expires: FUTURE })
-    summaryStale.expires = PAST
-    expect(
-      await listConnectedAgents({
-        storage: storageWith([agentGrant({ zcaps: [summaryStale] })])
-      })
-    ).toHaveLength(1)
+  it('leaves the name off when the request declared none', async () => {
+    await grantAgent()
 
-    const zcapExpired = grantEntry({ expires: PAST })
-    zcapExpired.expires = FUTURE
-    expect(
-      await listConnectedAgents({
-        storage: storageWith([agentGrant({ zcaps: [zcapExpired] })])
-      })
-    ).toEqual([])
+    const { agents } = await agentsListed()
+
+    expect(agents[0].name).toBeUndefined()
+    expect(agents[0].controller).toBe(AGENT_DID)
   })
 
-  it('unions the grants of every live Grant for the controller', async () => {
-    // The newest request's grant has lapsed, but an older request's has not:
-    // the row stays, carrying both, since the revocation scans every Grant.
-    const agents = await listConnectedAgents({
-      storage: storageWith([
-        agentGrant({
-          created: '2026-08-01T00:00:00.000Z',
-          zcaps: [grantEntry({ id: 'urn:zcap:old', expires: FUTURE })]
-        }),
-        agentGrant({
-          created: '2026-08-02T00:00:00.000Z',
-          name: 'Deploy bot',
-          zcaps: [grantEntry({ id: 'urn:zcap:new', expires: PAST })]
+  it('hides an agent holding no grant', async () => {
+    await grantAgent({ grants: [] })
+
+    expect((await agentsListed()).agents).toEqual([])
+  })
+
+  it('does not list a retired agent entry', async () => {
+    await grantAgent()
+    await retireParty({
+      directory,
+      did: AGENT_DID,
+      zcapIds: [`urn:zcap:${AGENT_DID}`]
+    })
+
+    expect((await agentsListed()).agents).toEqual([])
+  })
+
+  it('never lists an app or a wallet-client entry as an agent', async () => {
+    await connectApp({
+      grants: [grantZcap({ id: 'urn:zcap:app', controller: APP_DID })]
+    })
+    await recordConsent({
+      directory,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      grants: [grantZcap({ id: 'urn:zcap:client', controller: CLIENT_DID })]
+    })
+
+    expect((await agentsListed()).agents).toEqual([])
+  })
+
+  it('keeps and flags an expired agent while a collection still lists it', async () => {
+    await grantAgent({
+      grants: [
+        grantZcap({ id: 'urn:zcap:gone', controller: AGENT_DID, expires: PAST })
+      ]
+    })
+
+    const { agents, storage } = await agentsListed(['notes'])
+
+    expect(agents).toHaveLength(1)
+    expect(agents[0].expired).toBe(true)
+    expect(storage.granteeRosterCollections).toHaveBeenCalledWith({
+      grantees: [{ controller: AGENT_DID, targets: [`${SPACE_URL}notes/`] }]
+    })
+  })
+
+  it('drops an expired agent no collection lists', async () => {
+    await grantAgent({
+      grants: [
+        grantZcap({ id: 'urn:zcap:gone', controller: AGENT_DID, expires: PAST })
+      ]
+    })
+
+    expect((await agentsListed([])).agents).toEqual([])
+  })
+
+  it('keeps an expired agent when a key epoch cannot be read', async () => {
+    await grantAgent({
+      grants: [
+        grantZcap({ id: 'urn:zcap:gone', controller: AGENT_DID, expires: PAST })
+      ]
+    })
+
+    const { agents } = await agentsListed(new Error('epoch unreadable'))
+
+    expect(agents).toHaveLength(1)
+    expect(agents[0].expired).toBe(true)
+  })
+
+  it('reads the key epochs of every expired agent in one roster read', async () => {
+    await grantAgent({
+      grants: [
+        grantZcap({ id: 'urn:zcap:one', controller: AGENT_DID, expires: PAST })
+      ]
+    })
+    await grantAgent({
+      did: OTHER_AGENT_DID,
+      grants: [
+        grantZcap({
+          id: 'urn:zcap:two',
+          controller: OTHER_AGENT_DID,
+          expires: PAST
         })
-      ])
+      ]
     })
-    expect(agents).toHaveLength(1)
-    expect(agents[0].grants.map(grant => grant.id).sort()).toEqual([
-      'urn:zcap:new',
-      'urn:zcap:old'
-    ])
-    expect(agents[0].name).toBe('Deploy bot')
-    expect(agents[0].grantedAt).toBe('2026-08-02T00:00:00.000Z')
+
+    const { storage } = await agentsListed(['notes'])
+
+    expect(storage.granteeRosterCollections).toHaveBeenCalledTimes(1)
+    expect(
+      storage.granteeRosterCollections.mock.calls[0][0].grantees
+    ).toHaveLength(2)
   })
 
-  it('deduplicates a grant recorded on two Grant activities', async () => {
-    const agents = await listConnectedAgents({
-      storage: storageWith([
-        agentGrant({ created: '2026-08-01T00:00:00.000Z' }),
-        agentGrant({ created: '2026-08-02T00:00:00.000Z' })
-      ])
-    })
-    expect(agents[0].grants).toHaveLength(1)
-  })
-
-  it('never hides a Grant that carries no created stamp', async () => {
-    const undated = agentGrant()
-    delete (undated.doc as { created?: string }).created
-    const revoke = {
-      id: 'revoke-1',
-      doc: {
-        id: 'revoke-1',
-        type: ['Revoke'],
-        created: '2026-08-05T00:00:00.000Z',
-        object: { origin: EXTERNAL_REQUEST_ORIGIN, controller: AGENT_DID }
-      }
-    }
-    const agents = await listConnectedAgents({
-      storage: storageWith([undated, revoke])
-    })
-    expect(agents).toHaveLength(1)
-    expect(agents[0].grantedAt).toBeUndefined()
-  })
-
-  it('is not hidden by a Revoke of another shape', async () => {
-    // An app revocation (its own origin, an appConnect member, a cid) and a
-    // Revoke naming this controller under a foreign origin: neither is this
-    // row's revocation.
-    const appRevoke = {
-      id: 'revoke-app',
-      doc: {
-        id: 'revoke-app',
-        type: ['Revoke'],
-        created: '2026-08-05T00:00:00.000Z',
-        object: {
-          origin: 'https://app.example',
-          appConnect: { name: 'Demo App' },
+  it('reads no key epoch when one grant is still live', async () => {
+    await grantAgent({
+      grants: [
+        grantZcap({
+          id: 'urn:zcap:gone',
           controller: AGENT_DID,
-          cid: 'cid-1'
-        }
-      }
-    }
-    const foreignRevoke = {
-      id: 'revoke-foreign',
-      doc: {
-        id: 'revoke-foreign',
-        type: ['Revoke'],
-        created: '2026-08-05T00:00:00.000Z',
-        object: { origin: 'https://other.example', controller: AGENT_DID }
-      }
-    }
-    const agents = await listConnectedAgents({
-      storage: storageWith([agentGrant(), appRevoke, foreignRevoke])
+          expires: PAST
+        }),
+        grantZcap({ id: 'urn:zcap:live', controller: AGENT_DID })
+      ]
     })
-    expect(agents).toHaveLength(1)
+
+    const { agents, storage } = await agentsListed()
+
+    expect(agents[0].expired).toBeUndefined()
+    expect(storage.granteeRosterCollections).not.toHaveBeenCalled()
+  })
+
+  it("carries every grant on the agent's entry, newest first, for its detail page", async () => {
+    await grantAgent({
+      grants: [
+        grantZcap({ id: 'urn:zcap:old', controller: AGENT_DID, expires: PAST })
+      ],
+      at: FIRST_SEEN
+    })
+    await grantAgent({
+      grants: [
+        grantZcap({
+          id: 'urn:zcap:new',
+          controller: AGENT_DID,
+          collection: 'drafts'
+        })
+      ],
+      at: LAST_SEEN
+    })
+
+    const { agents } = await agentsListed()
+
+    expect(agents[0]).toMatchObject({
+      connectedAt: FIRST_SEEN,
+      lastConnectedAt: LAST_SEEN,
+      grantedAt: LAST_SEEN
+    })
+    expect(
+      agents[0].grants.map(({ id, grantedAt }) => ({ id, grantedAt }))
+    ).toEqual([
+      { id: 'urn:zcap:new', grantedAt: LAST_SEEN },
+      { id: 'urn:zcap:old', grantedAt: FIRST_SEEN }
+    ])
+  })
+
+  it('sorts by the latest consent, newest first', async () => {
+    await grantAgent({ did: AGENT_DID, at: FIRST_SEEN })
+    await grantAgent({ did: OTHER_AGENT_DID, at: LAST_SEEN })
+
+    expect(
+      (await agentsListed()).agents.map(agent => agent.controller)
+    ).toEqual([OTHER_AGENT_DID, AGENT_DID])
   })
 })
 
 describe('findKnownAgents', () => {
-  const items = (entries: unknown[]) =>
-    ({ entries, unreadable: 0 }) as Parameters<
-      typeof findKnownAgents
-    >[0]['items']
-
-  it('returns the newest live Grant name and stamp for a known controller', () => {
-    const known = findKnownAgents({
-      items: items([
-        agentGrant({ name: 'Old name' }),
-        agentGrant({ created: '2026-08-03T00:00:00.000Z', name: 'Deploy bot' })
-      ]),
-      controllers: [AGENT_DID]
-    })
-    expect(known.get(AGENT_DID)).toEqual({
+  it("answers an agent's name and its newest grant's time", async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:old', controller: AGENT_DID })],
       name: 'Deploy bot',
-      grantedAt: '2026-08-03T00:00:00.000Z'
+      at: FIRST_SEEN
     })
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:new', controller: AGENT_DID })],
+      at: LAST_SEEN
+    })
+
+    const known = findKnownAgents({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      controllers: [AGENT_DID, OTHER_AGENT_DID]
+    })
+
+    expect([...known]).toEqual([
+      [AGENT_DID, { name: 'Deploy bot', grantedAt: LAST_SEEN }]
+    ])
   })
 
-  it('hides a controller whose later Revoke covers every Grant', () => {
-    const revoke = {
-      id: 'revoke-1',
-      doc: {
-        id: 'revoke-1',
-        type: ['Revoke'],
-        created: '2026-08-02T00:00:00.000Z',
-        object: { origin: EXTERNAL_REQUEST_ORIGIN, controller: AGENT_DID }
-      }
-    }
+  it('still answers an agent whose every grant has expired', async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [
+        grantZcap({ id: 'urn:zcap:gone', controller: AGENT_DID, expires: PAST })
+      ]
+    })
+
     const known = findKnownAgents({
-      items: items([agentGrant({ name: 'Deploy bot' }), revoke]),
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
       controllers: [AGENT_DID]
     })
-    expect(known.size).toBe(0)
+
+    expect(known.get(AGENT_DID)).toEqual({ grantedAt: LAST_SEEN })
   })
 
-  it('returns no name when the Grant recorded none', () => {
-    const known = findKnownAgents({
-      items: items([agentGrant()]),
-      controllers: [AGENT_DID]
+  it('answers nothing for a retired agent entry', async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: AGENT_DID })],
+      name: 'Deploy bot'
     })
-    expect(known.get(AGENT_DID)).toEqual({
-      grantedAt: '2026-08-01T00:00:00.000Z'
-    })
+    await retireParty({ directory, did: AGENT_DID, zcapIds: ['urn:zcap:one'] })
+
+    expect(
+      findKnownAgents({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL,
+        controllers: [AGENT_DID]
+      }).size
+    ).toBe(0)
   })
 
-  it('omits a controller with no agent Grant', () => {
-    const known = findKnownAgents({
-      items: items([agentGrant()]),
-      controllers: ['did:key:z6MkStranger']
+  it('answers nothing for an agent holding no grant', async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      name: 'Deploy bot'
     })
-    expect(known.has('did:key:z6MkStranger')).toBe(false)
-    expect(known.has(AGENT_DID)).toBe(false)
+
+    expect(
+      findKnownAgents({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL,
+        controllers: [AGENT_DID]
+      }).size
+    ).toBe(0)
   })
 
-  it('does not count an App Connect Grant', () => {
-    const appConnect = agentGrant({ name: 'Demo App' })
-    ;(appConnect.doc.object as Record<string, unknown>).origin =
-      'https://app.example'
-    ;(appConnect.doc.object as Record<string, unknown>).appConnect = {
-      name: 'Demo App'
-    }
-    const known = findKnownAgents({
-      items: items([appConnect]),
-      controllers: [AGENT_DID]
+  it('answers nothing for a wallet-client or an app entry', async () => {
+    await recordConsent({
+      directory,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      grants: [grantZcap({ id: 'urn:zcap:client', controller: CLIENT_DID })]
     })
-    expect(known.size).toBe(0)
+    await setConnectionLabel({
+      store: directory.store,
+      hmacKey: HMAC_KEY,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      label: 'Work laptop'
+    })
+    await connectApp({
+      grants: [grantZcap({ id: 'urn:zcap:app', controller: APP_DID })]
+    })
+
+    expect(
+      findKnownAgents({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL,
+        controllers: [CLIENT_DID, APP_DID]
+      }).size
+    ).toBe(0)
   })
 })
 
-describe('revokeAgentAccess', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
+describe('lookupCollectionCreators', () => {
+  it('names a listed app from its entry, with the resource id a link needs', async () => {
+    await connectApp({ appKey: 'r-app-key' })
 
-  const user = { id: 'did:key:zUser', email: 'a@b.c' } as unknown as User
-  const agent = {
-    controller: AGENT_DID,
-    name: 'Deploy bot',
-    origin: EXTERNAL_REQUEST_ORIGIN,
-    grants: [],
-    grantedAt: '2026-08-01T00:00:00.000Z'
-  }
-  const items = { entries: [{ id: 'history-scan', doc: {} }], unreadable: 0 }
+    const creators = lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [{ id: APP_DID, origin: APP_ORIGIN }]
+    })
 
-  /**
-   * A storage fake for the agent revoke: one history scan, a rotation that
-   * re-keys nothing, and the given overrides.
-   *
-   * @param overrides {object}
-   * @returns {StorageManager}
-   */
-  function agentStorage(overrides: object): StorageManager {
-    return {
-      listHistoryItems: vi.fn(async () => items),
-      revokeAgentCollectionRecipients: vi.fn(async () => ({
-        collections: 0,
-        rotated: 0,
-        failed: 0,
-        revokedIds: []
-      })),
-      ...overrides
-    } as unknown as StorageManager
-  }
-
-  it('revokes on the server before recording the activity', async () => {
-    const order: string[] = []
-    const storage = agentStorage({
-      revokeAgentGrants: vi.fn(async () => {
-        order.push('revoke')
-        return {
-          revoked: 2,
-          skipped: 1,
-          revokedIds: ['urn:zcap:rotated', 'urn:zcap:one']
-        }
-      }),
-      addHistoryAgentRevoke: vi.fn(async () => {
-        order.push('activity')
-      }),
-      revokeAgentCollectionRecipients: vi.fn(async () => {
-        order.push('rotate')
-        return {
-          collections: 1,
-          rotated: 1,
-          failed: 0,
-          revokedIds: ['urn:zcap:rotated']
-        }
+    expect(creators.get(APP_DID)).toEqual({
+      name: 'Notes',
+      appUrl: APP_URL,
+      resourceId: await connectionResourceId({
+        hmacKey: HMAC_KEY,
+        did: APP_DID
       })
     })
-
-    const outcome = await revokeAgentAccess({ storage, user, agent })
-
-    expect(outcome).toEqual({ revoked: 2, skipped: 1, rotated: 1 })
-    // The epoch rotation off the agent's key runs first, over the same
-    // history scan the grant revocation reads.
-    expect(order).toEqual(['rotate', 'revoke', 'activity'])
-    expect(storage.revokeAgentCollectionRecipients).toHaveBeenCalledWith({
-      controller: AGENT_DID,
-      items
-    })
-    // The capabilities the rotation revoked are handed to the grant stage,
-    // which counts them without POSTing them again.
-    expect(storage.revokeAgentGrants).toHaveBeenCalledWith({
-      controller: AGENT_DID,
-      items,
-      revokedByRotation: ['urn:zcap:rotated']
-    })
-    expect(storage.addHistoryAgentRevoke).toHaveBeenCalledWith({
-      user,
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      controller: AGENT_DID,
-      zcaps: [{ id: 'urn:zcap:rotated' }, { id: 'urn:zcap:one' }],
-      actor: { name: 'Deploy bot' },
-      revoked: 2,
-      skipped: 1,
-      created: expect.any(String)
-    })
   })
 
-  it('records nothing when the server revocation throws', async () => {
-    const storage = agentStorage({
-      revokeAgentGrants: vi.fn(async () => {
-        throw new Error('network')
-      }),
-      addHistoryAgentRevoke: vi.fn()
+  it('names a retired app from its kept names, with no resource id', async () => {
+    await connectApp({
+      appKey: 'r-app-key',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: APP_DID })]
+    })
+    await retireParty({ directory, did: APP_DID, zcapIds: ['urn:zcap:one'] })
+
+    const creators = lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [{ id: APP_DID, origin: APP_ORIGIN }]
     })
 
-    await expect(revokeAgentAccess({ storage, user, agent })).rejects.toThrow(
-      'network'
-    )
-    expect(storage.addHistoryAgentRevoke).not.toHaveBeenCalled()
+    expect(creators.get(APP_DID)).toEqual({ name: 'Notes', appUrl: APP_URL })
   })
 
-  it('leaves the skips to the grant revocation and records them', async () => {
-    // A grant delegated from a transient session is signed by an annex key the
-    // account document never lists, so the row's marker says nothing about
-    // it; whether its generation still stands is the storage layer's
-    // reading of the verified document it holds its own resolver for, so
-    // nothing gates here.
-    const storage = agentStorage({
-      revokeAgentGrants: vi.fn(async () => ({
-        revoked: 0,
-        skipped: 1,
-        revokedIds: []
-      })),
-      addHistoryAgentRevoke: vi.fn()
+  it("reads the user's label ahead of the app's name", async () => {
+    await connectApp({ appKey: 'r-app-key' })
+    await setConnectionLabel({
+      store: directory.store,
+      hmacKey: HMAC_KEY,
+      did: APP_DID,
+      kind: 'app',
+      label: 'My notes'
     })
-    const annexSigned = {
-      ...agent,
-      grants: [
-        {
-          id: 'urn:zcap:one',
-          target: 'https://was.example/space/s/collection/notes',
-          allowedActions: ['read'],
-          expires: FUTURE,
-          signerKeyId: 'did:webvh:annex:was.example:gen-1#z6MkAnnexVisit'
-        }
+
+    const creators = lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [{ id: APP_DID, origin: APP_ORIGIN }]
+    })
+
+    expect(creators.get(APP_DID)?.name).toBe('My notes')
+  })
+
+  it("drops an agent's stamp, an unstamped collection, and an agent entry", async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: AGENT_DID })],
+      name: 'Backup Agent',
+      origin: APP_ORIGIN,
+      url: APP_URL
+    })
+
+    const creators = lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [
+        { id: AGENT_DID, name: 'Backup Agent' },
+        undefined,
+        // An app stamp whose DID only an agent entry carries.
+        { id: AGENT_DID, origin: APP_ORIGIN }
       ]
-    }
-
-    const outcome = await revokeAgentAccess({
-      storage,
-      user,
-      agent: annexSigned
     })
 
-    expect(outcome).toEqual({ revoked: 0, skipped: 1, rotated: 0 })
-    expect(storage.revokeAgentGrants).toHaveBeenCalledWith({
-      controller: AGENT_DID,
-      items,
-      revokedByRotation: []
-    })
+    expect(creators.size).toBe(0)
   })
 
-  it('records nothing, after revoking the grants, when a rotation fails', async () => {
-    // A collection that could not be re-keyed keeps the agent a recipient of
-    // its current epoch, so the row stays listed for a retry.
-    const storage = agentStorage({
-      revokeAgentCollectionRecipients: vi.fn(async () => ({
-        collections: 2,
-        rotated: 1,
-        failed: 1,
-        revokedIds: []
-      })),
-      revokeAgentGrants: vi.fn(async () => ({
-        revoked: 1,
-        skipped: 0,
-        revokedIds: ['urn:zcap:one']
-      })),
-      addHistoryAgentRevoke: vi.fn()
+  it('leaves a creator no entry names absent', async () => {
+    await connectApp({ appKey: 'r-app-key' })
+
+    const creators = lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [{ id: OTHER_APP_DID, origin: 'https://other.example' }]
     })
 
-    await expect(revokeAgentAccess({ storage, user, agent })).rejects.toThrow(
-      'Could not rotate every collection off the agent being revoked.'
-    )
-    expect(storage.revokeAgentGrants).toHaveBeenCalled()
-    expect(storage.addHistoryAgentRevoke).not.toHaveBeenCalled()
+    expect(creators.size).toBe(0)
   })
 
-  it('records nothing when the server refuses a revocation', async () => {
-    // A plain ValidationError is a refusal the storage layer throws after
-    // its sibling POSTs settle; recording the Revoke would hide a row whose
-    // grant may still be live.
-    const refused = Object.assign(new Error('chain does not verify'), {
-      name: 'ValidationError'
-    })
-    const storage = agentStorage({
-      revokeAgentGrants: vi.fn(async () => {
-        throw refused
-      }),
-      addHistoryAgentRevoke: vi.fn()
-    })
-
-    await expect(revokeAgentAccess({ storage, user, agent })).rejects.toBe(
-      refused
+  it('changes neither the directory nor the Applications order', async () => {
+    await connectApp({ did: APP_DID, appKey: 'r-1', at: FIRST_SEEN })
+    await connectApp({ did: OTHER_APP_DID, appKey: 'r-2', at: LAST_SEEN })
+    const before = await listedConnections(directory)
+    const order = listConnectedApps({ connections: before }).map(
+      app => app.subjectDid
     )
-    expect(storage.addHistoryAgentRevoke).not.toHaveBeenCalled()
-  })
+    const writes = directory.writes.length
 
-  it('floors the Revoke stamp past the Grant when the clock is behind', async () => {
-    const storage = agentStorage({
-      revokeAgentGrants: vi.fn(async () => ({
-        revoked: 1,
-        skipped: 0,
-        revokedIds: ['urn:zcap:one']
-      })),
-      addHistoryAgentRevoke: vi.fn()
+    lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [{ id: APP_DID, origin: APP_ORIGIN }]
     })
 
-    // This client's clock sits a day behind the client that granted.
-    vi.spyOn(Date, 'now').mockReturnValue(
-      new Date('2026-07-31T00:00:00.000Z').getTime()
+    const after = await listedConnections(directory)
+    expect(directory.writes).toHaveLength(writes)
+    expect(after.map(({ entry }) => entry.lastSeen)).toEqual(
+      before.map(({ entry }) => entry.lastSeen)
     )
-
-    await revokeAgentAccess({ storage, user, agent })
-
-    expect(storage.addHistoryAgentRevoke).toHaveBeenCalledWith(
-      expect.objectContaining({ created: '2026-08-01T00:00:00.001Z' })
-    )
-  })
-
-  it('stamps the Revoke with the clock when it is already ahead', async () => {
-    const storage = agentStorage({
-      revokeAgentGrants: vi.fn(async () => ({
-        revoked: 1,
-        skipped: 0,
-        revokedIds: ['urn:zcap:one']
-      })),
-      addHistoryAgentRevoke: vi.fn()
-    })
-
-    vi.spyOn(Date, 'now').mockReturnValue(
-      new Date('2026-09-01T00:00:00.000Z').getTime()
-    )
-
-    await revokeAgentAccess({ storage, user, agent })
-
-    expect(storage.addHistoryAgentRevoke).toHaveBeenCalledWith(
-      expect.objectContaining({ created: '2026-09-01T00:00:00.000Z' })
-    )
+    expect(
+      listConnectedApps({ connections: after }).map(app => app.subjectDid)
+    ).toEqual(order)
   })
 })
 
-describe('revokeAppAccess', () => {
-  const user = { id: 'did:key:zUser', email: 'a@b.c' } as unknown as User
-  const app = {
-    cid: 'cid-app-key',
-    name: 'Example App',
-    origin: 'https://app.example',
-    subjectDid: 'did:key:z6MkAppSubject',
-    grants: []
-  } as unknown as ConnectedApp
-
-  /**
-   * A structural storage fake over the three calls the revocation drives,
-   * with the rotation outcome under the test's control.
-   */
-  function fakeStorage({
-    rotation
-  }: {
-    rotation: {
-      collections: number
-      rotated: number
-      failed: number
-      revokedIds: string[]
-    }
-  }) {
-    return {
-      listHistoryItems: vi.fn(async () => ({ entries: [], unreadable: 0 })),
-      revokeAppCollectionRecipients: vi.fn(async () => rotation),
-      revokeAppGrants: vi.fn(async () => ({ revoked: 1, skipped: 0 })),
-      deleteAppKey: vi.fn(async () => {}),
-      addHistoryAppRevoke: vi.fn(async () => {})
-    } as unknown as StorageManager
-  }
-
-  it('deletes the app key and records the revoke once every rotation landed', async () => {
-    const storage = fakeStorage({
-      rotation: {
-        collections: 1,
-        rotated: 1,
-        failed: 0,
-        revokedIds: ['urn:zcap:rotated']
-      }
+describe('the read rule', () => {
+  beforeEach(async () => {
+    await connectApp({ appKey: 'r-app-key' })
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: AGENT_DID })]
     })
-
-    const outcome = await revokeAppAccess({ storage, user, app })
-
-    expect(outcome).toEqual({ revoked: 1, skipped: 0, rotated: 1 })
-    // The rotation's revoked capabilities are not POSTed a second time.
-    expect(storage.revokeAppGrants).toHaveBeenCalledWith({
-      origin: app.origin,
-      subjectDid: app.subjectDid,
-      items: { entries: [], unreadable: 0 },
-      revokedByRotation: ['urn:zcap:rotated']
-    })
-    expect(storage.deleteAppKey).toHaveBeenCalledWith({ cid: 'cid-app-key' })
-    expect(storage.addHistoryAppRevoke).toHaveBeenCalled()
+    // The writes above re-read their own ids; the rule covers what follows.
+    directory.get.mockClear()
+    directory.list.mockClear()
   })
 
-  it('keeps the app-key row when a collection rotation failed', async () => {
-    const storage = fakeStorage({
-      rotation: { collections: 2, rotated: 1, failed: 1, revokedIds: [] }
+  it('resolves a creator lookup on a planted generator id against the listing', async () => {
+    const creators = lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [
+        { id: APP_DID, origin: APP_ORIGIN },
+        // A DID the host planted on a collection, which no entry carries.
+        { id: OTHER_APP_DID, origin: 'https://planted.example' }
+      ]
     })
 
-    await expect(revokeAppAccess({ storage, user, app })).rejects.toThrow(
-      /rotate every collection/
-    )
-    // The app is still a recipient of the collection that did not rotate, so
-    // the row stays listed for a retry and no Revoke is recorded.
-    expect(storage.deleteAppKey).not.toHaveBeenCalled()
-    expect(storage.addHistoryAppRevoke).not.toHaveBeenCalled()
-    // The grant revocation still runs before the refusal, per the JSDoc.
-    expect(storage.revokeAppGrants).toHaveBeenCalledWith({
-      origin: app.origin,
-      subjectDid: app.subjectDid,
-      items: { entries: [], unreadable: 0 },
-      revokedByRotation: []
+    expect(creators.has(APP_DID)).toBe(true)
+    expect(directory.list).toHaveBeenCalledTimes(1)
+    expect(directory.get).not.toHaveBeenCalled()
+  })
+
+  it('resolves the known-agent note against the listing', async () => {
+    const known = findKnownAgents({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      controllers: [AGENT_DID, OTHER_AGENT_DID]
     })
+
+    expect(known.has(AGENT_DID)).toBe(true)
+    expect(directory.list).toHaveBeenCalledTimes(1)
+    expect(directory.get).not.toHaveBeenCalled()
+  })
+
+  it('resolves both Applications listings against the listing', async () => {
+    const connections = await listedConnections(directory)
+    listConnectedApps({ connections, spaceUrl: SPACE_URL })
+    await listConnectedAgents({
+      storage: directoryStorage({ directory }) as unknown as StorageManager,
+      connections,
+      spaceUrl: SPACE_URL
+    })
+
+    expect(directory.list).toHaveBeenCalledTimes(1)
+    expect(directory.get).not.toHaveBeenCalled()
   })
 })

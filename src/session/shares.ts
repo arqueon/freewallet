@@ -5,8 +5,8 @@
  * reader. The dialog renders and confirms; the reads and the removal live
  * here.
  */
-import { ENCRYPTED_STANDARD_COLLECTIONS } from '@/app.config'
-import type { HistoryItems } from '@/stores/storageManager'
+import { ENCRYPTED_WALLET_COLLECTION_IDS } from '@/app.config'
+import type { ConnectionEntry } from '@interop/wallet-core/connections'
 import type { Session } from '@/types/auth'
 
 /**
@@ -22,37 +22,37 @@ export interface CollectionShare {
 }
 
 /**
- * Fetches every encrypted standard collection's current reader roster, keyed
- * by WAS collection id. The listing covers every collection with a key-epoch
- * roster, not only the ones a new share may name (the roster's `shareable`
- * flag), so a reader escrowed into a collection that is no longer shareable
- * stays visible and removable.
+ * Fetches every encrypted wallet collection's current reader roster, keyed
+ * by WAS collection id, each reader named from the `connections` directory's
+ * entries when the caller hands them in. The listing covers every collection
+ * with a key-epoch roster, not only the ones a new share may name (the
+ * roster's `shareable` flag), so a reader escrowed into a collection that is
+ * no longer shareable stays visible and removable. The rosters are read
+ * whether or not the directory could be: without its entries the readers are
+ * listed unnamed, and a reader a torn unshare left off the current epoch is
+ * not listed.
  *
  * @param options {object}
  * @param options.session {Session}
- * @param [options.items] {HistoryItems}
- *   the activity history, when the caller has already read it (the Storage
- *   page's connected-apps listing scans the same collection)
+ * @param [options.connections] {ConnectionEntry[]}   the directory's
+ *   entries, from the page's one listing read
  * @returns {Promise<Record<string, CollectionShare[]>>}
  */
 export async function listSharedCollections({
   session,
-  items: providedItems
+  connections
 }: {
   session: Session
-  items?: HistoryItems
+  connections?: ConnectionEntry[]
 }): Promise<Record<string, CollectionShare[]>> {
-  // One history scan for the whole listing: every encrypted collection's
-  // reader labels come out of the same activity list.
-  const items = providedItems ?? (await session.storage.listHistoryItems())
   const entries = await Promise.all(
-    ENCRYPTED_STANDARD_COLLECTIONS.map(
-      async ({ id }) =>
+    ENCRYPTED_WALLET_COLLECTION_IDS.map(
+      async id =>
         [
           id,
           await session.storage.listCollectionShares({
             collectionId: id,
-            items
+            ...(connections !== undefined ? { connections } : {})
           })
         ] as const
     )

@@ -4,13 +4,17 @@ import {
   appZcapClient,
   fillSettled,
   forceRememberBrowser,
+  readConnectionsDirectory,
+  sessionSpaceId,
   signupViaWizard
 } from './helpers'
+import { listStoredResourceIds } from './storedLogs'
 
 /**
  * The Applications revocation surface e2e (WAS mode), modeled on
  * `clients.spec.ts`. An app connected through App Connect lists on
- * `/applications` with its recorded grants; revoking it retires the grant
+ * `/applications` from its `connections` directory entry, with the grants
+ * that entry records; revoking it retires the grant
  * server-side (asserted by invoking the delegated zcap from the test runner
  * with the app's own seed-derived key, before and after), removes the app key
  * from `app-connections` (so a reconnect is a first run under a fresh
@@ -18,7 +22,9 @@ import {
  * grants were signed by a since-disconnected wallet client shows as
  * orphaned -- "reconnect needed", the current-key-set rule already killed
  * its grants -- and revoking it still POSTs the per-grant revocations and
- * removes the app key.
+ * removes the app key. A disconnect retires the app's entry rather than
+ * deleting it, so a reconnect from the same site writes a second entry under
+ * the fresh app key's DID, and the listing still shows one row.
  *
  * Lesson from `clients.spec.ts`: `page.reload()` logs out (sessions are
  * in-memory), so panels are remounted by navigating `#/dashboard` and back.
@@ -187,9 +193,9 @@ async function loginViaForm(page: Page, passphrase: string) {
 
 /**
  * Opens `/applications` and waits for the given app row to appear, remounting
- * the page (dashboard and back -- never `reload()`, which logs out) until
- * background replication has pulled the popup-written credential and Grant
- * activity into the local store.
+ * the page (dashboard and back -- never `reload()`, which logs out) until the
+ * popup-written `connections` entry lists. The directory is read
+ * remote-direct, so each remount re-reads the server's state.
  */
 async function openApplicationsWithApp(page: Page, appName: string) {
   await expect(async () => {
@@ -253,7 +259,7 @@ test.describe('The Applications revocation surface', () => {
     // The detail page shows the recorded grant.
     await page.getByText('Test App', { exact: true }).click()
     await expect(
-      page.getByRole('heading', { name: 'App detail: Test App' })
+      page.getByRole('heading', { name: 'Connection detail: Test App' })
     ).toBeVisible()
     await expect(page.getByText(grant.invocationTarget)).toBeVisible()
 
@@ -299,6 +305,99 @@ test.describe('The Applications revocation surface', () => {
     })
     expect(appKeyCredential(reconnected).credentialSubject.id).not.toBe(
       credential.credentialSubject.id
+    )
+  })
+
+  test('a reconnect after a disconnect writes a second entry and lists one row', async ({
+    page
+  }, testInfo) => {
+    test.slow()
+
+    const { passphrase } = await signupViaWizard(page, testInfo)
+    const challenge = `chal-reconnect-${Date.now()}-w${testInfo.workerIndex}`
+    // Only the app entries: a wallet client's own entry may be written in
+    // the background by its writer registration.
+    const appEntries = async () =>
+      (await readConnectionsDirectory(page)).filter(
+        entry => entry.kind === 'app'
+      )
+
+    const firstDid = appKeyCredential(
+      await connectViaPopup(page, { passphrase, challenge })
+    ).credentialSubject.id
+
+    // The consent wrote one live entry under the app key's DID, naming the
+    // key and the grant it delivered.
+    await loginViaForm(page, passphrase)
+    await openApplicationsWithApp(page, 'Test App')
+    const connected = await appEntries()
+    expect(connected).toHaveLength(1)
+    const firstEntry = connected[0]!
+    expect(firstEntry.id).toBe(firstDid)
+    expect(firstEntry.retired).toBeUndefined()
+    expect(firstEntry.appKey).toBeDefined()
+    expect(firstEntry.grantZcapIds.length).toBeGreaterThan(0)
+
+    // Disconnect from the row's own button.
+    await page.getByRole('button', { name: 'Revoke App Access' }).click()
+    await page
+      .getByRole('button', { name: 'Revoke access', exact: true })
+      .click()
+    await expect(page.getByText(/App (access revoked|removed)/)).toBeVisible({
+      timeout: 60_000
+    })
+    await expect(page.getByText('No connected applications yet.')).toBeVisible()
+
+    // The entry is retired, not deleted: its grants and app key are gone,
+    // and it stays at the same resource id.
+    const disconnected = await appEntries()
+    expect(disconnected).toHaveLength(1)
+    expect(disconnected[0]!.resourceId).toBe(firstEntry.resourceId)
+    expect(disconnected[0]!.id).toBe(firstDid)
+    expect(disconnected[0]!.retired).toBeDefined()
+    expect(disconnected[0]!.appKey).toBeUndefined()
+    expect(disconnected[0]!.grantZcapIds).toEqual([])
+
+    // The same site connects again. The app key was deleted with the
+    // disconnect, so the wallet mints a fresh one under a new DID.
+    const secondDid = appKeyCredential(
+      await connectViaPopup(page, {
+        passphrase,
+        challenge: `${challenge}-again`
+      })
+    ).credentialSubject.id
+    expect(secondDid).not.toBe(firstDid)
+
+    // The listing shows exactly one row for the app: the retired entry is
+    // not listed.
+    await loginViaForm(page, passphrase)
+    await openApplicationsWithApp(page, 'Test App')
+    await expect(page.getByText('Test App', { exact: true })).toHaveCount(1)
+    await expect(
+      page.getByRole('button', { name: 'Revoke App Access' })
+    ).toHaveCount(1)
+
+    // The directory holds two app entries: the first one retired, and a live
+    // one under the new DID at its own resource id.
+    const reconnected = await appEntries()
+    expect(reconnected).toHaveLength(2)
+    const retiredEntry = reconnected.find(entry => entry.id === firstDid)
+    const liveEntry = reconnected.find(entry => entry.id === secondDid)
+    expect(retiredEntry?.resourceId).toBe(firstEntry.resourceId)
+    expect(retiredEntry?.retired).toBeDefined()
+    expect(liveEntry).toBeDefined()
+    expect(liveEntry!.resourceId).not.toBe(firstEntry.resourceId)
+    expect(liveEntry!.retired).toBeUndefined()
+    expect(liveEntry!.appKey).toBeDefined()
+    expect(liveEntry!.grantZcapIds.length).toBeGreaterThan(0)
+
+    // The server stores both as Resources of the `connections` collection.
+    const stored = await listStoredResourceIds({
+      spaceId: await sessionSpaceId(page),
+      collectionId: 'connections'
+    })
+    expect(stored).toEqual(
+      expect.arrayContaining([firstEntry.resourceId, liveEntry!.resourceId])
     )
   })
 
@@ -386,9 +485,11 @@ test.describe('The Applications revocation surface', () => {
         page.getByTestId('enrolled-clients-list').locator('.MuiCard-root')
       ).toHaveCount(1, { timeout: 120_000 })
 
-      // A fresh login pulls the popup-written app credential and activity,
-      // then the Applications page derives the orphaned state from the
-      // updated account document.
+      // A fresh login reads the app's `connections` entry (written by client
+      // 2's popup, and re-keyed by the cascade along with the rest of the
+      // directory), then the Applications page derives the orphaned state
+      // from each recorded grant's signer against the updated account
+      // document.
       await page.goto('/#/logout')
       await loginViaForm(page, passphrase)
       await openApplicationsWithApp(page, 'Test App')
@@ -399,7 +500,7 @@ test.describe('The Applications revocation surface', () => {
       // The detail page states the reconnect path.
       await page.getByText('Test App', { exact: true }).click()
       await expect(
-        page.getByRole('heading', { name: 'App detail: Test App' })
+        page.getByRole('heading', { name: 'Connection detail: Test App' })
       ).toBeVisible()
       await expect(
         page.getByText(/was set up from a wallet that has since been/)

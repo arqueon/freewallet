@@ -31,7 +31,7 @@ import {
 } from '@interop/wallet-core/keys'
 import type { CascadeCollections } from '@interop/wallet-core/clients'
 import type { WebvhResourceLogController } from '@interop/wallet-core/resourceLog'
-import { ENCRYPTED_STANDARD_COLLECTIONS } from '@/app.config'
+import { ENCRYPTED_WALLET_COLLECTION_IDS } from '@/app.config'
 import type { WASRemoteStore } from '@/stores/wasRemoteStore'
 import { createLogger } from '@/lib/log'
 
@@ -67,7 +67,7 @@ async function listedCollectionIds({
     }
   } catch (err) {
     log.warn(
-      'Could not list remote collections for the user key cascade; rotating the standard collections only',
+      'Could not list remote collections for the user key cascade; rotating the roster collections only',
       { err }
     )
   }
@@ -79,8 +79,10 @@ async function listedCollectionIds({
  * encrypted collections exist in this Space, each one's descriptor store,
  * and how its encryption declaration is reached.
  *
- * The candidates are the standard encrypted collections plus every
- * collection the Space listing names, deduplicated. The host-served
+ * The candidates are the provision roster's encrypted collections (the
+ * `connections` directory among them) plus every collection the Space
+ * listing names, deduplicated, so a host omitting a roster collection from
+ * the listing cannot keep it out of a rotation. The host-served
  * `encryption` member plays no part: `isEncrypted` reads each candidate's
  * own verified log and only drops one that has no log.
  *
@@ -112,9 +114,7 @@ export function cascadeCollections({
   }
   return {
     collectionIds: async () => {
-      const ids = new Set<string>(
-        ENCRYPTED_STANDARD_COLLECTIONS.map(spec => spec.id)
-      )
+      const ids = new Set<string>(ENCRYPTED_WALLET_COLLECTION_IDS)
       for (const id of await listedCollectionIds({ remoteStore })) {
         ids.add(id)
       }

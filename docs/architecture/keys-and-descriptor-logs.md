@@ -122,8 +122,20 @@ A collection already carrying a client-written `encryption` member cannot be
 governed, and provisioning refuses it up front. The wallet opens a governed
 log by its placement rather than following a pointer in the metadata.
 Every recipient change is one signed full-state append: a share, an unshare,
-an App Connect provisioning, an app revoke, and each collection's rotation
-in the user key cascade.
+an App Connect or interaction-URL provisioning, an app or agent revoke, and
+each collection's rotation in the user key cascade.
+
+A rotation off one recipient (an unshare, an app or agent revoke) wraps the
+fresh epoch only to the recipients the wallet admitted. The
+admitted-recipient resolver in `StorageManager` vouches for the owner, the
+account's user key generations, and the recipient kid of every grant on
+every unretired `connections` entry that targets the collection, expired
+grants included. Any other kid the roster lists receives no wrap. The
+resolver fails closed, so nothing rotates, when it cannot read the whole
+directory: an absent or refused directory, a failed listing, an entry it
+cannot decrypt, a body it cannot parse at its own id, or an entry from a
+newer build. The detail is in "Which recipients a rotation keeps" in
+app-connect.md.
 
 **The builders** live in `@interop/wallet-core/keys` beside the roster's:
 `accountCollectionStores` for callers with no session profile (the geneses,
@@ -166,11 +178,13 @@ its rotation ahead of the edit and seal nothing, and a ladder-signed append
 there would be refused for naming a version the edit is not in. A rotation
 that appends
 nothing still seals. Which collections it covers is decided from the same
-logs. The candidates are the encrypted standard collections plus every
-collection the Space listing names. Whether a candidate is encrypted is
-answered by reading its own governing log, and one with no log is skipped.
-So a host omitting the derived `encryption` member cannot keep a collection
-out of a rotation.
+logs. The candidates are the provision roster's encrypted collections
+(`ENCRYPTED_WALLET_COLLECTION_IDS`, the synced ones and the `connections`
+directory) plus every collection the Space listing names. Whether a
+candidate is encrypted is answered by reading its own governing log, and one
+with no log is skipped. So a host omitting the derived `encryption` member
+cannot keep a collection out of a rotation, and a host omitting a roster
+collection from the listing cannot either.
 
 **The read path and the cache.** A descriptor is the verified head of its
 collection's log, read at login and on the unknown-epoch refresh. The

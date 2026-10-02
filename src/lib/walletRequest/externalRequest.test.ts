@@ -5,7 +5,7 @@
  * exchange-opening error mapping, and the pre-consent refusal matrix (DID
  * Auth, `domain`, `AppConnectQuery`, a foreign delivery endpoint, the grant
  * class allowlist, a plain URL on an encrypted collection the agent cannot
- * read).
+ * read, a grantee that is one of the account's wallet clients).
  */
 import { describe, expect, it, vi } from 'vitest'
 import { EphemeralExchangeGoneError } from '@interop/wallet-request'
@@ -19,6 +19,7 @@ import {
   namesExistingCollectionByUrl,
   openExternalRequest,
   precheckExternalRequest,
+  refuseEnrolledClientController,
   unreadableGrants
 } from './externalRequest'
 import {
@@ -282,6 +283,45 @@ describe('precheckExternalRequest', () => {
     ).toBe('multipleGrantees')
   })
 
+  it('refuses a grantee controller that is a verification method id', () => {
+    const vmController = {
+      referenceId: 'notes',
+      reason: 'read notes',
+      allowedAction: ['GET'],
+      controller: 'did:key:z6MkAgent#z6MkAgent',
+      invocationTarget: 'https://was.example/space/abc/notes/'
+    }
+    const request = {
+      query: [{ ...ZCAP_QUERY, capabilityQuery: [vmController] }]
+    } as unknown as IVPRDetails
+    expect(
+      refusalOf(() =>
+        precheckExternalRequest({ request, exchangeUrl: EXCHANGE_URL })
+      )
+    ).toBe('malformedRequest')
+  })
+
+  it('refuses a grantee controller that is not an Ed25519 did:key', () => {
+    const request = {
+      query: [
+        {
+          ...ZCAP_QUERY,
+          capabilityQuery: [
+            {
+              ...ZCAP_QUERY.capabilityQuery[0],
+              controller: 'did:web:agent.example'
+            }
+          ]
+        }
+      ]
+    } as unknown as IVPRDetails
+    expect(
+      refusalOf(() =>
+        precheckExternalRequest({ request, exchangeUrl: EXCHANGE_URL })
+      )
+    ).toBe('malformedRequest')
+  })
+
   it('accepts several capability queries naming the same controller', () => {
     const second = { ...ZCAP_QUERY.capabilityQuery[0], referenceId: 'notes' }
     const request = {
@@ -342,6 +382,40 @@ describe('precheckExternalRequest', () => {
         exchangeUrl: EXCHANGE_URL
       }).deliveryHost
     ).toBe('was.example')
+  })
+})
+
+describe('refuseEnrolledClientController', () => {
+  const { profile } = precheckExternalRequest({
+    request: zcapOnlyRequest(),
+    exchangeUrl: EXCHANGE_URL
+  })
+
+  it('refuses a grantee the account document lists or listed as a wallet client', () => {
+    expect(
+      refusalOf(() =>
+        refuseEnrolledClientController({
+          profile,
+          clientDids: new Set(['did:key:z6MkOther', 'did:key:z6MkAgent'])
+        })
+      )
+    ).toBe('enrolledClient')
+  })
+
+  it('passes a grantee outside the set', () => {
+    expect(
+      refusalOf(() =>
+        refuseEnrolledClientController({
+          profile,
+          clientDids: new Set(['did:key:z6MkOther'])
+        })
+      )
+    ).toBeUndefined()
+    expect(
+      refusalOf(() =>
+        refuseEnrolledClientController({ profile, clientDids: new Set() })
+      )
+    ).toBeUndefined()
   })
 })
 

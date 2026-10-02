@@ -28,9 +28,10 @@ The four stages, in the enrolled kind's form:
    rotation nor the sealing append at a head predating the removal. Every
    collection store the fan-out writes through takes that same view.
 3. **The epoch cascade**, over the collections `src/session/userKeyCascade.ts`
-   enumerates: every encrypted collection, standard plus any remotely listed
-   one whose Metadata object carries an encryption descriptor, re-epoch'd
-   onto the fresh user key in parallel. Each rotation is a signed append on that
+   enumerates: the provision roster's encrypted collections (the
+   `connections` directory among them) plus every collection the Space
+   listing names, each candidate's own governing log deciding whether it is
+   encrypted, re-epoch'd onto the fresh user key in parallel. Each rotation is a signed append on that
    collection's governing log, so it signs with the key the calling ceremony
    is licensed to append with. Revoked generations retire from the epoch
    rosters and the fresh key escrows into every prior epoch, so other
@@ -198,24 +199,33 @@ runs as no enrolled client. Its resumable-failure copy says the remaining
 re-keying resumes at the next disconnect or passphrase change, no transient
 login running the cascade sweep.
 
-**Labels** live beside the keys rather than in the document, which carries
-key material only: `key-map/client-labels.json`, over wallet-core's
-`readClientLabels` / `setClientLabel` store seam. They are plaintext in the
-private, capability-gated `key-map` collection, since the host already
-serves the world-readable log naming every client key. A label is chosen at
-enrollment approval, written best-effort, and editable inline. A "This
-browser" chip marks the current client, matched on the session's own signing
-key rather than on stored state. The store rides the remote store's bound
-invocation capability, so a transient session reads and writes labels under
-its generation delegation.
+**Names** live on each client's `wallet-client` entry in the encrypted
+`connections` directory rather than in the document, which carries key
+material only. An entry carries `name`, the client's own or suggested name,
+and `label`, the user's. Membership still comes from the verified document,
+joined to the entries on the signing-key multibase each entry's did:key
+carries. A name is written at signup, at self-enrollment, and at enrollment
+approval, best-effort, and the label is editable inline. A disconnect
+retires the client's entry ahead of its ClientRevoke row, keeping its names,
+and the forget ceremony retires this client's own entry before its removal
+entry. Both are best-effort. The forget waits out this login's writer
+registration first, since that registration un-retires the entry while the
+document still lists the client. A wallet-client entry normally carries no
+grants. Any it does carry are POSTed, and their grantee rotated off their
+targets, before the retirement (`retireConnectionParty`), so a retirement
+does not drop a live grant silently.
+A "This browser" chip marks the current client, matched on the session's own
+signing key rather than on stored state. The directory rides the remote
+store's bound invocation capability, so a transient session reads and writes
+names under its generation delegation.
 
 **The Applications sibling** knows the current-key-set rule. That page
 (`src/lib/connectedApps.ts`) holds app grantees where this panel holds
 wallet clients, with a cross-pointer in each. Its listing checks each
 recorded App Connect grant's delegation signer against the same verified
 document, matched on the key-multibase fragment so a key's did:key and
-promoted did:webvh forms agree; the full zcap is recorded on the Grant
-activity. An app whose recorded signers have all left the document shows as
+promoted did:webvh forms agree; the full zcap is recorded on the party's
+`connections` entry. An app whose recorded signers have all left the document shows as
 orphaned, and reconnecting through the ordinary App Connect flow is the
 recovery path. A grant minted in a transient session is signed by an annex
 key the account document never lists, so that signer derives as unknown and
@@ -240,10 +250,10 @@ as skipped. A refusal the client cannot read (a parent with no proof key,
 a parent of another shape, a document pointing at no generation, a signer
 still enrolled) is thrown,
 as is any other failure, after the sibling POSTs settle, before the app key
-is deleted or the Revoke recorded, so the row stays listed and a retry
+is deleted or the entry retired, so the row stays listed and a retry
 re-runs. A failure leaves the app-provisioned collections already
 rotated off the app's recipient key (the rotation stage runs first) with
-the credential kept and no Revoke recorded; the rotation is idempotent and
+the app key kept and the entry unretired; the rotation is idempotent and
 the landed revocations answer `AlreadyRevokedError`, so the retry converges
 once the refused POST succeeds, and the Revoke it records counts them. The
 rotation's pull axis runs this same per-grant policy, in place of
@@ -251,5 +261,7 @@ was-client's default revoke, which reads every `ValidationError` as already
 revoked. The grant stage skips only the grants the pull confirmed revoked. The check is best-effort, so
 with no verified document this session the page lists without the marker
 rather than failing, and the revocation skips on expiry alone. Agent rows
-run the identical check over the recorded grant's `controller` instead of an
-app-key subject, and revoking an agent follows the same per-grant reading.
+run the identical check over their entry's grants, and revoking an agent
+follows the same per-grant reading. The `wallet-activity` Grant and Revoke
+rows play no part in any of this: they are audit trail
+(`decisions/0034-the-directory-is-the-grant-index.md`).

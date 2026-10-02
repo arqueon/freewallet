@@ -1,5 +1,5 @@
 /**
- * The session bindings of the two encounter registrations the encounter
+ * The session bindings of the three encounter registrations the encounter
  * runner runs.
  *
  * The stranded-collection site. Every session's storage manager reports a
@@ -24,15 +24,28 @@
  * The stale-seal site. Settings calls {@link mendUnlockRegistrySeal} when its
  * registry read throws `UnlockRegistryStaleSealError`, and reloads the
  * registry once it settles.
+ *
+ * The writer-sweep site. Every `connections` directory listing a page reads
+ * goes through {@link listConnectionsDirectory}, which holds the listing and
+ * starts the writer sweep over it without waiting for it. The page that
+ * asked reads the run's entries through {@link connectionWritersMend}. The
+ * entries go there and to the event channel, and `session.mends` does not
+ * carry them.
  */
+import {
+  readConnections,
+  type ConnectionsListing
+} from '@interop/wallet-core/connections'
 import type { MendReport } from '@interop/wallet-core/menders'
 import type { CeremonyId } from '@interop/wallet-core'
 import type { Session } from '@/types/auth'
 import { isSessionDisposed } from '@/session/sessionLifecycle'
 import { sessionAuthorityKind } from '@/session/accountCeremonyContext'
+import { holdDirectoryListing } from '@/session/connectionWriters'
 import { createLogger } from '@/lib/log'
 import { runEncounter } from './encounter.js'
 import {
+  CONNECTION_WRITERS_SWEEP_ENCOUNTER,
   REGISTRY_SEAL_ENCOUNTER,
   STRANDED_COLLECTION_ENCOUNTER
 } from './registrations.js'
@@ -53,6 +66,11 @@ const log = createLogger('fw:session:registry')
 const EMPTY_RUN: Promise<MendReport<CeremonyId>> = Promise.resolve([])
 
 const bindings = new WeakMap<Session, StrandedBinding>()
+
+/**
+ * The latest writer-sweep run per session.
+ */
+const writerSweeps = new WeakMap<Session, Promise<MendReport<CeremonyId>>>()
 
 /**
  * Binds a freshly built session's storage manager to the stranded-collection
@@ -211,6 +229,54 @@ export async function mendUnlockRegistrySeal({
   session: Session
 }): Promise<MendReport<CeremonyId>> {
   return await runEncounter({ session, registration: REGISTRY_SEAL_ENCOUNTER })
+}
+
+/**
+ * Reads the session's `connections` directory listing, and starts the writer
+ * sweep over it as the encounter site for the writer expiry. The sweep runs
+ * behind the encounter gate and is not awaited here, so the listing returns
+ * at once. Throws what the listing read throws, the directory refused or
+ * absent included; a listing that comes back `null` (the collection is not
+ * visible) starts no sweep.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @returns {Promise<ConnectionsListing | null>}
+ */
+export async function listConnectionsDirectory({
+  session
+}: {
+  session: Session
+}): Promise<ConnectionsListing | null> {
+  const { store, hmacKey } = await session.storage.connectionsDirectory()
+  const listing = await readConnections({ store, hmacKey })
+  if (listing && !isSessionDisposed({ session })) {
+    holdDirectoryListing({ session, listing })
+    writerSweeps.set(
+      session,
+      runEncounter({
+        session,
+        registration: CONNECTION_WRITERS_SWEEP_ENCOUNTER
+      })
+    )
+  }
+  return listing
+}
+
+/**
+ * The latest writer-sweep run's entries, or an empty list when no listing
+ * read has started one. The promise always settles.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @returns {Promise<MendReport>}
+ */
+export function connectionWritersMend({
+  session
+}: {
+  session: Session
+}): Promise<MendReport<CeremonyId>> {
+  return writerSweeps.get(session) ?? EMPTY_RUN
 }
 
 /**

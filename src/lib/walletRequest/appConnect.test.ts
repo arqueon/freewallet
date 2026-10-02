@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { CapabilityAgent } from '@interop/capability-agent'
 import type { Session } from '@/types/auth'
-import type { StoredCredential } from '@/types/credential'
+import type { StoredAppKey, StoredCredential } from '@/types/credential'
 import { mintAppKeyCredential } from '@interop/wallet-request'
 import {
   AppKeysUnreadableError,
@@ -14,7 +14,14 @@ import type { IZcap } from './types'
 vi.mock('./processZcaps', () => ({
   processZcaps: vi.fn()
 }))
+// The real composer, spied on, so a test can tell whether the VP was composed
+// when the consent hook ran.
+vi.mock('./composeVP', async importOriginal => {
+  const actual = await importOriginal<typeof import('./composeVP')>()
+  return { ...actual, composeVP: vi.fn(actual.composeVP) }
+})
 import { requestingOriginOf } from './classify'
+import { composeVP } from './composeVP'
 import { processZcaps } from './processZcaps'
 
 const APP = {
@@ -22,6 +29,10 @@ const APP = {
   appUrl: 'https://app.example/editor'
 }
 const ORIGIN = 'https://app.example'
+// The `app-connections` Resource id the fake mint store returns.
+const MINTED_RESOURCE_ID = 'z1MintedAppKeyResource'
+// The Resource id of a stored app key a test lists.
+const STORED_RESOURCE_ID = 'z1StoredAppKeyResource'
 const CAPABILITY_QUERY = {
   referenceId: 'text-editor-document',
   allowedAction: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE'],
@@ -43,7 +54,7 @@ async function fakeSession({
   credentials = [],
   skipped = { unknownEpoch: 0, noEpochKey: 0, undecryptable: 0, integrity: 0 }
 }: {
-  appKeys?: StoredCredential[]
+  appKeys?: StoredAppKey[]
   credentials?: StoredCredential[]
   skipped?: {
     unknownEpoch: number
@@ -71,6 +82,7 @@ async function fakeSession({
       // (which refuses every marker credential).
       addMintedAppKey: async (entry: unknown) => {
         added.push(entry)
+        return { resourceId: MINTED_RESOURCE_ID }
       }
     }
   } as unknown as Session
@@ -78,6 +90,7 @@ async function fakeSession({
 }
 
 beforeEach(() => {
+  vi.mocked(composeVP).mockClear()
   vi.mocked(processZcaps).mockReset()
   vi.mocked(processZcaps).mockResolvedValue([
     { id: 'urn:zcap:delegated:test' } as IZcap
@@ -235,7 +248,9 @@ describe('processAppConnect', () => {
       app: APP,
       origin: ORIGIN
     })
-    const stored = [{ cid: 'cid-1', vc: credential }] as StoredCredential[]
+    const stored = [
+      { cid: 'cid-1', vc: credential, resourceId: STORED_RESOURCE_ID }
+    ] as StoredAppKey[]
     const { session, added } = await fakeSession({
       appKeys: stored,
       skipped: {
@@ -264,7 +279,9 @@ describe('processAppConnect', () => {
       app: APP,
       origin: ORIGIN
     })
-    const stored = [{ cid: 'cid-1', vc: credential }] as StoredCredential[]
+    const stored = [
+      { cid: 'cid-1', vc: credential, resourceId: STORED_RESOURCE_ID }
+    ] as StoredAppKey[]
     const { session, added } = await fakeSession({ appKeys: stored })
 
     const response = await processAppConnect({
@@ -293,7 +310,9 @@ describe('processAppConnect', () => {
       app: APP,
       origin: ORIGIN
     })
-    const stored = [{ cid: 'cid-1', vc: credential }] as StoredCredential[]
+    const stored = [
+      { cid: 'cid-1', vc: credential, resourceId: STORED_RESOURCE_ID }
+    ] as StoredAppKey[]
     const { session, added } = await fakeSession({ appKeys: stored })
 
     const response = await processAppConnect({
@@ -312,7 +331,9 @@ describe('processAppConnect', () => {
       app: APP,
       origin: 'https://phisher.example'
     })
-    const stored = [{ cid: 'cid-1', vc: credential }] as StoredCredential[]
+    const stored = [
+      { cid: 'cid-1', vc: credential, resourceId: STORED_RESOURCE_ID }
+    ] as StoredAppKey[]
     const { session, added } = await fakeSession({ appKeys: stored })
 
     const response = await processAppConnect({
@@ -333,7 +354,9 @@ describe('processAppConnect', () => {
       app: APP,
       origin: ORIGIN
     })
-    const stored = [{ cid: 'cid-1', vc: credential }] as StoredCredential[]
+    const stored = [
+      { cid: 'cid-1', vc: credential, resourceId: STORED_RESOURCE_ID }
+    ] as StoredAppKey[]
     const { session } = await fakeSession({ appKeys: stored })
 
     const response = await processAppConnect({
@@ -355,7 +378,9 @@ describe('processAppConnect', () => {
       app: APP,
       origin: ORIGIN
     })
-    const stored = [{ cid: 'cid-1', vc: credential }] as StoredCredential[]
+    const stored = [
+      { cid: 'cid-1', vc: credential, resourceId: STORED_RESOURCE_ID }
+    ] as StoredAppKey[]
     const { session } = await fakeSession({ appKeys: stored })
 
     await expect(
@@ -429,5 +454,166 @@ describe('processAppConnect', () => {
     expect(processZcaps).not.toHaveBeenCalled()
     expect(response.zcaps).toEqual([])
     expect(response.appConnect?.firstRun).toBe(true)
+  })
+
+  describe('the consent hook', () => {
+    /**
+     * Records each `beforeProvision` call with whether the VP was composed
+     * by then.
+     *
+     * @returns {object}   the hook and its recorded calls
+     */
+    function recordingHook(): {
+      calls: Array<{
+        zcaps: IZcap[]
+        shareZcapIds: string[]
+        appConnect: { firstRun: boolean; subjectDid: string; appKey: string }
+        composedBefore: boolean
+      }>
+      beforeProvision: Parameters<
+        typeof processAppConnect
+      >[0]['beforeProvision']
+    } {
+      const calls: ReturnType<typeof recordingHook>['calls'] = []
+      return {
+        calls,
+        beforeProvision: async options => {
+          calls.push({
+            ...options,
+            composedBefore: vi.mocked(composeVP).mock.calls.length > 0
+          })
+        }
+      }
+    }
+
+    it('runs once on a zero-grant first run, before compose, naming the minted key', async () => {
+      const { session } = await fakeSession()
+      const hook = recordingHook()
+      const response = await processAppConnect({
+        appConnect: { app: APP, capabilityQueries: [] },
+        session,
+        origin: ORIGIN,
+        didAuthRequested: false,
+        beforeProvision: hook.beforeProvision
+      })
+      expect(hook.calls).toEqual([
+        {
+          zcaps: [],
+          shareZcapIds: [],
+          appConnect: {
+            firstRun: true,
+            subjectDid: response.appConnect?.subjectDid,
+            appKey: MINTED_RESOURCE_ID
+          },
+          composedBefore: false
+        }
+      ])
+      expect(composeVP).toHaveBeenCalledTimes(1)
+    })
+
+    it("names a returning app's stored key Resource", async () => {
+      const { credential, subjectDid } = await mintAppKeyCredential({
+        app: APP,
+        origin: ORIGIN
+      })
+      const stored = [
+        { cid: 'cid-1', vc: credential, resourceId: STORED_RESOURCE_ID }
+      ] as StoredAppKey[]
+      const { session } = await fakeSession({ appKeys: stored })
+      const hook = recordingHook()
+      await processAppConnect({
+        appConnect: { app: APP, capabilityQueries: [] },
+        session,
+        origin: ORIGIN,
+        didAuthRequested: false,
+        beforeProvision: hook.beforeProvision
+      })
+      expect(hook.calls).toHaveLength(1)
+      expect(hook.calls[0].appConnect).toEqual({
+        firstRun: false,
+        subjectDid,
+        appKey: STORED_RESOURCE_ID
+      })
+    })
+
+    it('runs once, from inside processZcaps, when a grant needs escrow', async () => {
+      const shareZcap = { id: 'urn:zcap:delegated:share' } as IZcap
+      vi.mocked(processZcaps).mockImplementation(
+        async ({ beforeProvision }) => {
+          await beforeProvision?.({
+            zcaps: [shareZcap],
+            shareZcapIds: [shareZcap.id]
+          })
+          return [shareZcap]
+        }
+      )
+      const { session } = await fakeSession()
+      const hook = recordingHook()
+      await processAppConnect({
+        appConnect: { app: APP, capabilityQueries: [CAPABILITY_QUERY] },
+        session,
+        origin: ORIGIN,
+        didAuthRequested: false,
+        beforeProvision: hook.beforeProvision
+      })
+      expect(hook.calls).toHaveLength(1)
+      expect(hook.calls[0]).toMatchObject({
+        zcaps: [shareZcap],
+        shareZcapIds: [shareZcap.id],
+        appConnect: { firstRun: true, appKey: MINTED_RESOURCE_ID },
+        composedBefore: false
+      })
+    })
+
+    it('runs once after delegation when no grant needs escrow', async () => {
+      const { session } = await fakeSession()
+      const hook = recordingHook()
+      await processAppConnect({
+        appConnect: { app: APP, capabilityQueries: [CAPABILITY_QUERY] },
+        session,
+        origin: ORIGIN,
+        didAuthRequested: false,
+        beforeProvision: hook.beforeProvision
+      })
+      // The mocked processZcaps never calls the hook, as on grants over
+      // collections that stand.
+      expect(hook.calls).toHaveLength(1)
+      expect(hook.calls[0]).toMatchObject({
+        zcaps: [{ id: 'urn:zcap:delegated:test' }],
+        shareZcapIds: [],
+        composedBefore: false
+      })
+    })
+
+    it('composes nothing when the hook throws', async () => {
+      const { session } = await fakeSession()
+      await expect(
+        processAppConnect({
+          appConnect: { app: APP, capabilityQueries: [] },
+          session,
+          origin: ORIGIN,
+          didAuthRequested: false,
+          beforeProvision: async () => {
+            throw new Error('entry write failed')
+          }
+        })
+      ).rejects.toThrow('entry write failed')
+      expect(composeVP).not.toHaveBeenCalled()
+    })
+
+    it('threads onEscrowed to processZcaps', async () => {
+      const { session } = await fakeSession()
+      const onEscrowed = vi.fn()
+      await processAppConnect({
+        appConnect: { app: APP, capabilityQueries: [CAPABILITY_QUERY] },
+        session,
+        origin: ORIGIN,
+        didAuthRequested: false,
+        onEscrowed
+      })
+      expect(vi.mocked(processZcaps).mock.calls[0][0].onEscrowed).toBe(
+        onEscrowed
+      )
+    })
   })
 })

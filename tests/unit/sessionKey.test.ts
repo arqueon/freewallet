@@ -18,6 +18,7 @@ import {
   loadPasskeySafetyNotice,
   savePasskeySafetyNotice,
   saveKeyringCache,
+  saveWriterFirstSeen,
   sessionDatabaseExists,
   deleteUnlockLocalState
 } from '@/lib/sessionKey'
@@ -312,7 +313,7 @@ describe('deleteUnlockLocalState (the create-nothing guard)', () => {
     expect(databaseNames.has('freewallet-session')).toBe(false)
   })
 
-  it('deletes both families from a database that exists', async () => {
+  it('deletes every unlock-local family from a database that exists', async () => {
     const { idb, sessionStore } = createFakeSessionIdb()
     await saveKeyringCache({
       spaceId: 'unlock-space-1',
@@ -324,9 +325,20 @@ describe('deleteUnlockLocalState (the create-nothing guard)', () => {
       record: { wrapped: true },
       idb
     })
+    await saveWriterFirstSeen({
+      spaceId: 'unlock-space-1',
+      record: {
+        accountDid: 'did:webvh:example',
+        writerId: 'writer-1',
+        firstSessionAt: '2026-10-01T00:00:00.000Z'
+      },
+      idb
+    })
+    expect(sessionStore.has('writer-first-seen/unlock-space-1')).toBe(true)
     await deleteUnlockLocalState({ spaceId: 'unlock-space-1', idb })
     expect(sessionStore.has('keyring/unlock-space-1')).toBe(false)
     expect(sessionStore.has('client-keys/unlock-space-1')).toBe(false)
+    expect(sessionStore.has('writer-first-seen/unlock-space-1')).toBe(false)
   })
 })
 

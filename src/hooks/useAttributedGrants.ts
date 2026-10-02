@@ -22,12 +22,10 @@ const log = createLogger('fw:request:attribution')
 /**
  * @returns {{ grants: ResolvedGrant[], attributeGrants: (options: {
  *   resolution: Parameters<typeof resolveGrants>[0], grants:
- *   ResolvedGrant[], storage: Session['storage'], appKeys?:
- *   Awaited<ReturnType<Session['storage']['listAppKeys']>> }) =>
+ *   ResolvedGrant[], storage: Session['storage'] }) =>
  *   Promise<ResolvedGrant[]> }}
  *   the grants to render, and the call that shows a first pass's grants and
- *   starts the attribution pass behind them, handed the caller's app-key
- *   listing when it already holds one. The call resolves to the attributed
+ *   starts the attribution pass behind them. The call resolves to the attributed
  *   pass, or to the first pass when the attribution failed (best-effort: an
  *   unread epoch refuses nothing), and never rejects.
  */
@@ -37,7 +35,6 @@ export function useAttributedGrants(): {
     resolution: Parameters<typeof resolveGrants>[0]
     grants: ResolvedGrant[]
     storage: Session['storage']
-    appKeys?: Awaited<ReturnType<Session['storage']['listAppKeys']>>
   }) => Promise<ResolvedGrant[]>
 } {
   const [grants, setGrants] = useState<ResolvedGrant[]>([])
@@ -47,13 +44,11 @@ export function useAttributedGrants(): {
     async ({
       resolution,
       grants: firstPass,
-      storage,
-      appKeys
+      storage
     }: {
       resolution: Parameters<typeof resolveGrants>[0]
       grants: ResolvedGrant[]
       storage: Session['storage']
-      appKeys?: Awaited<ReturnType<Session['storage']['listAppKeys']>>
     }): Promise<ResolvedGrant[]> => {
       const run = ++runRef.current
       setGrants(firstPass)
@@ -62,8 +57,7 @@ export function useAttributedGrants(): {
         attributed = await attributeExistingCollections({
           resolution,
           grants: firstPass,
-          storage,
-          appKeys
+          storage
         })
       } catch (err) {
         log.warn('Could not attribute the existing collections', { err })

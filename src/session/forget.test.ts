@@ -197,6 +197,12 @@ vi.mock('@/stores/syncController', () => ({
 }))
 const { syncController } = await import('@/stores/syncController')
 
+vi.mock('@/lib/connectedApps', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/lib/connectedApps')>()
+  return { ...actual, retireConnectionParty: vi.fn(async () => {}) }
+})
+const { retireConnectionParty } = await import('@/lib/connectedApps')
+
 vi.mock('@/session/wipe', async importOriginal => {
   const actual = await importOriginal<typeof import('@/session/wipe')>()
   return {
@@ -710,6 +716,37 @@ describe('forgetThisBrowser (the ceremony grades)', () => {
     expect(
       vi.mocked(forgetEnrolledClient).mock.calls[0]![0].clientLogStore
     ).toEqual({ webvhIdStore: true })
+  })
+
+  it("waits out this login's writer registration before retiring its own entry", async () => {
+    const { session } = fakeSession()
+    const order: string[] = []
+    let settleRegistration!: () => void
+    session.writerRegistration = new Promise<void>(resolve => {
+      settleRegistration = () => {
+        order.push('registration')
+        resolve()
+      }
+    })
+    vi.mocked(retireConnectionParty).mockImplementation(async () => {
+      order.push('retire')
+    })
+    vi.mocked(forgetEnrolledClient).mockImplementation(async () => {
+      order.push('ceremony')
+      return { rotated: true } as never
+    })
+    const run = forgetThisBrowser({ session })
+    // Let every await ahead of the retirement run while the registration is
+    // still pending.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(vi.mocked(retireConnectionParty)).not.toHaveBeenCalled()
+    settleRegistration()
+    await run
+    expect(order).toEqual(['registration', 'retire', 'ceremony'])
+    expect(vi.mocked(retireConnectionParty)).toHaveBeenCalledWith({
+      storage: session.storage,
+      did: 'did:key:zClientA'
+    })
   })
 
   it('aborts the session disposal signal before the local wipe', async () => {

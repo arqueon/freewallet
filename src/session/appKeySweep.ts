@@ -11,16 +11,18 @@
  * accepted outcome is that an affected app reconnects through the ordinary App
  * Connect flow and is treated as a first run.
  *
- * Deleting a stranded Resource also removes the app from the Applications page,
- * which lists connected apps out of the `app-connections` collection alone --
- * so the delete destroys the surface the user would revoke the app from. The
+ * The Applications page lists connected apps out of the `connections`
+ * directory, and a stranded key predates the directory, so such an app has no
+ * entry there and no surface the user could revoke it from. The
  * app's live authority is therefore retired BEFORE the Resource goes, through
  * the one sequence `revokeAppAccess` also runs (`revokeAppAuthority`: rotate
  * the app out of its collections' key epochs and revoke those pull-axis grants,
- * then revoke the remaining recorded grants). A stage that does not fully land
- * throws, and the Resource is left for the next login. Without that, an app's
- * delegated zcaps would stand until their TTL expired and it would stay a key
- * epoch recipient indefinitely, with nothing left to revoke it from.
+ * then revoke the remaining grants). A stage that does not fully land throws,
+ * and the Resource is left for the next login. The grants come from the app's
+ * `connections` entry, and a stranded key predates the directory, so it has
+ * no entry: the sweep revokes no grant for it, and rotates only the
+ * collections whose `generator` stamp names it. Its grants stay live until
+ * their own TTL.
  *
  * Retraction of a world-readable public copy is the delete path's job. The
  * sweep has it consult the remote `public-credentials` collection whenever one
@@ -46,11 +48,19 @@ import {
 } from '@interop/wallet-request'
 import { isSelfIssued, subjectId } from '@/lib/vcShape'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
-import type { HistoryItems, StorageManager } from '@/stores/storageManager'
+import type { StorageManager } from '@/stores/storageManager'
 import { revokeAppAuthority } from '@/lib/connectedApps'
 import { createLogger } from '@/lib/log'
 
 const log = createLogger('fw:session:appkeys')
+
+/**
+ * The `connections` directory listing the sweep reads once, as
+ * `StorageManager.readConnectionsListing` returns it.
+ */
+type AppKeyDirectory = Awaited<
+  ReturnType<StorageManager['readConnectionsListing']>
+>
 
 /**
  * Whether a stored credential is an app key stranded in
@@ -148,22 +158,21 @@ export async function sweepStrandedAppKeys({
     }
   }
 
-  let items: HistoryItems | undefined
+  let directory: AppKeyDirectory | undefined
   let collections:
     Awaited<ReturnType<StorageManager['listCollections']>> | undefined
   let deleted = 0
   for (const { cid, origin, subjectDid } of stranded) {
     try {
       if (origin && subjectDid) {
-        items ??= await storage.listHistoryItems()
+        directory ??= await storage.readConnectionsListing()
         collections ??= await storage.listCollections()
         // Throws when a stage did not fully land, which leaves the Resource
         // in place for the next login.
         await revokeAppAuthority({
           storage,
-          origin,
           subjectDid,
-          items,
+          directory,
           collections
         })
       }
@@ -185,7 +194,7 @@ export async function sweepStrandedAppKeys({
   const retracted = await retractOrphanPublicAppKeys({
     storage,
     privateCids: new Set(credentials.map(({ cid }) => cid)),
-    items,
+    directory,
     collections
   })
   return { deleted, retracted }
@@ -201,8 +210,8 @@ export async function sweepStrandedAppKeys({
  * @param options {object}
  * @param options.storage {StorageManager}
  * @param options.privateCids {Set<string>}   the cids the private pass covered
- * @param [options.items] {HistoryItems}   the activity history, if already
- *   fetched
+ * @param [options.directory] {object}   the directory listing, if already
+ *   read
  * @param [options.collections] {Array}   the Space collection listing, if
  *   already fetched
  * @returns {Promise<number>}   how many public copies were retracted
@@ -210,12 +219,12 @@ export async function sweepStrandedAppKeys({
 async function retractOrphanPublicAppKeys({
   storage,
   privateCids,
-  items,
+  directory,
   collections
 }: {
   storage: StorageManager
   privateCids: Set<string>
-  items?: HistoryItems
+  directory?: AppKeyDirectory
   collections?: Awaited<ReturnType<StorageManager['listCollections']>>
 }): Promise<number> {
   let publicCopies: Awaited<ReturnType<StorageManager['listCredentials']>>
@@ -231,7 +240,7 @@ async function retractOrphanPublicAppKeys({
     return 0
   }
 
-  let history = items
+  let read = directory
   let listing = collections
   let retracted = 0
   for (const { cid, vc } of publicCopies) {
@@ -242,13 +251,12 @@ async function retractOrphanPublicAppKeys({
     const subjectDid = subjectId(vc)
     try {
       if (origin && subjectDid) {
-        history ??= await storage.listHistoryItems()
+        read ??= await storage.readConnectionsListing()
         listing ??= await storage.listCollections()
         await revokeAppAuthority({
           storage,
-          origin,
           subjectDid,
-          items: history,
+          directory: read,
           collections: listing
         })
       }

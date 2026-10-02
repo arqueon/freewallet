@@ -53,7 +53,7 @@ import {
   type DecryptFailure
 } from '@/lib/decryptFailure'
 import { uuidv7 } from 'uuidv7'
-import type { StoredCredential } from '@/types/credential'
+import type { StoredAppKey, StoredCredential } from '@/types/credential'
 import type { StoredContact } from '@/types/contact'
 import type { WalletActivity } from '@/stores/storageManager'
 import type { WASRemoteStore } from '@/stores/wasRemoteStore'
@@ -93,8 +93,8 @@ export interface SyncedCollectionStore {
   addAppKey(options: {
     cid: string
     credential: IVerifiableCredential
-  }): Promise<boolean>
-  listAppKeys(): Promise<Array<StoredCredential>>
+  }): Promise<{ inserted: boolean; resourceId: string }>
+  listAppKeys(): Promise<Array<StoredAppKey>>
   deleteAppKey(options: { cid: string }): Promise<void>
   readonly unknownEpochAppKeys: number
   readonly noEpochKeyAppKeys: number
@@ -515,7 +515,8 @@ export class RemoteDirectStore implements SyncedCollectionStore {
    * Adds an app-key credential to the remote `app-connections` collection,
    * idempotent on the credential's content cid (encryption is
    * nondeterministic, so the resource id cannot carry idempotence). Returns
-   * whether a Resource was actually created.
+   * whether a Resource was actually created, and the id of the Resource that
+   * holds the credential: the new one, or the one already holding it.
    *
    * The collection is scanned per call rather than cached for the session: it
    * holds one Resource per connected app, and an App Connect popup performs at
@@ -524,7 +525,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
    * @param options {object}
    * @param options.cid {string}
    * @param options.credential {IVerifiableCredential}
-   * @returns {Promise<boolean>}
+   * @returns {Promise<{ inserted: boolean; resourceId: string }>}
    */
   async addAppKey({
     cid,
@@ -532,13 +533,14 @@ export class RemoteDirectStore implements SyncedCollectionStore {
   }: {
     cid: string
     credential: IVerifiableCredential
-  }): Promise<boolean> {
+  }): Promise<{ inserted: boolean; resourceId: string }> {
     const cipher = this.#cipherFor('appConnections')
     const { entries } = await this.#scanContentCollection({
       logicalKey: 'appConnections'
     })
-    if (entries.some(entry => entry.cid === cid)) {
-      return false
+    const held = entries.find(entry => entry.cid === cid)
+    if (held) {
+      return { inserted: false, resourceId: held.resourceId }
     }
     const { id, envelope, epoch } = await cipher.encrypt({
       data: credential as unknown as Json
@@ -549,10 +551,10 @@ export class RemoteDirectStore implements SyncedCollectionStore {
       body: envelope,
       epoch
     })
-    return created
+    return { inserted: created, resourceId: id }
   }
 
-  async listAppKeys(): Promise<Array<StoredCredential>> {
+  async listAppKeys(): Promise<Array<StoredAppKey>> {
     const {
       entries,
       undecryptableResourceIds,
@@ -568,13 +570,13 @@ export class RemoteDirectStore implements SyncedCollectionStore {
     this.#undecryptableAppKeyResourceIds = undecryptableResourceIds
     this.#undecryptableAppKeys = undecryptableResourceIds.length
     const seen = new Set<string>()
-    const appKeys: StoredCredential[] = []
-    for (const { cid, vc } of entries) {
+    const appKeys: StoredAppKey[] = []
+    for (const { cid, vc, resourceId } of entries) {
       if (seen.has(cid)) {
         continue
       }
       seen.add(cid)
-      appKeys.push({ cid, vc })
+      appKeys.push({ cid, vc, resourceId })
     }
     return appKeys
   }

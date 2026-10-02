@@ -1,17 +1,19 @@
 /**
  * The two listings behind the Storage page's collection rows -- the reader
  * rosters behind each row's "Shared" chip and the creating apps behind its
- * "Created by" line -- fed by one read of the activity history. Both join
- * over `wallet-activity`, and a read of it decrypts every envelope in the
- * collection, so the page reads it once here and hands the scan to both
- * rather than letting each listing scan it again.
+ * "Created by" line -- named from one read of the `connections` directory.
+ * Every lookup by DID matches that read's decrypted entries in memory, so the
+ * page issues no GET at the id a DID derives to.
  *
  * Each listing's failure is non-blocking: the chips or the attribution line
  * simply do not appear, and the storage listing itself stays usable. The
- * history read failing leaves both off.
+ * rosters are read whether or not the directory could be: a failed
+ * directory read leaves the readers unnamed and the creators unresolved.
  */
 import { useMemo } from 'react'
+import type { ReadConnection } from '@interop/wallet-core/connections'
 import { createLogger } from '@/lib/log'
+import { readDirectoryListing } from '@/session/clients'
 import { listSharedCollections, type CollectionShare } from '@/session/shares'
 import type { CollectionCreator } from '@/lib/connectedApps'
 import type { StorageCollection } from '@/lib/storage'
@@ -37,7 +39,7 @@ const NO_SHARES: Record<string, CollectionShare[]> = {}
  * @returns {{ sharesByCollection: Record<string, CollectionShare[]>,
  *   creators: ReadonlyMap<string, CollectionCreator>, reload: () =>
  *   Promise<void> }}   the two listings, the creators keyed by `generator.id`
- *   DID, and a reload that re-reads the history and re-runs both
+ *   DID, and a reload that re-reads the directory and re-runs both
  */
 export function useStorageListings({
   session,
@@ -53,34 +55,45 @@ export function useStorageListings({
   const hasRemoteStorage = Boolean(session?.storage?.hasRemoteStorage)
   const active = hasRemoteStorage && session !== null
 
-  // The one history read. A reload mints a new items array, and the two
-  // listings below re-run off that identity change.
-  const { data: items, reload } = useAsyncLoad(
-    async () => {
+  // The one directory read. A failed read settles as `{ listing: null }`, so
+  // the rosters below still load, unnamed. Every settled read is a fresh
+  // object, failed or not, so a reload always changes `directory`'s identity
+  // and the two listings below re-run off it. (A bare `null` over `null`
+  // would leave the shares load un-run after a reload.)
+  const { data: directory, reload } = useAsyncLoad(
+    async (): Promise<{
+      listing: { connections: ReadConnection[]; spaceUrl?: string } | null
+    }> => {
       if (!session) {
-        return { entries: [], unreadable: 0 }
+        return { listing: null }
       }
-      return session.storage.listHistoryItems()
+      try {
+        return { listing: await readDirectoryListing({ session }) }
+      } catch (err) {
+        log.error('Could not read the connections directory', { err })
+        return { listing: null }
+      }
     },
     [session],
-    {
-      enabled: active,
-      onError: err => {
-        log.error('Could not read the activity history', { err })
-      }
-    }
+    { enabled: active }
   )
 
   const { data: loadedShares, error: sharesError } = useAsyncLoad(
     async (): Promise<Record<string, CollectionShare[]>> => {
-      if (!session || !items) {
+      if (!session || directory === undefined) {
         return NO_SHARES
       }
-      return listSharedCollections({ session, items })
+      const { listing } = directory
+      return listSharedCollections({
+        session,
+        ...(listing
+          ? { connections: listing.connections.map(({ entry }) => entry) }
+          : {})
+      })
     },
-    [session, items],
+    [session, directory],
     {
-      enabled: active && items !== undefined,
+      enabled: active && directory !== undefined,
       onError: err => {
         log.error('Could not load the collection shares', { err })
       }
@@ -93,10 +106,9 @@ export function useStorageListings({
   )
 
   const creators = useCollectionCreators({
-    storage: session?.storage,
+    session,
     generators: collections.map(({ generator }) => generator),
-    items,
-    enabled: items !== undefined
+    directory: directory?.listing ?? null
   })
 
   return { sharesByCollection, creators, reload }

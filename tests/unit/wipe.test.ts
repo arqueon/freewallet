@@ -14,7 +14,8 @@ import {
   saveClientKeyRecord,
   saveKeyringCache,
   savePasskeySafetyNotice,
-  saveUnlockMethodsCache
+  saveUnlockMethodsCache,
+  saveWriterFirstSeen
 } from '@/lib/sessionKey'
 import {
   executeLocalWipe,
@@ -131,6 +132,15 @@ async function seedSessionDatabase(idb: IDBFactory): Promise<void> {
   ]) {
     await saveKeyringCache({ spaceId, record: { r: spaceId }, idb })
     await saveClientKeyRecord({ spaceId, record: { c: spaceId }, idb })
+    await saveWriterFirstSeen({
+      spaceId,
+      record: {
+        accountDid: ACCOUNT_DID,
+        writerId: 'writer-1',
+        firstSessionAt: '2026-01-01T00:00:00.000Z'
+      },
+      idb
+    })
   }
   await saveAccountDidForSpace({
     spaceId: ACCOUNT_SPACE_ID,
@@ -224,11 +234,13 @@ describe('the shared wipe enumeration', () => {
 
       expect(failed).toEqual([])
       expect(wipeLocalStorage).toHaveBeenCalledTimes(1)
-      // Direct enumeration: only the OTHER account's rows survive.
+      // Direct enumeration: only the OTHER account's rows survive. The
+      // writer first-seen records go with each method's unlock-local state.
       expect([...sessionStore.keys()].sort()).toEqual(
         [
           'keyring/other-unlock-space',
           'client-keys/other-unlock-space',
+          'writer-first-seen/other-unlock-space',
           'account-did/space/other-space',
           'unlock-methods/did:key:z6MkOther'
         ].sort()

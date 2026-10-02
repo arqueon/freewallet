@@ -1,6 +1,10 @@
 /**
- * Unit tests for StorageManager's multi-recipient collection sharing surface:
- * `shareCollection` / `unshareCollection` / `listCollectionShares`, plus the
+ * Unit tests for StorageManager's multi-recipient collection sharing and
+ * revocation surface: `shareCollection` / `unshareCollection` /
+ * `listCollectionShares`, the grant stage (`revokeConnectionGrants`) and the
+ * recipient rotation (`revokeCollectionRecipients`) a party revocation runs,
+ * the admitted-recipient resolver every rotation wraps the fresh epoch
+ * through, the server-side app-key delete (`deleteAppKeyResource`), plus the
  * transparent unknown-epoch descriptor refresh on `listCredentials`.
  *
  * Every encrypted collection's descriptor is log-governed, so the descriptor
@@ -17,6 +21,14 @@
  * BrowserStore on memory RxDB, and the ciphers are real EDV codecs over
  * freshly generated X25519 keys, so an epoch written under one descriptor
  * really fails to decrypt under a stale one.
+ *
+ * The `connections` directory is the grant index the revocations, the
+ * unshare, and the share listing read. Here it stands on an in-memory store
+ * (`memoryConnectionsStore`) that the storage manager's `connectionsDirectory`
+ * hands back, under wallet-core's real reader and upsert logic. Its binding to
+ * the `connections` collection is covered in
+ * `storageManager.connections.test.ts`. No history row decides a revocation or
+ * an admission here.
  *
  * @vitest-environment node
  */
@@ -49,10 +61,26 @@ import {
   type RecipientPublicKey
 } from '@interop/was-client/edv'
 import {
+  connectionGrants,
+  connectionResourceId,
+  findConnection,
+  recordGrants,
+  setConnectionLabel,
+  type ConnectionEntry,
+  type ConnectionGrant,
+  type ConnectionKind,
+  type GrantKind
+} from '@interop/wallet-core/connections'
+import { mintAppKeyCredential } from '@interop/wallet-request'
+import {
   descriptorLogsFrom,
   memoryDescriptorStores,
   type MemoryDescriptorStores
 } from '../../tests/unit/fakeDescriptorStores'
+import {
+  HMAC_KEY,
+  memoryConnectionsStore
+} from '../../tests/unit/memoryConnections'
 import { mintRecordEncryption } from '@/session/recordEnvelope'
 import {
   browserLocalSessionPersistence,
@@ -70,7 +98,11 @@ import {
   ownerRecipient,
   type DocCipher
 } from '@interop/was-client/edv'
-import { revokeAgentAccess, type AccountSignerCheck } from '@/lib/connectedApps'
+import {
+  revokeAgentAccess,
+  revokeAppAuthority,
+  type AccountSignerCheck
+} from '@/lib/connectedApps'
 import { StorageManager } from './storageManager'
 import {
   accountSignerCheck,
@@ -82,10 +114,6 @@ import {
 } from '@interop/wallet-core/testing'
 import { mintUserKey, userKeyVaultKeys } from '@interop/wallet-core/keys'
 import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
-import {
-  addHistoryLogin as buildHistoryLogin,
-  type WalletActivity
-} from '@interop/wallet-core/space'
 import type { WASRemoteStore } from './wasRemoteStore'
 import type { StorageCollection } from '@/lib/storage'
 
@@ -159,75 +187,6 @@ async function generateAppIdentity(): Promise<{
     recipient: x25519RecipientFromDidKey({ did }),
     keyAgreementKey: keyAgreementKey as IKeyAgreementKey
   }
-}
-
-/**
- * Records an App Connect Grant granting one app read access to `app-docs`,
- * carrying the delegated capability, so the grant admits the app to that
- * collection's roster.
- */
-async function recordAppGrant(
-  storage: StorageManager,
-  {
-    user,
-    origin,
-    grantee
-  }: { user: User; origin: string; grantee: { did: `did:${string}` } }
-): Promise<void> {
-  const future = new Date(Date.now() + 1_000_000).toISOString()
-  const target = 'https://was.example/space/s-space/app-docs'
-  await storage.addHistoryGrant({
-    user,
-    origin,
-    grants: [
-      {
-        id: `g-${origin}`,
-        target,
-        allowedActions: ['GET', 'HEAD'],
-        expires: future,
-        zcap: recordedGrant({
-          id: `z-${origin}`,
-          invocationTarget: target,
-          expires: future,
-          controller: grantee.did
-        })
-      }
-    ],
-    appConnect: { name: origin, firstRun: true }
-  })
-}
-
-/**
- * Seeds a Login row that carries capabilities, a shape no `addHistory*`
- * wrapper writes (a plain login delegates none) but an account may hold.
- * Written past the wrappers, as the account holds it.
- */
-async function seedLoginWithZcaps({
-  storage,
-  user,
-  origin,
-  id,
-  zcaps
-}: {
-  storage: StorageManager
-  user: User
-  origin: string
-  id: string
-  zcaps: Parameters<StorageManager['addHistoryGrant']>[0]['grants']
-}): Promise<void> {
-  const activity: WalletActivity = {
-    ...buildHistoryLogin({ user, origin, id }),
-    object: { origin, zcaps }
-  }
-  const outcome = await storage.importActivity({
-    activity,
-    held: {
-      contactHeads: new Map(),
-      contactRevisions: new Map(),
-      activities: new Map()
-    }
-  })
-  expect(outcome).toBe('accepted')
 }
 
 /**
@@ -443,22 +402,26 @@ function makeFakeRemote({
     standPlaintextCollection
   }
 }
-
 /**
  * Builds the encrypted-collection ciphers over the owner's keys and the given
  * per-collection descriptors (keyed by WAS collection id), mirroring what
  * StorageManager builds internally. Every encrypted collection carries a
  * key-epoch roster from birth, so a collection the test supplies no
  * descriptor for gets a local one-epoch descriptor wrapped to the owner --
- * standing in for what provisioning would have installed.
+ * standing in for what provisioning would have installed. `appConnections`
+ * adds the `app-connections` cipher, for a test that stores app keys.
  */
 async function buildCiphers(
   owner: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver },
-  descriptors: Record<string, CollectionEncryption>
+  descriptors: Record<string, CollectionEncryption>,
+  { appConnections = false }: { appConnections?: boolean } = {}
 ): Promise<Record<string, DocCipher>> {
   const specs: Array<[string, string]> = [
     ['privateCredentials', 'private-credentials'],
-    ['walletActivity', 'wallet-activity']
+    ['walletActivity', 'wallet-activity'],
+    ...(appConnections
+      ? [['appConnections', 'app-connections'] as [string, string]]
+      : [])
   ]
   const entries = await Promise.all(
     specs.map(async ([key, id]) => [
@@ -741,6 +704,418 @@ async function shareWith(
   return { descriptor, zcap }
 }
 
+/**
+ * This Space's container URL, as the fake remote serves it. Every grant a
+ * directory reader keeps targets beneath it.
+ */
+const SPACE_URL = 'https://was.example/space/s-space/'
+
+/**
+ * An app's or an agent's identity, as {@link generateAppIdentity} mints it.
+ */
+type PartyIdentity = Awaited<ReturnType<typeof generateAppIdentity>>
+
+/**
+ * The in-memory directory store a test inspects and plants rows in.
+ */
+type MemoryDirectory = ReturnType<typeof memoryConnectionsStore>
+
+/**
+ * Stands the session's `connections` directory on an in-memory store: the
+ * storage manager's `connectionsDirectory` hands back that store, the fixed
+ * blinded-index key, and this Space's container URL. Two storage managers
+ * over one account share a directory by passing the same `memory`.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param [options.memory] {MemoryDirectory}   an existing store to share
+ * @returns {MemoryDirectory}
+ */
+function standDirectory({
+  storage,
+  memory = memoryConnectionsStore()
+}: {
+  storage: StorageManager
+  memory?: MemoryDirectory
+}): MemoryDirectory {
+  vi.spyOn(storage, 'connectionsDirectory').mockResolvedValue({
+    store: memory.store,
+    hmacKey: HMAC_KEY,
+    spaceUrl: SPACE_URL
+  })
+  return memory
+}
+
+/**
+ * A recorded capability on one collection of this Space.
+ *
+ * @param options {object}
+ * @param options.id {string}
+ * @param options.controller {string}   the grantee DID
+ * @param [options.collectionId] {string}   default `private-credentials`
+ * @param [options.target] {string}   an explicit invocation target, in place
+ *   of the collection's
+ * @param [options.expires] {string}   default a little past now
+ * @param [options.signerKeyId] {string}
+ * @param [options.parent] {object}   the generation delegation it chains
+ *   under
+ * @returns {IZcap}
+ */
+function collectionGrant({
+  id,
+  controller,
+  collectionId = 'private-credentials',
+  target = `${SPACE_URL}${collectionId}`,
+  expires = new Date(Date.now() + 1_000_000).toISOString(),
+  signerKeyId,
+  parent
+}: {
+  id: string
+  controller: string
+  collectionId?: string
+  target?: string
+  expires?: string
+  signerKeyId?: string
+  parent?: { controller: string; signerKeyId?: string }
+}): IZcap {
+  return recordedGrant({
+    id,
+    controller,
+    invocationTarget: target,
+    expires,
+    ...(signerKeyId && { signerKeyId }),
+    ...(parent && { parent })
+  })
+}
+
+/**
+ * A directory entry's body, built past the upsert helpers: what a test plants
+ * at a resource id, or reads grants off in memory.
+ *
+ * @param options {object}
+ * @param options.did {string}   the entry's `id`
+ * @param [options.kind] {ConnectionKind}   default `app`
+ * @param [options.zcaps] {object[]}   the grants' capabilities
+ * @param [options.grantKind] {GrantKind}   default `grant`
+ * @param [options.version] {number}   default 1
+ * @param [options.retired] {string}
+ * @param [options.appKey] {string}
+ * @returns {ConnectionEntry}
+ */
+function entryBody({
+  did,
+  kind = 'app',
+  zcaps = [],
+  grantKind = 'grant',
+  version = 1,
+  retired,
+  appKey
+}: {
+  did: string
+  kind?: ConnectionKind
+  zcaps?: object[]
+  grantKind?: GrantKind
+  version?: number
+  retired?: string
+  appKey?: string
+}): ConnectionEntry {
+  const stamp = '2026-09-01T00:00:00.000Z'
+  return {
+    version,
+    kind,
+    id: did,
+    firstSeen: stamp,
+    lastSeen: stamp,
+    ...(retired !== undefined && { retired }),
+    ...(appKey !== undefined && { appKey }),
+    grants: zcaps.map(zcap => ({
+      zcap: zcap as ConnectionEntry['grants'][number]['zcap'],
+      grantKind,
+      grantedAt: stamp
+    })),
+    writers: []
+  }
+}
+
+/**
+ * A party's grants as wallet-core's reader checks keep them, read off an
+ * entry built in memory: the grant stage's input, which reads no directory.
+ *
+ * @param options {object}
+ * @param options.did {string}   the party's DID
+ * @param options.zcaps {object[]}
+ * @returns {ConnectionGrant[]}
+ */
+function grantsOf({
+  did,
+  zcaps
+}: {
+  did: string
+  zcaps: object[]
+}): ConnectionGrant[] {
+  return connectionGrants({
+    entry: entryBody({ did, zcaps }),
+    spaceUrl: SPACE_URL
+  })
+}
+
+/**
+ * Plants a stored body in the in-memory directory at a resource id, past the
+ * upsert helpers, as a host or a newer build could leave one. The resource id
+ * defaults to the one the body's own `id` derives to.
+ *
+ * @param options {object}
+ * @param options.memory {MemoryDirectory}
+ * @param options.body {object}
+ * @param [options.resourceId] {string}
+ * @returns {Promise<string>}   the resource id planted at
+ */
+async function plantEntry({
+  memory,
+  body,
+  resourceId
+}: {
+  memory: MemoryDirectory
+  body: object
+  resourceId?: string
+}): Promise<string> {
+  const at =
+    resourceId ??
+    (await connectionResourceId({
+      hmacKey: HMAC_KEY,
+      did: (body as { id: string }).id
+    }))
+  memory.rows.set(at, { body, etag: `planted-${at}` })
+  return at
+}
+
+/**
+ * Records a consent on a party's directory entry, as the request path does
+ * once the grants are delegated.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param options.did {string}   the party's DID, every grant's controller
+ * @param options.zcaps {object[]}   the delegated capabilities
+ * @param [options.kind] {ConnectionKind}   default `app`
+ * @param [options.grantKind] {GrantKind}   default `grant`
+ * @param [options.name] {string}
+ * @param [options.origin] {string}
+ * @param [options.now] {Date}
+ * @returns {Promise<void>}
+ */
+async function recordPartyGrants({
+  storage,
+  did,
+  zcaps,
+  kind = 'app',
+  grantKind = 'grant',
+  name,
+  origin,
+  now
+}: {
+  storage: StorageManager
+  did: string
+  zcaps: object[]
+  kind?: ConnectionKind
+  grantKind?: GrantKind
+  name?: string
+  origin?: string
+  now?: Date
+}): Promise<void> {
+  const { store, hmacKey, spaceUrl } = await storage.connectionsDirectory()
+  await recordGrants({
+    store,
+    hmacKey,
+    spaceUrl,
+    did,
+    kind,
+    grants: zcaps.map(zcap => ({ zcap, grantKind })),
+    ...(name !== undefined && { name }),
+    ...(origin !== undefined && { origin }),
+    ...(now !== undefined && { now })
+  })
+}
+
+/**
+ * A party's grants as a revocation reads them: off its entry in one directory
+ * listing, through wallet-core's reader checks, with the listing itself.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param options.did {string}
+ * @returns {Promise<object>}   `{ directory, entry, grants }`
+ */
+async function readParty({
+  storage,
+  did
+}: {
+  storage: StorageManager
+  did: string
+}): Promise<{
+  directory: Awaited<ReturnType<StorageManager['readConnectionsListing']>>
+  entry?: ConnectionEntry
+  grants: ConnectionGrant[]
+}> {
+  const directory = await storage.readConnectionsListing()
+  const entry = findConnection({ listing: directory.listing, did })?.entry
+  return {
+    directory,
+    ...(entry !== undefined && { entry }),
+    grants: entry ? connectionGrants({ entry, spaceUrl: SPACE_URL }) : []
+  }
+}
+
+/**
+ * Runs a party revocation's rotation stage the way the session layer does:
+ * the party's grants and the admissions both come from one directory read.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param options.did {string}
+ * @param [options.collections] {StorageCollection[]}
+ * @returns {Promise<object>}   the rotation outcome and the grants it read
+ */
+async function rotateParty({
+  storage,
+  did,
+  collections
+}: {
+  storage: StorageManager
+  did: string
+  collections?: StorageCollection[]
+}): Promise<{
+  rotation: Awaited<ReturnType<StorageManager['revokeCollectionRecipients']>>
+  grants: ConnectionGrant[]
+}> {
+  const { directory, grants } = await readParty({ storage, did })
+  const rotation = await storage.revokeCollectionRecipients({
+    did,
+    grants,
+    directory,
+    ...(collections && { collections })
+  })
+  return { rotation, grants }
+}
+
+/**
+ * A remote session over the fake remote, its standard encrypted collections
+ * provisioned to the owner, and its directory stood on an in-memory store.
+ *
+ * @param [options] {object}
+ * @param [options.revoke] {Function}   the Space handle's refusal, if any
+ * @param [options.signerCheck] {Function}
+ * @param [options.persistence] {SessionPersistence}
+ * @param [options.blindedIndex] {boolean}
+ * @param [options.appConnections] {boolean}   builds the app-key cipher
+ * @returns {Promise<object>}
+ */
+async function directorySession({
+  revoke,
+  signerCheck,
+  persistence = browserLocalSessionPersistence(),
+  blindedIndex = false,
+  appConnections = false
+}: {
+  revoke?: (zcap: unknown) => Promise<void>
+  signerCheck?: () => Promise<AccountSignerCheck | undefined>
+  persistence?: SessionPersistence
+  blindedIndex?: boolean
+  appConnections?: boolean
+} = {}) {
+  const owner = await generateKey()
+  const stores = memoryDescriptorStores()
+  const remote = makeFakeRemote({ stores, revoke })
+  const descriptors = await provisionGovernedCollections(owner, stores, {
+    blindedIndex
+  })
+  const ciphers = await buildCiphers(owner, descriptors, { appConnections })
+  const { localStore, user } = await initLocalStore(ciphers)
+  const storage = new StorageManager({
+    persistence,
+    localStore,
+    remoteStore: remote.remoteStore,
+    descriptorLogs: descriptorLogsFrom(stores),
+    ciphers,
+    vaultKeys: owner,
+    descriptors,
+    ...(signerCheck && { signerCheck })
+  })
+  const memory = standDirectory({ storage })
+  return {
+    ...remote,
+    owner,
+    stores,
+    ciphers,
+    localStore,
+    user,
+    storage,
+    memory,
+    persistence
+  }
+}
+
+/**
+ * The ids of the capabilities the fake remote was asked to revoke, in order.
+ *
+ * @param revoked {unknown[]}
+ * @returns {string[]}
+ */
+function revokedIdsOf(revoked: unknown[]): string[] {
+  return (revoked as Array<{ id: string }>).map(zcap => zcap.id)
+}
+
+/**
+ * Shares a collection with a party the way the request path does: signs and
+ * escrows the share (`shareWith`), then records the share grant on the
+ * party's directory entry.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param options.profile {ControllerProfile}
+ * @param options.user {User}
+ * @param options.reader {PartyIdentity}
+ * @param [options.collectionId] {string}   default `private-credentials`
+ * @param [options.name] {string}   the party's self-declared name
+ * @param [options.origin] {string}   the app's attested origin
+ * @returns {Promise<object>}   the new descriptor and the signed zcap
+ */
+async function shareWithParty({
+  storage,
+  profile,
+  user,
+  reader,
+  collectionId = 'private-credentials',
+  name,
+  origin
+}: {
+  storage: StorageManager
+  profile: ControllerProfile
+  user: User
+  reader: PartyIdentity
+  collectionId?: string
+  name?: string
+  origin?: string
+}) {
+  const shared = await shareWith(storage, {
+    profile,
+    user,
+    collectionId,
+    recipient: reader.recipient,
+    controller: reader.did,
+    ...(name !== undefined && origin !== undefined && { app: { name, origin } })
+  })
+  await recordPartyGrants({
+    storage,
+    did: reader.did,
+    zcaps: [shared.zcap],
+    grantKind: 'share',
+    name,
+    origin
+  })
+  return shared
+}
+
 describe('StorageManager.shareCollection', () => {
   it('refuses a zcap that is not read-only on the shared collection, escrowing nothing', async () => {
     const owner = await generateKey()
@@ -903,112 +1278,339 @@ describe('StorageManager.shareCollection', () => {
   })
 })
 
-describe('StorageManager.unshareCollection', () => {
-  it('rotates the epoch and revokes the recorded zcap(s)', async () => {
+/**
+ * The `descriptorLogs` seam over `stores`, with a failing escrow append on
+ * one collection. Under `lands`, the append is written and then its response
+ * is lost (the call throws). Under `fails`, it throws with nothing written.
+ * `failRereads` makes every descriptor read through the source throw once
+ * the append has failed, so the re-read after it fails too.
+ *
+ * @param options {object}
+ * @param options.stores {MemoryDescriptorStores}
+ * @param options.collectionId {string}
+ * @param options.mode {string}   `lands` or `fails`
+ * @param [options.failRereads] {boolean}
+ * @returns {object}   the seam, and the error the append threw
+ */
+function lossyEscrowLogs({
+  stores,
+  collectionId,
+  mode,
+  failRereads = false
+}: {
+  stores: MemoryDescriptorStores
+  collectionId: string
+  mode: 'lands' | 'fails'
+  failRereads?: boolean
+}): {
+  descriptorLogs: ReturnType<typeof descriptorLogsFrom>
+  appendError: Error
+} {
+  const appendError = new Error('escrow append response lost')
+  let appendFailed = false
+  return {
+    appendError,
+    descriptorLogs: {
+      source: {
+        async collectionEncryption(options) {
+          if (failRereads && appendFailed) {
+            throw new Error('descriptor re-read failed')
+          }
+          return stores.source.collectionEncryption(options)
+        }
+      },
+      storeFor: async id => {
+        const store = stores.storeFor(id)
+        if (id !== collectionId) {
+          return store
+        }
+        return {
+          ...store,
+          async replace(next, options) {
+            if (mode === 'lands') {
+              await store.replace(next, options)
+            }
+            appendFailed = true
+            throw appendError
+          }
+        }
+      }
+    }
+  }
+}
+
+describe('an escrow whose append response was lost', () => {
+  /**
+   * A storage manager over provisioned collections, its escrow appends on
+   * `collectionId` failing as {@link lossyEscrowLogs} describes.
+   *
+   * @param options {object}
+   * @param options.collectionId {string}
+   * @param options.mode {string}   `lands` or `fails`
+   * @param [options.failRereads] {boolean}
+   * @returns {Promise<object>}
+   */
+  async function setup({
+    collectionId,
+    mode,
+    failRereads
+  }: {
+    collectionId: string
+    mode: 'lands' | 'fails'
+    failRereads?: boolean
+  }) {
     const owner = await generateKey()
     const reader = await generateKey()
     const stores = memoryDescriptorStores()
-    const { remoteStore, revoked } = makeFakeRemote({ stores })
+    const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
     const ciphers = await buildCiphers(owner, descriptors)
     const { localStore, user } = await initLocalStore(ciphers)
     const { zcapClient } = makeFakeZcapClient()
+    const { descriptorLogs, appendError } = lossyEscrowLogs({
+      stores,
+      collectionId,
+      mode,
+      failRereads
+    })
     const storage = new StorageManager({
       persistence: browserLocalSessionPersistence(),
       localStore,
       remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
+      descriptorLogs,
       ciphers,
       vaultKeys: owner,
       descriptors
     })
     const profile = makeProfile(owner, zcapClient)
+    const recipient = ownerRecipient({
+      keyAgreementKey: reader.keyAgreementKey
+    })
+    return { storage, profile, user, recipient, appendError, stores }
+  }
 
-    const { descriptor: shared } = await shareWith(storage, {
-      profile,
-      user,
+  /**
+   * Shares `private-credentials` with the reader, counting the escrow
+   * reports.
+   *
+   * @param options {object}
+   * @param options.mode {string}   `lands` or `fails`
+   * @param [options.failRereads] {boolean}
+   * @returns {Promise<object>}   what the call threw, the expected error,
+   *   and the report count
+   */
+  async function share({
+    mode,
+    failRereads
+  }: {
+    mode: 'lands' | 'fails'
+    failRereads?: boolean
+  }) {
+    const { storage, profile, user, recipient, appendError } = await setup({
       collectionId: 'private-credentials',
-      recipient: ownerRecipient({ keyAgreementKey: reader.keyAgreementKey }),
+      mode,
+      failRereads
+    })
+    const zcap = await storage.delegateShareGrant({
+      profile,
+      collectionId: 'private-credentials',
       controller: 'did:key:z6MkReader'
     })
+    const onEscrowLanded = vi.fn()
+    const thrown = await storage
+      .shareCollection({
+        profile,
+        user,
+        collectionId: 'private-credentials',
+        recipient,
+        zcap,
+        onEscrowLanded
+      })
+      .catch((err: unknown) => err)
+    return { thrown, appendError, onEscrowLanded }
+  }
 
-    const rotated = await storage.unshareCollection({
-      profile,
-      user,
-      collectionId: 'private-credentials',
-      recipientId: reader.keyAgreementKey.id!
+  it('reports a share escrow that landed, then throws the original error', async () => {
+    const { thrown, appendError, onEscrowLanded } = await share({
+      mode: 'lands'
     })
+    expect(thrown).toBe(appendError)
+    expect(onEscrowLanded).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not report a share escrow that did not land', async () => {
+    const { thrown, appendError, onEscrowLanded } = await share({
+      mode: 'fails'
+    })
+    expect(thrown).toBe(appendError)
+    expect(onEscrowLanded).not.toHaveBeenCalled()
+  })
+
+  it('logs a failed re-read and throws the original error, reporting nothing', async () => {
+    const captured = captureSink()
+    const removeSink = addSink(captured.sink)
+    try {
+      const { thrown, appendError, onEscrowLanded } = await share({
+        mode: 'lands',
+        failRereads: true
+      })
+      expect(thrown).toBe(appendError)
+      expect(onEscrowLanded).not.toHaveBeenCalled()
+      expect(
+        captured.events.some(
+          event =>
+            event.level === 'warn' &&
+            event.msg.includes('Could not re-read the key epoch')
+        )
+      ).toBe(true)
+    } finally {
+      removeSink()
+    }
+  })
+
+  it('reports a first-epoch escrow that landed, then throws the original error', async () => {
+    const { storage, recipient, appendError, stores } = await setup({
+      collectionId: 'app-docs',
+      mode: 'lands'
+    })
+    const onEscrowLanded = vi.fn()
+    const thrown = await storage
+      .provisionEncryptedCollection({
+        collectionId: 'app-docs',
+        recipient,
+        onEscrowLanded
+      })
+      .catch((err: unknown) => err)
+    expect(thrown).toBe(appendError)
+    expect(onEscrowLanded).toHaveBeenCalledTimes(1)
+    expect(currentEpochKids(stores.descriptorOf('app-docs')!)).toContain(
+      recipient.id
+    )
+  })
+
+  it('does not report a first-epoch escrow that did not land', async () => {
+    const { storage, recipient, appendError } = await setup({
+      collectionId: 'app-docs',
+      mode: 'fails'
+    })
+    const onEscrowLanded = vi.fn()
+    const thrown = await storage
+      .provisionEncryptedCollection({
+        collectionId: 'app-docs',
+        recipient,
+        onEscrowLanded
+      })
+      .catch((err: unknown) => err)
+    expect(thrown).toBe(appendError)
+    expect(onEscrowLanded).not.toHaveBeenCalled()
+  })
+})
+
+describe('StorageManager.unshareCollection', () => {
+  /**
+   * A remote session sharing nothing yet, with the owner profile a share and
+   * an unshare run under, and a share and an unshare of `private-credentials`
+   * bound to it.
+   *
+   * @param [options] {object}   {@link directorySession}'s options
+   * @returns {Promise<object>}
+   */
+  async function shareSession(
+    options: Parameters<typeof directorySession>[0] = {}
+  ) {
+    const session = await directorySession(options)
+    const { zcapClient } = makeFakeZcapClient()
+    const profile = makeProfile(session.owner, zcapClient)
+    const share = async (
+      reader: PartyIdentity,
+      named: { name?: string; origin?: string } = {}
+    ) =>
+      await shareWithParty({
+        storage: session.storage,
+        profile,
+        user: session.user,
+        reader,
+        ...named
+      })
+    const unshare = async (reader: PartyIdentity) =>
+      await session.storage.unshareCollection({
+        profile,
+        user: session.user,
+        collectionId: 'private-credentials',
+        recipientId: reader.recipient.id
+      })
+    const unshareRecorded = async () =>
+      (await session.storage.listHistoryItems()).entries.some(({ doc }) =>
+        doc.type?.includes('CollectionUnshare')
+      )
+    const listed = async () =>
+      await session.storage.listCollectionShares({
+        collectionId: 'private-credentials',
+        connections: (
+          await session.storage.readConnectionsListing()
+        ).listing.entries.map(({ entry }) => entry)
+      })
+    return { ...session, profile, share, unshare, unshareRecorded, listed }
+  }
+
+  it('rotates the epoch, revokes the share grant, and removes it from the entry', async () => {
+    const reader = await generateAppIdentity()
+    const { owner, stores, storage, revoked, share, unshare, unshareRecorded } =
+      await shareSession()
+    const { descriptor: shared } = await share(reader)
+
+    const rotated = await unshare(reader)
 
     // Read axis: the epoch rotated and the removed reader is off the new
     // roster, as the governing log now holds it.
     expect(stores.descriptorOf('private-credentials')).toEqual(rotated)
     expect(rotated.currentEpoch).not.toBe(shared.currentEpoch)
     expect(currentEpochKids(rotated)).toEqual([owner.keyAgreementKey.id])
-    expect(currentEpochKids(rotated)).not.toContain(reader.keyAgreementKey.id)
 
-    // Pull axis: the recorded delegated zcap was handed to the revoke recorder.
-    expect(revoked).toEqual([
-      expect.objectContaining({ id: 'urn:zcap:delegated:1' })
-    ])
+    // Pull axis: the share grant the entry records was handed to the revoke
+    // recorder.
+    expect(revokedIdsOf(revoked)).toEqual(['urn:zcap:delegated:1'])
 
-    // The unshare was recorded (no zcap on it).
-    const { entries: history } = await storage.listHistoryItems()
-    expect(
-      history.some(({ doc }) => doc.type?.includes('CollectionUnshare'))
-    ).toBe(true)
+    // The share grant left the entry, which stays live: the party may hold
+    // other grants.
+    const { entry } = await readParty({ storage, did: reader.did })
+    expect(entry?.grants).toEqual([])
+    expect(entry?.retired).toBeUndefined()
+
+    // The unshare was recorded as the audit trail.
+    expect(await unshareRecorded()).toBe(true)
   })
 
-  it('adopts the rotation but records no unshare when the server refuses a live grant', async () => {
-    const owner = await generateKey()
-    const reader = await generateKey()
-    const stores = memoryDescriptorStores()
+  it('keeps a torn unshare listed, and a retry POSTs and removes the share grant', async () => {
+    const reader = await generateAppIdentity()
     // A refusal the verified document cannot explain: the grant may still be
-    // live, so it is no revocation.
+    // live, so it is no revocation, and the unshare tears after its rotation.
     let refuse = true
-    const { remoteStore, revoked } = makeFakeRemote({
+    // The in-memory tier, so the adopted descriptor is readable back here.
+    const persistence = transientPersistence()
+    const {
+      owner,
       stores,
+      storage,
+      remoteStore,
+      revoked,
+      share,
+      unshare,
+      unshareRecorded,
+      listed
+    } = await shareSession({
+      persistence,
       revoke: async () => {
         if (refuse) {
           throw new ValidationError('chain does not verify', { status: 400 })
         }
       }
     })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const { zcapClient } = makeFakeZcapClient()
-    // The in-memory tier, so the adopted descriptor is readable back here.
-    const persistence = transientPersistence()
-    const storage = new StorageManager({
-      persistence,
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    const profile = makeProfile(owner, zcapClient)
-    await shareWith(storage, {
-      profile,
-      user,
-      collectionId: 'private-credentials',
-      recipient: ownerRecipient({ keyAgreementKey: reader.keyAgreementKey }),
-      controller: 'did:key:z6MkReader'
-    })
-    const unshared = async () =>
-      (await storage.listHistoryItems()).entries.some(({ doc }) =>
-        doc.type?.includes('CollectionUnshare')
-      )
+    await share(reader)
 
-    await expect(
-      storage.unshareCollection({
-        profile,
-        user,
-        collectionId: 'private-credentials',
-        recipientId: reader.keyAgreementKey.id!
-      })
-    ).rejects.toMatchObject({ name: 'ValidationError' })
+    await expect(unshare(reader)).rejects.toMatchObject({
+      name: 'ValidationError'
+    })
 
     // The rotation landed and this session adopted it.
     const rotated = stores.descriptorOf('private-credentials')!
@@ -1017,109 +1619,113 @@ describe('StorageManager.unshareCollection', () => {
       .descriptorCache({ scope: remoteStore.spaceId })
       .readDescriptor({ collectionId: 'private-credentials' })
     expect(cached?.currentEpoch).toBe(rotated.currentEpoch)
-    // No unshare is recorded, so the share stays revocable: the panel still
+    // The entry still carries the unexpired share grant, so the panel still
     // lists the reader, though the current epoch no longer does.
-    expect(await unshared()).toBe(false)
-    const listed = async () =>
-      (
-        await storage.listCollectionShares({
-          collectionId: 'private-credentials'
-        })
-      ).map(share => share.recipientId)
-    expect(await listed()).toEqual([reader.keyAgreementKey.id])
+    expect(await unshareRecorded()).toBe(false)
+    expect(
+      (await readParty({ storage, did: reader.did })).grants.map(
+        grant => grant.zcapId
+      )
+    ).toEqual(['urn:zcap:delegated:1'])
+    expect(await listed()).toEqual([
+      expect.objectContaining({
+        recipientId: reader.recipient.id,
+        controller: reader.did
+      })
+    ])
 
     // A retry re-runs the pull without minting another epoch.
     refuse = false
-    const retried = await storage.unshareCollection({
-      profile,
-      user,
-      collectionId: 'private-credentials',
-      recipientId: reader.keyAgreementKey.id!
-    })
+    const retried = await unshare(reader)
     expect(retried.epochs).toHaveLength(rotated.epochs!.length)
-    expect(revoked).toHaveLength(2)
-    expect(await unshared()).toBe(true)
-    // The recorded unshare supersedes the share, so the reader is gone.
+    expect(revokedIdsOf(revoked)).toEqual([
+      'urn:zcap:delegated:1',
+      'urn:zcap:delegated:1'
+    ])
+    // The share grant left the entry, so the reader is gone from the panel.
+    expect((await readParty({ storage, did: reader.did })).grants).toEqual([])
+    expect(await unshareRecorded()).toBe(true)
     expect(await listed()).toEqual([])
   })
 
   it('records the unshare when the server answers AlreadyRevokedError', async () => {
-    const owner = await generateKey()
-    const reader = await generateKey()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({
-      stores,
+    const reader = await generateAppIdentity()
+    const { storage, share, unshare, unshareRecorded } = await shareSession({
       revoke: async () => {
         throw new AlreadyRevokedError('already revoked', { status: 400 })
       }
     })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const { zcapClient } = makeFakeZcapClient()
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    const profile = makeProfile(owner, zcapClient)
-    await shareWith(storage, {
-      profile,
-      user,
-      collectionId: 'private-credentials',
-      recipient: ownerRecipient({ keyAgreementKey: reader.keyAgreementKey }),
-      controller: 'did:key:z6MkReader'
-    })
+    await share(reader)
 
-    await storage.unshareCollection({
-      profile,
-      user,
-      collectionId: 'private-credentials',
-      recipientId: reader.keyAgreementKey.id!
-    })
+    await unshare(reader)
 
-    const { entries: history } = await storage.listHistoryItems()
+    expect(await unshareRecorded()).toBe(true)
+    expect((await readParty({ storage, did: reader.did })).grants).toEqual([])
+  })
+
+  it('unshares a reader whose share no history row records', async () => {
+    // The share's history row was never written, or was lost. The entry's
+    // share grant is the record the unshare revokes.
+    const reader = await generateAppIdentity()
+    const { owner, stores, storage, revoked, unshare } = await shareSession()
+    await addRecipient({
+      store: stores.storeFor('private-credentials'),
+      recipient: reader.recipient,
+      owner: { keyAgreementKey: owner.keyAgreementKey }
+    })
+    await recordPartyGrants({
+      storage,
+      did: reader.did,
+      zcaps: [
+        collectionGrant({
+          id: 'z-share',
+          controller: reader.did,
+          target: `${SPACE_URL}private-credentials/`
+        })
+      ],
+      grantKind: 'share'
+    })
     expect(
-      history.some(({ doc }) => doc.type?.includes('CollectionUnshare'))
-    ).toBe(true)
+      (await storage.listHistoryItems()).entries.filter(({ doc }) =>
+        doc.type?.includes('CollectionShare')
+      )
+    ).toEqual([])
+
+    const rotated = await unshare(reader)
+
+    expect(currentEpochKids(rotated)).toEqual([owner.keyAgreementKey.id])
+    expect(revokedIdsOf(revoked)).toEqual(['z-share'])
+    expect((await readParty({ storage, did: reader.did })).grants).toEqual([])
+  })
+
+  it('admits the other share reader of a protected collection to the fresh epoch', async () => {
+    // `private-credentials` is protected, and a share reader there is
+    // admitted all the same: unsharing one reader keeps the other.
+    const first = await generateAppIdentity()
+    const second = await generateAppIdentity()
+    const { owner, revoked, share, unshare } = await shareSession()
+    await share(first)
+    await share(second)
+
+    const rotated = await unshare(first)
+
+    expect(currentEpochKids(rotated)).toHaveLength(2)
+    expect(currentEpochKids(rotated)).toEqual(
+      expect.arrayContaining([owner.keyAgreementKey.id, second.recipient.id])
+    )
+    expect(revokedIdsOf(revoked)).toEqual(['urn:zcap:delegated:1'])
   })
 
   it('escrows the grantee into the blinding-key wrap set and drops it on unshare', async () => {
-    const owner = await generateKey()
-    const reader = await generateKey()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores, {
+    const reader = await generateAppIdentity()
+    const { owner, share, unshare } = await shareSession({
       blindedIndex: true
     })
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const { zcapClient } = makeFakeZcapClient()
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    const profile = makeProfile(owner, zcapClient)
 
-    const { descriptor: shared } = await shareWith(storage, {
-      profile,
-      user,
-      collectionId: 'private-credentials',
-      recipient: ownerRecipient({ keyAgreementKey: reader.keyAgreementKey }),
-      controller: 'did:key:z6MkReader'
-    })
+    const { descriptor: shared } = await share(reader)
 
     // The share covers the blinded index too: the grantee unwraps the key.
-    expect(hmacKids(shared)).toContain(reader.keyAgreementKey.id)
+    expect(hmacKids(shared)).toContain(reader.recipient.id)
     expect(
       await resolveHmacOutcome({
         descriptor: shared,
@@ -1127,81 +1733,19 @@ describe('StorageManager.unshareCollection', () => {
       })
     ).toEqual({ id: shared.hmac?.id })
 
-    const rotated = await storage.unshareCollection({
-      profile,
-      user,
-      collectionId: 'private-credentials',
-      recipientId: reader.keyAgreementKey.id!
-    })
+    const rotated = await unshare(reader)
 
     // Removal drops the wrap entry only: the epoch rotated, the key did not.
     expect(rotated.hmac?.id).toBe(shared.hmac?.id)
-    expect(hmacKids(rotated)).not.toContain(reader.keyAgreementKey.id)
+    expect(hmacKids(rotated)).not.toContain(reader.recipient.id)
     expect(hmacKids(rotated)).toContain(owner.keyAgreementKey.id)
   })
 
   describe('the fresh epoch after a rotation', () => {
-    afterEach(() => {
-      vi.useRealTimers()
-    })
-
-    /**
-     * An owner-only session with two readers' keys, plus a clock the test
-     * steps between activities so share and unshare stamps order strictly.
-     */
-    async function setup() {
-      vi.useFakeTimers({ toFake: ['Date'] })
-      let clock = Date.parse('2026-09-01T00:00:00.000Z')
-      const tick = () => {
-        clock += 1000
-        vi.setSystemTime(clock)
-      }
-      tick()
-      const owner = await generateKey()
-      const first = await generateKey()
-      const second = await generateKey()
-      const stores = memoryDescriptorStores()
-      const { remoteStore } = makeFakeRemote({ stores })
-      const descriptors = await provisionGovernedCollections(owner, stores)
-      const ciphers = await buildCiphers(owner, descriptors)
-      const { localStore, user } = await initLocalStore(ciphers)
-      const { zcapClient } = makeFakeZcapClient()
-      const storage = new StorageManager({
-        persistence: browserLocalSessionPersistence(),
-        localStore,
-        remoteStore,
-        descriptorLogs: descriptorLogsFrom(stores),
-        ciphers,
-        vaultKeys: owner,
-        descriptors
-      })
-      const profile = makeProfile(owner, zcapClient)
-      const share = async (reader: { keyAgreementKey: IKeyAgreementKey }) => {
-        tick()
-        await shareWith(storage, {
-          profile,
-          user,
-          collectionId: 'private-credentials',
-          recipient: ownerRecipient({
-            keyAgreementKey: reader.keyAgreementKey
-          }),
-          controller: 'did:key:z6MkReader'
-        })
-      }
-      const unshare = async (reader: { keyAgreementKey: IKeyAgreementKey }) => {
-        tick()
-        return await storage.unshareCollection({
-          profile,
-          user,
-          collectionId: 'private-credentials',
-          recipientId: reader.keyAgreementKey.id!
-        })
-      }
-      return { owner, first, second, stores, share, unshare }
-    }
-
     it('wraps no reader an earlier unshare removed, even when the roster lists it again', async () => {
-      const { owner, first, second, stores, share, unshare } = await setup()
+      const first = await generateAppIdentity()
+      const second = await generateAppIdentity()
+      const { owner, stores, share, unshare } = await shareSession()
       await share(first)
       await share(second)
       await unshare(first)
@@ -1209,12 +1753,12 @@ describe('StorageManager.unshareCollection', () => {
       // to write the descriptor could make it.
       await addRecipient({
         store: stores.storeFor('private-credentials'),
-        recipient: ownerRecipient({ keyAgreementKey: first.keyAgreementKey }),
+        recipient: first.recipient,
         owner: { keyAgreementKey: owner.keyAgreementKey }
       })
       expect(
         currentEpochKids(stores.descriptorOf('private-credentials')!)
-      ).toContain(first.keyAgreementKey.id)
+      ).toContain(first.recipient.id)
 
       const rotated = await unshare(second)
 
@@ -1222,7 +1766,9 @@ describe('StorageManager.unshareCollection', () => {
     })
 
     it('keeps a reader re-shared after its unshare', async () => {
-      const { owner, first, second, share, unshare } = await setup()
+      const first = await generateAppIdentity()
+      const second = await generateAppIdentity()
+      const { owner, share, unshare } = await shareSession()
       await share(first)
       await unshare(first)
       await share(first)
@@ -1232,92 +1778,82 @@ describe('StorageManager.unshareCollection', () => {
 
       expect(currentEpochKids(rotated)).toHaveLength(2)
       expect(currentEpochKids(rotated)).toEqual(
-        expect.arrayContaining([
-          owner.keyAgreementKey.id,
-          first.keyAgreementKey.id
-        ])
+        expect.arrayContaining([owner.keyAgreementKey.id, first.recipient.id])
       )
     })
   })
 
   it('lists current shares from the descriptor roster minus the owner', async () => {
-    const owner = await generateKey()
-    const reader = await generateKey()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const { zcapClient } = makeFakeZcapClient()
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
+    const reader = await generateAppIdentity()
+    const { storage, share, listed } = await shareSession()
+    await share(reader)
 
-    await shareWith(storage, {
-      profile: makeProfile(owner, zcapClient),
-      user,
-      collectionId: 'private-credentials',
-      recipient: ownerRecipient({ keyAgreementKey: reader.keyAgreementKey }),
-      controller: 'did:key:z6MkReader'
-    })
-
-    const shares = await storage.listCollectionShares({
-      collectionId: 'private-credentials'
-    })
+    // The roster alone, unnamed, when no directory entries are handed in.
+    expect(
+      await storage.listCollectionShares({
+        collectionId: 'private-credentials'
+      })
+    ).toEqual([{ recipientId: reader.recipient.id }])
+    // Named by the entry whose DID derives the reader's kid.
+    const shares = await listed()
     expect(shares).toHaveLength(1)
-    expect(shares[0].recipientId).toBe(reader.keyAgreementKey.id)
-    expect(shares[0].controller).toBe('did:key:z6MkReader')
+    expect(shares[0]).toMatchObject({
+      recipientId: reader.recipient.id,
+      controller: reader.did
+    })
   })
 
-  it('carries a connected app name and origin through to the listing', async () => {
-    const owner = await generateKey()
-    const reader = await generateKey()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const { zcapClient } = makeFakeZcapClient()
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
+  it('carries the entry name, origin, and latest share expiry through to the listing', async () => {
+    const reader = await generateAppIdentity()
+    const { storage, share, listed } = await shareSession()
 
-    const { zcap } = await shareWith(storage, {
-      profile: makeProfile(owner, zcapClient),
-      user,
-      collectionId: 'private-credentials',
-      recipient: ownerRecipient({ keyAgreementKey: reader.keyAgreementKey }),
-      controller: 'did:key:z6MkReader',
-      app: { name: 'Text Editor', origin: 'https://app.example' }
+    const { zcap } = await share(reader, {
+      name: 'Text Editor',
+      origin: 'https://app.example'
     })
 
     // The pull zcap comes back to the caller (it goes in the response VP).
     expect(zcap.id).toBe('urn:zcap:delegated:1')
-
-    const shares = await storage.listCollectionShares({
-      collectionId: 'private-credentials'
-    })
-    expect(shares[0]).toMatchObject({
+    expect((await listed())[0]).toMatchObject({
       appName: 'Text Editor',
-      appOrigin: 'https://app.example'
+      appOrigin: 'https://app.example',
+      expires: zcap.expires
+    })
+
+    // A later share grant on the same collection carries the expiry, and the
+    // user's own label wins over the app's name.
+    const later = new Date(Date.now() + 5_000_000).toISOString()
+    await recordPartyGrants({
+      storage,
+      did: reader.did,
+      zcaps: [
+        collectionGrant({
+          id: 'z-later-share',
+          controller: reader.did,
+          target: `${SPACE_URL}private-credentials/`,
+          expires: later
+        })
+      ],
+      grantKind: 'share',
+      now: new Date(Date.now() + 60_000)
+    })
+    const { store, hmacKey } = await storage.connectionsDirectory()
+    await setConnectionLabel({
+      store,
+      hmacKey,
+      did: reader.did,
+      kind: 'app',
+      label: 'My Editor'
+    })
+    expect((await listed())[0]).toMatchObject({
+      appName: 'My Editor',
+      appOrigin: 'https://app.example',
+      expires: later
     })
   })
 })
 
-describe('StorageManager.revokeAppGrants', () => {
-  const APP_ORIGIN = 'https://app.example'
+describe('StorageManager.revokeConnectionGrants', () => {
   const APP_SUBJECT = SIGNER_FIXTURE.appDid
 
   /**
@@ -1334,8 +1870,8 @@ describe('StorageManager.revokeAppGrants', () => {
     const remoteStore = makeRevokeRemote(revoke)
     const descriptors = await provisionGovernedCollections(owner, stores)
     const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
+    const { localStore } = await initLocalStore(ciphers)
+    return new StorageManager({
       persistence: browserLocalSessionPersistence(),
       localStore,
       remoteStore,
@@ -1345,7 +1881,6 @@ describe('StorageManager.revokeAppGrants', () => {
       descriptors,
       signerCheck
     })
-    return { storage, user }
   }
 
   const { annexDid: ANNEX_DID, oldAnnexDid: OLD_ANNEX_DID } = SIGNER_FIXTURE
@@ -1362,171 +1897,102 @@ describe('StorageManager.revokeAppGrants', () => {
     const space = { revoke } as unknown as Space
     return {
       spaceId: 's-space',
-      spaceUrl: 'https://was.example/space/s-space/',
+      spaceUrl: SPACE_URL,
       spaceHandle() {
         return space
       }
     } as unknown as WASRemoteStore
   }
 
-  async function seedGrant(
-    storage: StorageManager,
-    user: User,
-    grants: Array<{
-      id: string
-      target: string
-      allowedActions: string[]
-      expires: string
-      zcap?: IZcap
-    }>
-  ) {
-    await storage.addHistoryGrant({
-      user,
-      origin: APP_ORIGIN,
-      grants,
-      appConnect: { name: 'Example App', firstRun: true }
-    })
+  /**
+   * The app's grants over the given capabilities, as its entry records them.
+   *
+   * @param zcaps {IZcap[]}
+   * @returns {ConnectionGrant[]}
+   */
+  function appGrants(...zcaps: IZcap[]): ConnectionGrant[] {
+    return grantsOf({ did: APP_SUBJECT, zcaps })
   }
 
-  it('revokes the active grant and skips expired and legacy entries', async () => {
-    const owner = await generateKey()
+  /**
+   * One of the app's grants on `private-credentials`.
+   *
+   * @param options {object}   {@link collectionGrant}'s options, less the
+   *   controller
+   * @returns {IZcap}
+   */
+  function appGrant(
+    options: Omit<Parameters<typeof collectionGrant>[0], 'controller'>
+  ): IZcap {
+    return collectionGrant({ controller: APP_SUBJECT, ...options })
+  }
+
+  it('revokes the live grant and skips an expired one without a POST', async () => {
     const revoked: unknown[] = []
-    const stores = memoryDescriptorStores()
-    const remoteStore = makeRevokeRemote(async zcap => {
+    const storage = await revokeStorage(async zcap => {
       revoked.push(zcap)
     })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
     const past = new Date(Date.now() - 1_000_000).toISOString()
 
-    await seedGrant(storage, user, [
-      {
-        id: 'g-active',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET', 'HEAD'],
-        expires: future,
-        zcap: recordedGrant({ id: 'z-active', expires: future })
-      },
-      {
-        id: 'g-expired',
-        target: 'https://was.example/space/x/wallet-activity',
-        allowedActions: ['GET'],
-        expires: past,
-        zcap: recordedGrant({ id: 'z-expired', expires: past })
-      },
-      {
-        id: 'g-legacy',
-        target: 'https://was.example/space/x/public-credentials',
-        allowedActions: ['GET'],
-        expires: future
-      }
-    ])
-
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(
+        appGrant({ id: 'z-active' }),
+        appGrant({
+          id: 'z-expired',
+          collectionId: 'wallet-activity',
+          expires: past
+        })
+      )
     })
 
-    expect(outcome).toEqual({ revoked: 1, withdrawn: 1, skipped: 2 })
-    expect(revoked).toHaveLength(1)
-    expect((revoked[0] as { id: string }).id).toBe('z-active')
+    expect(outcome).toEqual({
+      revoked: 1,
+      withdrawn: 1,
+      skipped: 1,
+      revokedIds: ['z-active']
+    })
+    expect(revokedIdsOf(revoked)).toEqual(['z-active'])
   })
 
-  it('leaves grants delegated to a different controller uncounted', async () => {
-    const owner = await generateKey()
+  it('revokes no grant an entry holds for a different controller', async () => {
     const revoked: unknown[] = []
-    const stores = memoryDescriptorStores()
-    const remoteStore = makeRevokeRemote(async zcap => {
+    const storage = await revokeStorage(async zcap => {
       revoked.push(zcap)
     })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
+
+    // Another controller's grant is another grantee's, so the reader checks
+    // drop it before the grant stage sees it.
+    const grants = appGrants(
+      collectionGrant({ id: 'z-other', controller: 'did:key:z6MkSomeoneElse' })
+    )
+    expect(grants).toEqual([])
+    expect(await storage.revokeConnectionGrants({ grants })).toEqual({
+      revoked: 0,
+      withdrawn: 0,
+      skipped: 0,
+      revokedIds: []
     })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-
-    await seedGrant(storage, user, [
-      {
-        id: 'g-other',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({
-          id: 'z-other',
-          controller: 'did:key:z6MkSomeoneElse',
-          expires: future
-        })
-      }
-    ])
-
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
-    })
-
-    // Another controller's grant is another grantee's, so it is not counted.
-    expect(outcome).toEqual({ revoked: 0, withdrawn: 0, skipped: 0 })
     expect(revoked).toHaveLength(0)
   })
 
   it("counts the server's AlreadyRevokedError as revoked", async () => {
-    const owner = await generateKey()
-    const stores = memoryDescriptorStores()
-    const remoteStore = makeRevokeRemote(async () => {
+    const storage = await revokeStorage(async () => {
       throw new AlreadyRevokedError('already revoked')
     })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
 
-    await seedGrant(storage, user, [
-      {
-        id: 'g-active',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({ id: 'z-active', expires: future })
-      }
-    ])
-
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(appGrant({ id: 'z-active' }))
     })
 
     // The capability is dead on the server: an earlier attempt that landed
     // it and then failed elsewhere recorded nothing, so this run counts it
     // as revoked. This run's POST did not land it, so it is not withdrawn.
-    expect(outcome).toEqual({ revoked: 1, withdrawn: 0, skipped: 0 })
+    expect(outcome).toEqual({
+      revoked: 1,
+      withdrawn: 0,
+      skipped: 0,
+      revokedIds: ['z-active']
+    })
   })
 
   it.each([
@@ -1536,7 +2002,7 @@ describe('StorageManager.revokeAppGrants', () => {
     'throws a plain ValidationError (%s) after the other POSTs settle',
     async (_label, status) => {
       const revoked: string[] = []
-      const { storage, user } = await revokeStorage(async zcap => {
+      const storage = await revokeStorage(async zcap => {
         const { id } = zcap as { id: string }
         if (id === 'z-refused') {
           throw new ValidationError('chain does not verify', { status })
@@ -1545,148 +2011,68 @@ describe('StorageManager.revokeAppGrants', () => {
         await new Promise(resolve => setTimeout(resolve, 5))
         revoked.push(id)
       })
-      const future = new Date(Date.now() + 1_000_000).toISOString()
-
-      await seedGrant(storage, user, [
-        {
-          id: 'g-refused',
-          target: 'https://was.example/space/x/private-credentials',
-          allowedActions: ['GET'],
-          expires: future,
-          zcap: recordedGrant({ id: 'z-refused', expires: future })
-        },
-        {
-          id: 'g-live',
-          target: 'https://was.example/space/x/public-credentials',
-          allowedActions: ['GET'],
-          expires: future,
-          zcap: recordedGrant({ id: 'z-live', expires: future })
-        }
-      ])
 
       await expect(
-        storage.revokeAppGrants({ origin: APP_ORIGIN, subjectDid: APP_SUBJECT })
+        storage.revokeConnectionGrants({
+          grants: appGrants(
+            appGrant({ id: 'z-refused' }),
+            appGrant({ id: 'z-live', collectionId: 'public-credentials' })
+          )
+        })
       ).rejects.toMatchObject({ name: 'ValidationError', status })
       expect(revoked).toEqual(['z-live'])
     }
   )
 
   it('lists the grants the server confirmed revoked in revokedIds', async () => {
-    const { storage, user } = await revokeStorage(async zcap => {
+    const storage = await revokeStorage(async zcap => {
       if ((zcap as { id: string }).id === 'z-done') {
         throw new AlreadyRevokedError('already revoked', { status: 400 })
       }
     })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    await storage.addHistoryGrant({
-      user,
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      grants: [
-        {
-          id: 'g-done',
-          target: 'https://was.example/space/x/private-credentials',
-          allowedActions: ['GET'],
-          expires: future,
-          zcap: recordedGrant({ id: 'z-done', expires: future })
-        },
-        {
-          id: 'g-live',
-          target: 'https://was.example/space/x/public-credentials',
-          allowedActions: ['GET'],
-          expires: future,
-          zcap: recordedGrant({ id: 'z-live', expires: future })
-        }
-      ]
-    })
 
-    const outcome = await storage.revokeAgentGrants({
-      controller: APP_SUBJECT
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(
+        appGrant({ id: 'z-done' }),
+        appGrant({ id: 'z-live', collectionId: 'public-credentials' })
+      )
     })
 
     expect(outcome).toEqual({
       revoked: 2,
       withdrawn: 1,
       skipped: 0,
-      unrevocable: 0,
       revokedIds: ['z-done', 'z-live']
     })
   })
 
-  it('ignores an agent-shaped grant recorded on a Login', async () => {
-    const posted: string[] = []
-    const { storage, user } = await revokeStorage(async zcap => {
-      posted.push((zcap as { id: string }).id)
-    })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    // Only a Grant carries a grantee's capabilities; a Login row with the
-    // same object is no record the revocation reads.
-    await seedLoginWithZcaps({
-      storage,
-      user,
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      id: 'login-with-grant',
-      zcaps: [
-        {
-          id: 'g-login',
-          target: 'https://was.example/space/x/private-credentials',
-          allowedActions: ['GET'],
-          expires: future,
-          zcap: recordedGrant({ id: 'z-login', expires: future })
-        }
-      ]
-    })
-
-    const outcome = await storage.revokeAgentGrants({
-      controller: APP_SUBJECT
-    })
-
-    expect(outcome).toEqual({
-      revoked: 0,
-      withdrawn: 0,
-      skipped: 0,
-      unrevocable: 0,
-      revokedIds: []
-    })
-    expect(posted).toEqual([])
-  })
-
   it('counts a grant the rotation already revoked without a second POST', async () => {
     const posted: string[] = []
-    const { storage, user } = await revokeStorage(async zcap => {
+    const storage = await revokeStorage(async zcap => {
       posted.push((zcap as { id: string }).id)
     })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    await seedGrant(storage, user, [
-      {
-        id: 'g-rotated',
-        target: 'https://was.example/space/s-space/app-docs',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({ id: 'z-rotated', expires: future })
-      },
-      {
-        id: 'g-live',
-        target: 'https://was.example/space/s-space/public-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({ id: 'z-live', expires: future })
-      }
-    ])
 
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT,
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(
+        appGrant({ id: 'z-rotated', collectionId: 'app-docs' }),
+        appGrant({ id: 'z-live', collectionId: 'public-credentials' })
+      ),
       revokedByRotation: ['z-rotated']
     })
 
-    expect(outcome).toEqual({ revoked: 2, withdrawn: 1, skipped: 0 })
+    expect(outcome).toEqual({
+      revoked: 2,
+      withdrawn: 1,
+      skipped: 0,
+      revokedIds: ['z-rotated', 'z-live']
+    })
     expect(posted).toEqual(['z-live'])
   })
 
   it('posts every unexpired grant, logging once, when the signer-check read throws', async () => {
     const posted: string[] = []
     const reads: number[] = []
-    const { storage, user } = await revokeStorage(
+    const storage = await revokeStorage(
       async zcap => {
         posted.push((zcap as { id: string }).id)
       },
@@ -1695,34 +2081,18 @@ describe('StorageManager.revokeAppGrants', () => {
         throw new Error('log unreachable')
       }
     )
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-
-    await seedGrant(storage, user, [
-      {
-        id: 'g-one',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({ id: 'z-one', expires: future })
-      },
-      {
-        id: 'g-two',
-        target: 'https://was.example/space/x/public-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({ id: 'z-two', expires: future })
-      }
-    ])
     const capture = captureSink()
     const removeSink = addSink(capture.sink)
 
     try {
-      const outcome = await storage.revokeAppGrants({
-        origin: APP_ORIGIN,
-        subjectDid: APP_SUBJECT
+      const outcome = await storage.revokeConnectionGrants({
+        grants: appGrants(
+          appGrant({ id: 'z-one' }),
+          appGrant({ id: 'z-two', collectionId: 'public-credentials' })
+        )
       })
 
-      expect(outcome).toEqual({ revoked: 2, withdrawn: 2, skipped: 0 })
+      expect(outcome).toMatchObject({ revoked: 2, withdrawn: 2, skipped: 0 })
       expect(posted.sort()).toEqual(['z-one', 'z-two'])
       expect(reads).toHaveLength(1)
       expect(
@@ -1739,7 +2109,7 @@ describe('StorageManager.revokeAppGrants', () => {
 
   it('skips a grant expired beyond the skew margin without a POST', async () => {
     const revoked: unknown[] = []
-    const { storage, user } = await revokeStorage(
+    const storage = await revokeStorage(
       async zcap => {
         revoked.push(zcap)
       },
@@ -1747,28 +2117,22 @@ describe('StorageManager.revokeAppGrants', () => {
     )
     const past = new Date(Date.now() - 60 * 60 * 1000).toISOString()
 
-    await seedGrant(storage, user, [
-      {
-        id: 'g-expired',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: past,
-        zcap: recordedGrant({ id: 'z-expired', expires: past })
-      }
-    ])
-
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(appGrant({ id: 'z-expired', expires: past }))
     })
 
-    expect(outcome).toEqual({ revoked: 0, withdrawn: 0, skipped: 1 })
+    expect(outcome).toEqual({
+      revoked: 0,
+      withdrawn: 0,
+      skipped: 1,
+      revokedIds: []
+    })
     expect(revoked).toHaveLength(0)
   })
 
   it('reads the refusal of an annex-signed grant under a swapped generation as dead', async () => {
     const posted: string[] = []
-    const { storage, user } = await revokeStorage(
+    const storage = await revokeStorage(
       async zcap => {
         const { id } = zcap as { id: string }
         posted.push(id)
@@ -1778,89 +2142,68 @@ describe('StorageManager.revokeAppGrants', () => {
       },
       async () => SIGNER_CHECK
     )
-    const future = new Date(Date.now() + 1_000_000).toISOString()
 
-    await seedGrant(storage, user, [
-      {
-        id: 'g-swapped',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(
+        appGrant({
           id: 'z-swapped',
-          expires: future,
           signerKeyId: `${OLD_ANNEX_DID}#z6MkVisit`,
           parent: { controller: OLD_ANNEX_DID, signerKeyId: LADDER_SIGNER }
-        })
-      },
-      {
-        id: 'g-current',
-        target: 'https://was.example/space/x/public-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({
+        }),
+        appGrant({
           id: 'z-current',
-          expires: future,
+          collectionId: 'public-credentials',
           signerKeyId: `${ANNEX_DID}#z6MkVisit`,
           parent: { controller: ANNEX_DID, signerKeyId: LADDER_SIGNER }
         })
-      }
-    ])
-
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
+      )
     })
 
     // Both are POSTed: the document a login read is a snapshot. The
     // swapped one's refusal reads as a dead chain and counts as skipped.
-    expect(outcome).toEqual({ revoked: 1, withdrawn: 1, skipped: 1 })
+    expect(outcome).toEqual({
+      revoked: 1,
+      withdrawn: 1,
+      skipped: 1,
+      revokedIds: ['z-current']
+    })
     expect(posted.sort()).toEqual(['z-current', 'z-swapped'])
   })
 
   it('reads the refusal of a grant whose generation delegation was signed by a struck key as dead', async () => {
     const posted: string[] = []
-    const { storage, user } = await revokeStorage(
+    const storage = await revokeStorage(
       async zcap => {
         posted.push((zcap as { id: string }).id)
         throw new ValidationError('chain does not verify', { status: 400 })
       },
       async () => SIGNER_CHECK
     )
-    const future = new Date(Date.now() + 1_000_000).toISOString()
 
-    await seedGrant(storage, user, [
-      {
-        id: 'g-rotted',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(
+        appGrant({
           id: 'z-rotted',
-          expires: future,
           signerKeyId: `${ANNEX_DID}#z6MkVisit`,
           // The pointer still names this generation; the delegation was
           // re-minted within it and its old signer struck.
-          parent: {
-            controller: ANNEX_DID,
-            signerKeyId: GONE_SIGNER
-          }
+          parent: { controller: ANNEX_DID, signerKeyId: GONE_SIGNER }
         })
-      }
-    ])
-
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
+      )
     })
 
-    expect(outcome).toEqual({ revoked: 0, withdrawn: 0, skipped: 1 })
+    expect(outcome).toEqual({
+      revoked: 0,
+      withdrawn: 0,
+      skipped: 1,
+      revokedIds: []
+    })
     expect(posted).toEqual(['z-rotted'])
   })
 
   it('reads the refusal of an orphaned account-signed grant as dead', async () => {
     const posted: string[] = []
-    const { storage, user } = await revokeStorage(
+    const storage = await revokeStorage(
       async zcap => {
         const { id } = zcap as { id: string }
         posted.push(id)
@@ -1870,101 +2213,52 @@ describe('StorageManager.revokeAppGrants', () => {
       },
       async () => SIGNER_CHECK
     )
-    const future = new Date(Date.now() + 1_000_000).toISOString()
 
-    await seedGrant(storage, user, [
-      {
-        id: 'g-orphaned',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({
-          id: 'z-orphaned',
-          expires: future,
-          signerKeyId: GONE_SIGNER
-        })
-      },
-      {
-        id: 'g-enrolled',
-        target: 'https://was.example/space/x/public-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(
+        appGrant({ id: 'z-orphaned', signerKeyId: GONE_SIGNER }),
+        appGrant({
           id: 'z-enrolled',
-          expires: future,
+          collectionId: 'public-credentials',
           signerKeyId: ENROLLED_SIGNER
         })
-      }
-    ])
-
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
+      )
     })
 
-    expect(outcome).toEqual({ revoked: 1, withdrawn: 1, skipped: 1 })
+    expect(outcome).toEqual({
+      revoked: 1,
+      withdrawn: 1,
+      skipped: 1,
+      revokedIds: ['z-enrolled']
+    })
     expect(posted.sort()).toEqual(['z-enrolled', 'z-orphaned'])
   })
 
   it('throws the refusal of an orphaned-looking grant when no signer check is supplied', async () => {
-    const { storage, user } = await revokeStorage(async () => {
+    const storage = await revokeStorage(async () => {
       throw new ValidationError('chain does not verify', { status: 400 })
     })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-
-    await seedGrant(storage, user, [
-      {
-        id: 'g-orphaned',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({
-          id: 'z-orphaned',
-          expires: future,
-          signerKeyId: GONE_SIGNER
-        })
-      }
-    ])
 
     // Nothing local can say why the server refused, so the refusal is
     // the caller's to retry.
     await expect(
-      storage.revokeAppGrants({ origin: APP_ORIGIN, subjectDid: APP_SUBJECT })
+      storage.revokeConnectionGrants({
+        grants: appGrants(
+          appGrant({ id: 'z-orphaned', signerKeyId: GONE_SIGNER })
+        )
+      })
     ).rejects.toMatchObject({ name: 'ValidationError' })
   })
 
   it('propagates any other revoke failure', async () => {
-    const owner = await generateKey()
-    const stores = memoryDescriptorStores()
-    const remoteStore = makeRevokeRemote(async () => {
+    const storage = await revokeStorage(async () => {
       throw new Error('server unreachable')
     })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-
-    await seedGrant(storage, user, [
-      {
-        id: 'g-active',
-        target: 'https://was.example/space/x/private-credentials',
-        allowedActions: ['GET'],
-        expires: future,
-        zcap: recordedGrant({ id: 'z-active', expires: future })
-      }
-    ])
 
     await expect(
-      storage.revokeAppGrants({ origin: APP_ORIGIN, subjectDid: APP_SUBJECT })
+      storage.revokeConnectionGrants({
+        grants: appGrants(appGrant({ id: 'z-active' }))
+      })
     ).rejects.toThrow('server unreachable')
   })
 
@@ -1980,12 +2274,16 @@ describe('StorageManager.revokeAppGrants', () => {
       descriptors: {}
     })
 
-    const outcome = await storage.revokeAppGrants({
-      origin: APP_ORIGIN,
-      subjectDid: APP_SUBJECT
+    const outcome = await storage.revokeConnectionGrants({
+      grants: appGrants(appGrant({ id: 'z-active' }))
     })
 
-    expect(outcome).toEqual({ revoked: 0, withdrawn: 0, skipped: 0 })
+    expect(outcome).toEqual({
+      revoked: 0,
+      withdrawn: 0,
+      skipped: 0,
+      revokedIds: []
+    })
   })
 })
 
@@ -2281,243 +2579,167 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 })
 
-describe('StorageManager.revokeAppCollectionRecipients', () => {
-  const APP_ORIGIN = 'https://app.example'
-
-  it('rotates the app off each app-provisioned collection and revokes its grant', async () => {
-    const owner = await generateKey()
-    const app = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore, revoked } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: app.recipient
-    })
-
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/app-docs'
-    await storage.addHistoryGrant({
-      user,
-      origin: APP_ORIGIN,
-      grants: [
-        {
-          id: 'g-app-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-app-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: app.did
+describe('StorageManager.revokeCollectionRecipients (an app)', () => {
+  /**
+   * A remote session holding `app-docs`, provisioned for each grantee in
+   * turn, with each grantee's live grant on it recorded on its entry.
+   *
+   * @param options {object}
+   * @param options.grantees {PartyIdentity[]}
+   * @param [options.record] {PartyIdentity[]}   the grantees whose grant is
+   *   recorded; default every one
+   * @returns {Promise<object>}
+   */
+  async function appDocsSession({
+    grantees,
+    record = grantees
+  }: {
+    grantees: PartyIdentity[]
+    record?: PartyIdentity[]
+  }) {
+    const session = await directorySession()
+    for (const grantee of grantees) {
+      await session.storage.provisionEncryptedCollection({
+        collectionId: 'app-docs',
+        recipient: grantee.recipient
+      })
+    }
+    for (const grantee of record) {
+      await recordPartyGrants({
+        storage: session.storage,
+        did: grantee.did,
+        zcaps: [
+          collectionGrant({
+            id: `z-docs-${grantee.did.slice(-6)}`,
+            collectionId: 'app-docs',
+            controller: grantee.did
           })
-        }
-      ],
-      appConnect: { name: 'Example App', firstRun: true }
-    })
+        ]
+      })
+    }
+    const appDocs = async () =>
+      (await session.remoteStore.collectionEncryption({
+        collectionId: 'app-docs'
+      }))!
+    return { ...session, appDocs }
+  }
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
+  it('rotates the app off each collection its grants target and revokes its grant', async () => {
+    const app = await generateAppIdentity()
+    const { owner, storage, revoked, appDocs } = await appDocsSession({
+      grantees: [app]
     })
+    const grantId = `z-docs-${app.did.slice(-6)}`
 
-    expect(outcome).toEqual({
+    const { rotation } = await rotateParty({ storage, did: app.did })
+
+    expect(rotation).toEqual({
       collections: 1,
       rotated: 1,
       failed: 0,
-      revokedIds: ['z-app-docs']
+      revokedIds: [grantId]
     })
     // Read axis: the app is off the new current epoch; the owner remains.
-    const descriptor = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
-    expect(currentEpochKids(descriptor!)).toEqual([owner.keyAgreementKey.id])
+    expect(currentEpochKids(await appDocs())).toEqual([
+      owner.keyAgreementKey.id
+    ])
     // Pull axis: the recorded grant was revoked.
-    expect((revoked as Array<{ id: string }>).map(zcap => zcap.id)).toContain(
-      'z-app-docs'
-    )
+    expect(revokedIdsOf(revoked)).toEqual([grantId])
   })
 
   it('rotates an app-provisioned collection whose every grant expired', async () => {
-    const owner = await generateKey()
     const app = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore, revoked, setCollections } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: app.recipient
-    })
+    const { owner, storage, revoked, setCollections, appDocs } =
+      await appDocsSession({ grantees: [app], record: [] })
     // The collection carries the app's attribution, as provisioning stamps it.
     setCollections([
       {
         id: 'app-docs',
-        url: 'https://was.example/space/s-space/app-docs/',
+        url: `${SPACE_URL}app-docs/`,
         generator: { id: app.did }
       }
     ])
-
-    // Every recorded grant is long past its own expiry, so the grant scan
-    // yields nothing to revoke.
-    const past = new Date(Date.now() - 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/app-docs'
-    await storage.addHistoryGrant({
-      user,
-      origin: APP_ORIGIN,
-      grants: [
-        {
-          id: 'g-app-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: past,
-          zcap: recordedGrant({
-            id: 'z-app-docs',
-            invocationTarget: target,
-            expires: past,
-            controller: app.did
-          })
-        }
-      ],
-      appConnect: { name: 'Example App', firstRun: true }
+    // Every recorded grant is long past its own expiry, so there is nothing
+    // to revoke.
+    await recordPartyGrants({
+      storage,
+      did: app.did,
+      zcaps: [
+        collectionGrant({
+          id: 'z-app-docs',
+          collectionId: 'app-docs',
+          controller: app.did,
+          expires: new Date(Date.now() - 1_000_000).toISOString()
+        })
+      ]
     })
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
+    const { rotation } = await rotateParty({ storage, did: app.did })
 
-    expect(outcome).toEqual({
+    expect(rotation).toEqual({
       collections: 1,
       rotated: 1,
       failed: 0,
       revokedIds: []
     })
-    const descriptor = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
-    expect(currentEpochKids(descriptor!)).toEqual([owner.keyAgreementKey.id])
-    // Nothing to revoke: the grant had already expired.
+    expect(currentEpochKids(await appDocs())).toEqual([
+      owner.keyAgreementKey.id
+    ])
     expect(revoked).toEqual([])
   })
 
   it('skips a generator-attributed collection the app no longer reads', async () => {
-    const owner = await generateKey()
     const app = await generateAppIdentity()
     const other = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore, setCollections } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-
     // The app provisioned the collection and was rotated off it already, so
     // only the attribution still names it; another app reads it today.
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: other.recipient
+    const { owner, storage, setCollections, appDocs } = await appDocsSession({
+      grantees: [other],
+      record: []
     })
     setCollections([
       {
         id: 'app-docs',
-        url: 'https://was.example/space/s-space/app-docs/',
+        url: `${SPACE_URL}app-docs/`,
         generator: { id: app.did }
       }
     ])
-    const before = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
-    const epochsBefore = before!.epochs!.length
+    const epochsBefore = (await appDocs()).epochs!.length
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
+    const { rotation } = await rotateParty({ storage, did: app.did })
 
-    expect(outcome).toEqual({
+    expect(rotation).toEqual({
       collections: 1,
       rotated: 0,
       failed: 0,
       revokedIds: []
     })
-    const after = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
     // Nothing rotated: no epoch was added and the reading app kept its entry.
-    expect(after!.epochs).toHaveLength(epochsBefore)
-    expect(currentEpochKids(after!)).toEqual(
+    const after = await appDocs()
+    expect(after.epochs).toHaveLength(epochsBefore)
+    expect(currentEpochKids(after)).toEqual(
       expect.arrayContaining([owner.keyAgreementKey.id, other.recipient.id])
     )
   })
 
   it('leaves a collection the listing reports public out of the candidates', async () => {
-    const owner = await generateKey()
     const app = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore, setCollections } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
+    const { stores, storage, setCollections } = await directorySession()
     // A public collection the app provisioned: attributed to it, and
     // carrying no key-epoch roster.
     setCollections([
       {
         id: 'app-public',
-        url: 'https://was.example/space/s-space/app-public/',
+        url: `${SPACE_URL}app-public/`,
         generator: { id: app.did },
         isPublic: true
       }
     ])
     const collectionEncryption = vi.spyOn(stores.source, 'collectionEncryption')
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
+    const { rotation } = await rotateParty({ storage, did: app.did })
 
-    expect(outcome).toEqual({
+    expect(rotation).toEqual({
       collections: 0,
       rotated: 0,
       failed: 0,
@@ -2527,34 +2749,17 @@ describe('StorageManager.revokeAppCollectionRecipients', () => {
   })
 
   it('counts a collection listing it could not read as a failure', async () => {
-    const owner = await generateKey()
     const app = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
+    const { storage, remoteStore } = await directorySession()
     vi.spyOn(remoteStore, 'listCollections').mockRejectedValue(
       new Error('offline')
     )
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
+    const { rotation } = await rotateParty({ storage, did: app.did })
 
     // The caller cannot tell a rotated app from one still holding a recipient
     // entry, so the disconnect must not report itself done.
-    expect(outcome).toEqual({
+    expect(rotation).toEqual({
       collections: 0,
       rotated: 0,
       failed: 1,
@@ -2563,299 +2768,55 @@ describe('StorageManager.revokeAppCollectionRecipients', () => {
   })
 
   it('leaves a co-admitted app its recipient entry', async () => {
-    const owner = await generateKey()
     const app = await generateAppIdentity()
     const other = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore, revoked } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: app.recipient
-    })
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: other.recipient
-    })
-    const before = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
-    expect(currentEpochKids(before!)).toHaveLength(3)
-    const epochsBefore = before!.epochs!.length
-
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/app-docs'
-    await storage.addHistoryGrant({
-      user,
-      origin: APP_ORIGIN,
-      grants: [
-        {
-          id: 'g-app-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-app-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: app.did
-          })
-        }
-      ],
-      appConnect: { name: 'Example App', firstRun: true }
-    })
-    // The co-admitted app's own recorded grant is what vouches for its
+    // The co-admitted app's own grant on its entry is what vouches for its
     // roster entry when the rotation re-wraps the fresh epoch.
-    await storage.addHistoryGrant({
-      user,
-      origin: 'https://other.example',
-      grants: [
-        {
-          id: 'g-other-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-other-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: other.did
-          })
-        }
-      ],
-      appConnect: { name: 'Other App', firstRun: true }
+    const { owner, storage, revoked, appDocs } = await appDocsSession({
+      grantees: [app, other]
     })
+    const before = await appDocs()
+    expect(currentEpochKids(before)).toHaveLength(3)
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
+    const { rotation } = await rotateParty({ storage, did: app.did })
 
-    expect(outcome).toEqual({
-      collections: 1,
-      rotated: 1,
-      failed: 0,
-      revokedIds: ['z-app-docs']
-    })
-    const after = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
+    expect(rotation).toMatchObject({ collections: 1, rotated: 1, failed: 0 })
+    const after = await appDocs()
     // One fresh epoch, and the app that was not disconnected reads on.
-    expect(after!.epochs).toHaveLength(epochsBefore + 1)
-    expect(currentEpochKids(after!)).toEqual(
+    expect(after.epochs).toHaveLength(before.epochs!.length + 1)
+    expect(currentEpochKids(after)).toHaveLength(2)
+    expect(currentEpochKids(after)).toEqual(
       expect.arrayContaining([owner.keyAgreementKey.id, other.recipient.id])
     )
-    expect(currentEpochKids(after!)).not.toContain(app.recipient.id)
-    expect((revoked as Array<{ id: string }>).map(zcap => zcap.id)).toEqual([
-      'z-app-docs'
-    ])
-  })
-
-  it('does not admit a grantee whose grant is recorded on a Login', async () => {
-    const owner = await generateKey()
-    const app = await generateAppIdentity()
-    const other = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: app.recipient
-    })
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: other.recipient
-    })
-
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/app-docs'
-    await storage.addHistoryGrant({
-      user,
-      origin: APP_ORIGIN,
-      grants: [
-        {
-          id: 'g-app-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-app-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: app.did
-          })
-        }
-      ],
-      appConnect: { name: 'Example App', firstRun: true }
-    })
-    // The other grantee's capability sits on a Login row, which vouches for
-    // no roster entry.
-    await seedLoginWithZcaps({
-      storage,
-      user,
-      origin: 'https://other.example',
-      id: 'login-other-docs',
-      zcaps: [
-        {
-          id: 'g-other-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-other-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: other.did
-          })
-        }
-      ]
-    })
-
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
-
-    expect(outcome).toMatchObject({ collections: 1, rotated: 1, failed: 0 })
-    const after = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
-    expect(currentEpochKids(after!)).toEqual([owner.keyAgreementKey.id])
+    expect(revokedIdsOf(revoked)).toEqual([`z-docs-${app.did.slice(-6)}`])
   })
 
   it('wraps the fresh epoch to no roster entry the wallet did not admit', async () => {
-    const owner = await generateKey()
     const app = await generateAppIdentity()
     const other = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore, revoked } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: app.recipient
-    })
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: other.recipient
-    })
-    // A well-formed did:key entry no recorded grant or share names, as
-    // anyone able to write the descriptor could inject.
+    // A well-formed did:key entry no directory entry names, as anyone able
+    // to write the descriptor could inject.
     const junk = await generateAppIdentity()
+    const { owner, stores, storage, appDocs } = await appDocsSession({
+      grantees: [app, other]
+    })
     await addRecipient({
       store: stores.storeFor('app-docs'),
       recipient: junk.recipient,
       owner: { keyAgreementKey: owner.keyAgreementKey }
     })
-    const before = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
-    expect(currentEpochKids(before!)).toContain(junk.recipient.id)
-    const epochsBefore = before!.epochs!.length
+    const before = await appDocs()
+    expect(currentEpochKids(before)).toContain(junk.recipient.id)
 
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/app-docs'
-    await storage.addHistoryGrant({
-      user,
-      origin: APP_ORIGIN,
-      grants: [
-        {
-          id: 'g-app-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-app-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: app.did
-          })
-        }
-      ],
-      appConnect: { name: 'Example App', firstRun: true }
-    })
-    // The co-admitted app's own recorded grant is what vouches for its
-    // roster entry when the rotation re-wraps the fresh epoch.
-    await storage.addHistoryGrant({
-      user,
-      origin: 'https://other.example',
-      grants: [
-        {
-          id: 'g-other-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-other-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: other.did
-          })
-        }
-      ],
-      appConnect: { name: 'Other App', firstRun: true }
-    })
+    const { rotation } = await rotateParty({ storage, did: app.did })
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
-
-    expect(outcome).toEqual({
-      collections: 1,
-      rotated: 1,
-      failed: 0,
-      revokedIds: ['z-app-docs']
-    })
-    const after = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
-    // One fresh epoch, and the app that was not disconnected reads on.
-    expect(after!.epochs).toHaveLength(epochsBefore + 1)
-    expect(currentEpochKids(after!)).toEqual(
+    expect(rotation).toMatchObject({ collections: 1, rotated: 1, failed: 0 })
+    const after = await appDocs()
+    expect(after.epochs).toHaveLength(before.epochs!.length + 1)
+    expect(currentEpochKids(after)).toHaveLength(2)
+    expect(currentEpochKids(after)).toEqual(
       expect.arrayContaining([owner.keyAgreementKey.id, other.recipient.id])
     )
-    expect(currentEpochKids(after!)).not.toContain(app.recipient.id)
-    expect(currentEpochKids(after!)).not.toContain(junk.recipient.id)
-    expect(currentEpochKids(after!)).toHaveLength(2)
-    expect((revoked as Array<{ id: string }>).map(zcap => zcap.id)).toEqual([
-      'z-app-docs'
-    ])
   })
 
   it('keeps an earlier user key generation a torn user key rotation left on the roster', async () => {
@@ -2870,7 +2831,7 @@ describe('StorageManager.revokeAppCollectionRecipients', () => {
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(previous, stores)
     const ciphers = await buildCiphers(previous, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
+    const { localStore } = await initLocalStore(ciphers)
     const parts = {
       persistence: browserLocalSessionPersistence(),
       localStore,
@@ -2880,18 +2841,24 @@ describe('StorageManager.revokeAppCollectionRecipients', () => {
       descriptors
     }
     const before = new StorageManager({ ...parts, vaultKeys: previous })
+    const memory = standDirectory({ storage: before })
     for (const grantee of [app, other]) {
       await before.provisionEncryptedCollection({
         collectionId: 'app-docs',
         recipient: grantee.recipient
       })
+      await recordPartyGrants({
+        storage: before,
+        did: grantee.did,
+        zcaps: [
+          collectionGrant({
+            id: `z-docs-${grantee.did.slice(-6)}`,
+            collectionId: 'app-docs',
+            controller: grantee.did
+          })
+        ]
+      })
     }
-    await recordAppGrant(before, { user, origin: APP_ORIGIN, grantee: app })
-    await recordAppGrant(before, {
-      user,
-      origin: 'https://other.example',
-      grantee: other
-    })
     const storage = new StorageManager({
       ...parts,
       vaultKeys: current,
@@ -2900,13 +2867,11 @@ describe('StorageManager.revokeAppCollectionRecipients', () => {
         current.keyAgreementKey.id!
       ]
     })
+    standDirectory({ storage, memory })
 
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
+    const { rotation } = await rotateParty({ storage, did: app.did })
 
-    expect(outcome).toMatchObject({ collections: 1, rotated: 1, failed: 0 })
+    expect(rotation).toMatchObject({ collections: 1, rotated: 1, failed: 0 })
     const after = (await remoteStore.collectionEncryption({
       collectionId: 'app-docs'
     }))!
@@ -2928,223 +2893,30 @@ describe('StorageManager.revokeAppCollectionRecipients', () => {
     ).toBeInstanceOf(Uint8Array)
   })
 
-  it('warns naming the reader it drops when a history row could not be read', async () => {
-    const owner = await generateKey()
-    const app = await generateAppIdentity()
-    const other = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    for (const grantee of [app, other]) {
-      await storage.provisionEncryptedCollection({
-        collectionId: 'app-docs',
-        recipient: grantee.recipient
-      })
-    }
-    await recordAppGrant(storage, { user, origin: APP_ORIGIN, grantee: app })
-    // The co-reader's one admission lands in a Resource this session cannot
-    // decrypt: sealed under a key epoch this account never held.
-    const stranger = await generateKey()
-    const strangerCiphers = await buildCiphers(stranger, {})
-    const { localStore: strangerStore } = await initLocalStore(strangerCiphers)
-    await recordAppGrant(
-      new StorageManager({
-        persistence: browserLocalSessionPersistence(),
-        localStore: strangerStore,
-        ciphers: strangerCiphers,
-        vaultKeys: stranger
-      }),
-      { user, origin: 'https://other.example', grantee: other }
-    )
-    for (const resource of await strangerStore
-      .rxCollection('walletActivity')
-      .find()
-      .exec()) {
-      await localStore
-        .rxCollection('walletActivity')
-        .insert(resource.toMutableJSON())
-    }
-    const capture = captureSink()
-    const removeSink = addSink(capture.sink)
-
-    try {
-      const outcome = await storage.revokeAppCollectionRecipients({
-        origin: APP_ORIGIN,
-        subjectDid: app.did
-      })
-
-      // The revocation is not blocked: the rotation lands without the
-      // reader whose admission could not be read.
-      expect(outcome).toMatchObject({ collections: 1, rotated: 1, failed: 0 })
-      const after = (await remoteStore.collectionEncryption({
-        collectionId: 'app-docs'
-      }))!
-      expect(currentEpochKids(after)).toEqual([owner.keyAgreementKey.id])
-      const warnings = capture.events.filter(
-        event =>
-          event.level === 'warn' &&
-          event.msg.includes('history with unreadable resources')
-      )
-      expect(warnings).toHaveLength(1)
-      expect(warnings[0].data).toMatchObject({
-        collectionId: 'app-docs',
-        unreadableHistory: 1,
-        dropped: [other.recipient.id]
-      })
-    } finally {
-      removeSink()
-    }
-  })
-
-  it('reads the unreadable count from the history it was handed', async () => {
-    const owner = await generateKey()
-    const app = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
-    })
-    await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: app.recipient
-    })
-    await recordAppGrant(storage, { user, origin: APP_ORIGIN, grantee: app })
-    // The history the caller read, before any unreadable Resource existed.
-    const items = await storage.listHistoryItems()
-    expect(items.unreadable).toBe(0)
-    // A later read skips a Resource this session cannot decrypt.
-    const stranger = await generateKey()
-    const strangerCiphers = await buildCiphers(stranger, {})
-    const { localStore: strangerStore } = await initLocalStore(strangerCiphers)
-    await recordAppGrant(
-      new StorageManager({
-        persistence: browserLocalSessionPersistence(),
-        localStore: strangerStore,
-        ciphers: strangerCiphers,
-        vaultKeys: stranger
-      }),
-      { user, origin: 'https://other.example', grantee: app }
-    )
-    for (const resource of await strangerStore
-      .rxCollection('walletActivity')
-      .find()
-      .exec()) {
-      await localStore
-        .rxCollection('walletActivity')
-        .insert(resource.toMutableJSON())
-    }
-    expect((await storage.listHistoryItems()).unreadable).toBe(1)
-    const capture = captureSink()
-    const removeSink = addSink(capture.sink)
-
-    try {
-      const outcome = await storage.revokeAppCollectionRecipients({
-        origin: APP_ORIGIN,
-        subjectDid: app.did,
-        items
-      })
-
-      expect(outcome).toMatchObject({ collections: 1, rotated: 1, failed: 0 })
-      expect(
-        capture.events.filter(
-          event =>
-            event.level === 'warn' &&
-            event.msg.includes('history with unreadable resources')
-        )
-      ).toHaveLength(0)
-    } finally {
-      removeSink()
-    }
-  })
-
   it('drops the app from the blinding-key wrap set without rotating the key', async () => {
-    const owner = await generateKey()
     const app = await generateAppIdentity()
-    const stores = memoryDescriptorStores()
-    const { remoteStore } = makeFakeRemote({ stores })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence: browserLocalSessionPersistence(),
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors
+    const { owner, storage, appDocs } = await appDocsSession({
+      grantees: [app]
     })
+    const hmacId = (await appDocs()).hmac?.id
 
-    const provisioned = await storage.provisionEncryptedCollection({
-      collectionId: 'app-docs',
-      recipient: app.recipient
-    })
-    const hmacId = provisioned.hmac?.id
+    await rotateParty({ storage, did: app.did })
 
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/app-docs'
-    await storage.addHistoryGrant({
-      user,
-      origin: APP_ORIGIN,
-      grants: [
-        {
-          id: 'g-app-docs',
-          target,
-          allowedActions: ['GET', 'HEAD'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-app-docs',
-            invocationTarget: target,
-            expires: future,
-            controller: app.did
-          })
-        }
-      ],
-      appConnect: { name: 'Example App', firstRun: true }
-    })
-
-    await storage.revokeAppCollectionRecipients({
-      origin: APP_ORIGIN,
-      subjectDid: app.did
-    })
-
-    const descriptor = await remoteStore.collectionEncryption({
-      collectionId: 'app-docs'
-    })
+    const descriptor = await appDocs()
     // The key never rotates -- blinded tokens must compare across the
     // collection's whole history -- so only the app's wrap entry goes.
-    expect(descriptor!.hmac?.id).toBe(hmacId)
-    expect(hmacKids(descriptor!)).not.toContain(app.recipient.id)
+    expect(descriptor.hmac?.id).toBe(hmacId)
+    expect(hmacKids(descriptor)).not.toContain(app.recipient.id)
     expect(
       await resolveHmacOutcome({
-        descriptor: descriptor!,
+        descriptor,
         keyAgreementKey: app.keyAgreementKey
       })
     ).toEqual({ errorName: 'EncryptionError' })
     // The owner still resolves the same key.
     expect(
       await resolveHmacOutcome({
-        descriptor: descriptor!,
+        descriptor,
         keyAgreementKey: owner.keyAgreementKey
       })
     ).toEqual({ id: hmacId })
@@ -3153,99 +2925,80 @@ describe('StorageManager.revokeAppCollectionRecipients', () => {
   it.each([
     [
       'a collection target',
-      'https://was.example/space/s-space/app-docs/',
+      `${SPACE_URL}app-docs/`,
       { collections: 1, rotated: 1, failed: 0, revokedIds: ['z-app-docs'] },
       ['z-app-docs']
     ],
     [
       'a reserved sub-endpoint target',
-      'https://was.example/space/s-space/app-docs/meta',
+      `${SPACE_URL}app-docs/meta`,
       { collections: 0, rotated: 0, failed: 0, revokedIds: [] },
       []
     ],
     [
+      // A candidate, since a share reader sits on a protected collection's
+      // roster; the app holds no recipient entry there, so nothing rotates.
       'a protected collection target',
-      'https://was.example/space/s-space/private-credentials',
-      { collections: 0, rotated: 0, failed: 0, revokedIds: [] },
+      `${SPACE_URL}private-credentials`,
+      { collections: 1, rotated: 0, failed: 0, revokedIds: [] },
       []
     ]
   ])(
-    'recovers the collection id from %s recorded in history',
+    'recovers the collection id from %s recorded on the entry',
     async (_label, target, expected, expectedRevoked) => {
-      const owner = await generateKey()
       const app = await generateAppIdentity()
-      const stores = memoryDescriptorStores()
-      const { remoteStore, revoked } = makeFakeRemote({ stores })
-      const descriptors = await provisionGovernedCollections(owner, stores)
-      const ciphers = await buildCiphers(owner, descriptors)
-      const { localStore, user } = await initLocalStore(ciphers)
-      const storage = new StorageManager({
-        persistence: browserLocalSessionPersistence(),
-        localStore,
-        remoteStore,
-        descriptorLogs: descriptorLogsFrom(stores),
-        ciphers,
-        vaultKeys: owner,
-        descriptors
+      const { storage, revoked } = await appDocsSession({
+        grantees: [app],
+        record: []
+      })
+      await recordPartyGrants({
+        storage,
+        did: app.did,
+        zcaps: [
+          collectionGrant({ id: 'z-app-docs', controller: app.did, target })
+        ]
       })
 
-      await storage.provisionEncryptedCollection({
-        collectionId: 'app-docs',
-        recipient: app.recipient
-      })
+      const { rotation } = await rotateParty({ storage, did: app.did })
 
-      const future = new Date(Date.now() + 1_000_000).toISOString()
-      await storage.addHistoryGrant({
-        user,
-        origin: APP_ORIGIN,
-        grants: [
-          {
-            id: 'g-app-docs',
-            target,
-            allowedActions: ['GET', 'HEAD'],
-            expires: future,
-            zcap: recordedGrant({
-              id: 'z-app-docs',
-              invocationTarget: target,
-              expires: future,
-              controller: app.did
-            })
-          }
-        ],
-        appConnect: { name: 'Example App', firstRun: true }
-      })
-
-      const outcome = await storage.revokeAppCollectionRecipients({
-        origin: APP_ORIGIN,
-        subjectDid: app.did
-      })
-
-      // Only an app Collection target names a collection to rotate; a
-      // reserved sub-endpoint beneath one, or a standard/protected
-      // collection, does not.
-      expect(outcome).toEqual(expected)
-      expect((revoked as Array<{ id: string }>).map(zcap => zcap.id)).toEqual(
-        expectedRevoked
-      )
+      expect(rotation).toEqual(expected)
+      expect(revokedIdsOf(revoked)).toEqual(expectedRevoked)
     }
   )
+
+  it('is a no-op for a DID no recipient key derives from', async () => {
+    const { storage } = await directorySession()
+
+    expect(
+      await storage.revokeCollectionRecipients({
+        did: 'did:web:app.example',
+        grants: [],
+        collections: []
+      })
+    ).toEqual({ collections: 0, rotated: 0, failed: 0, revokedIds: [] })
+  })
 })
 
-describe('StorageManager.revokeAgentCollectionRecipients', () => {
+describe('StorageManager.revokeCollectionRecipients (an agent)', () => {
   /**
-   * A storage manager over a fake remote, holding one private collection
-   * provisioned for `agent`, with the grant recorded on an agent Grant.
+   * A remote session holding one private collection provisioned for `agent`,
+   * with the agent's grant on it recorded on its `kind: 'agent'` entry.
    *
-   * @param agent {Awaited<ReturnType<typeof generateAppIdentity>>}
+   * @param agent {PartyIdentity}
+   * @param [options] {object}
+   * @param [options.revoke] {Function}
+   * @param [options.signerCheck] {Function}
+   * @param [options.signerKeyId] {string}   the grant's signer
+   * @param [options.persistence] {SessionPersistence}
    * @returns {Promise<object>}
    */
   async function agentGrantStorage(
-    agent: Awaited<ReturnType<typeof generateAppIdentity>>,
+    agent: PartyIdentity,
     {
       revoke,
       signerCheck,
       signerKeyId,
-      persistence = browserLocalSessionPersistence()
+      persistence
     }: {
       revoke?: (zcap: unknown) => Promise<void>
       signerCheck?: () => Promise<AccountSignerCheck | undefined>
@@ -3253,60 +3006,55 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
       persistence?: SessionPersistence
     } = {}
   ) {
-    const owner = await generateKey()
-    const stores = memoryDescriptorStores()
-    const { remoteStore, revoked, setCollections } = makeFakeRemote({
-      stores,
-      revoke
+    const session = await directorySession({
+      revoke,
+      signerCheck,
+      ...(persistence && { persistence })
     })
-    const descriptors = await provisionGovernedCollections(owner, stores)
-    const ciphers = await buildCiphers(owner, descriptors)
-    const { localStore, user } = await initLocalStore(ciphers)
-    const storage = new StorageManager({
-      persistence,
-      localStore,
-      remoteStore,
-      descriptorLogs: descriptorLogsFrom(stores),
-      ciphers,
-      vaultKeys: owner,
-      descriptors,
-      signerCheck
-    })
-    await storage.provisionEncryptedCollection({
+    await session.storage.provisionEncryptedCollection({
       collectionId: 'agent-notes',
       recipient: agent.recipient
     })
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/agent-notes'
-    await storage.addHistoryGrant({
-      user,
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      grants: [
-        {
-          id: 'g-agent-notes',
-          target,
-          allowedActions: ['GET', 'HEAD', 'PUT'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-agent-notes',
-            invocationTarget: target,
-            expires: future,
-            controller: agent.did,
-            ...(signerKeyId && { signerKeyId })
-          })
-        }
+    await recordPartyGrants({
+      storage: session.storage,
+      did: agent.did,
+      kind: 'agent',
+      zcaps: [
+        collectionGrant({
+          id: 'z-agent-notes',
+          collectionId: 'agent-notes',
+          controller: agent.did,
+          ...(signerKeyId && { signerKeyId })
+        })
       ]
     })
-    return {
-      owner,
-      stores,
-      storage,
-      remoteStore,
-      revoked,
-      persistence,
-      user,
-      setCollections
-    }
+    return session
+  }
+
+  /**
+   * The agent's grant stage, as the session layer runs it after the
+   * rotation.
+   *
+   * @param options {object}
+   * @param options.storage {StorageManager}
+   * @param options.did {string}
+   * @param [options.revokedByRotation] {string[]}
+   * @returns {Promise<object>}
+   */
+  async function revokeGrants({
+    storage,
+    did,
+    revokedByRotation
+  }: {
+    storage: StorageManager
+    did: string
+    revokedByRotation?: string[]
+  }) {
+    const { grants } = await readParty({ storage, did })
+    return await storage.revokeConnectionGrants({
+      grants,
+      ...(revokedByRotation && { revokedByRotation })
+    })
   }
 
   it('rotates the agent off each granted collection and revokes its grant', async () => {
@@ -3314,11 +3062,9 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     const { owner, storage, remoteStore, revoked } =
       await agentGrantStorage(agent)
 
-    const outcome = await storage.revokeAgentCollectionRecipients({
-      controller: agent.did
-    })
+    const { rotation } = await rotateParty({ storage, did: agent.did })
 
-    expect(outcome).toEqual({
+    expect(rotation).toEqual({
       collections: 1,
       rotated: 1,
       failed: 0,
@@ -3330,20 +3076,17 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     })
     expect(currentEpochKids(descriptor!)).toEqual([owner.keyAgreementKey.id])
     // Pull axis: the recorded grant was revoked with the rotation.
-    expect((revoked as Array<{ id: string }>).map(zcap => zcap.id)).toContain(
-      'z-agent-notes'
-    )
+    expect(revokedIdsOf(revoked)).toEqual(['z-agent-notes'])
   })
 
   it('hands the rotated grants to the grant stage, which does not POST them again', async () => {
     const agent = await generateAppIdentity()
     const { storage, revoked } = await agentGrantStorage(agent)
 
-    const rotation = await storage.revokeAgentCollectionRecipients({
-      controller: agent.did
-    })
-    const outcome = await storage.revokeAgentGrants({
-      controller: agent.did,
+    const { rotation } = await rotateParty({ storage, did: agent.did })
+    const outcome = await revokeGrants({
+      storage,
+      did: agent.did,
       revokedByRotation: rotation.revokedIds
     })
 
@@ -3353,116 +3096,47 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
       revoked: 1,
       withdrawn: 0,
       skipped: 0,
-      unrevocable: 0,
       revokedIds: ['z-agent-notes']
     })
-    const posted = (revoked as Array<{ id: string }>).map(zcap => zcap.id)
-    expect(posted.filter(id => id === 'z-agent-notes')).toHaveLength(1)
+    expect(revokedIdsOf(revoked)).toEqual(['z-agent-notes'])
   })
 
-  it("counts neither another agent's grants nor its summary-only entries", async () => {
+  it("revokes none of another agent's grants", async () => {
     const agent = await generateAppIdentity()
     const other = await generateAppIdentity()
-    const { storage, user } = await agentGrantStorage(agent)
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/other-notes'
-    await storage.addHistoryGrant({
-      user,
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      grants: [
-        {
-          id: 'g-other-notes',
-          target,
-          allowedActions: ['GET'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-other-notes',
-            invocationTarget: target,
-            expires: future,
-            controller: other.did
-          })
-        },
-        {
-          id: 'g-other-summary',
-          target,
-          allowedActions: ['GET'],
-          expires: future
-        }
+    const { storage, revoked } = await agentGrantStorage(agent)
+    await recordPartyGrants({
+      storage,
+      did: other.did,
+      kind: 'agent',
+      zcaps: [
+        collectionGrant({
+          id: 'z-other-notes',
+          collectionId: 'other-notes',
+          controller: other.did
+        })
       ]
     })
 
-    expect(await storage.revokeAgentGrants({ controller: agent.did })).toEqual({
+    expect(await revokeGrants({ storage, did: agent.did })).toEqual({
       revoked: 1,
       withdrawn: 1,
       skipped: 0,
-      unrevocable: 0,
       revokedIds: ['z-agent-notes']
     })
-  })
-
-  it("counts a summary-only entry on the agent's own Grant as unrevocable", async () => {
-    const agent = await generateAppIdentity()
-    const { storage, user } = await agentGrantStorage(agent)
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    const target = 'https://was.example/space/s-space/agent-notes'
-    await storage.addHistoryGrant({
-      user,
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      grants: [
-        {
-          id: 'g-agent-second',
-          target,
-          allowedActions: ['GET'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-agent-second',
-            invocationTarget: target,
-            expires: future,
-            controller: agent.did
-          })
-        },
-        {
-          id: 'g-agent-summary',
-          target,
-          allowedActions: ['GET'],
-          expires: future
-        }
-      ]
-    })
-
-    const outcome = await storage.revokeAgentGrants({ controller: agent.did })
-    expect(outcome).toMatchObject({ skipped: 1, unrevocable: 1 })
-  })
-
-  it('leaves an app login for the same DID to the app path', async () => {
-    const agent = await generateAppIdentity()
-    const { storage } = await agentGrantStorage(agent)
-
-    // The app predicate matches an App Connect Grant alone, so the agent's
-    // interaction-URL grant is no candidate there.
-    const outcome = await storage.revokeAppCollectionRecipients({
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      subjectDid: agent.did,
-      collections: []
-    })
-
-    expect(outcome).toEqual({
-      collections: 0,
-      rotated: 0,
-      failed: 0,
-      revokedIds: []
-    })
+    expect(revokedIdsOf(revoked)).toEqual(['z-agent-notes'])
   })
 
   it('is a no-op for a controller no recipient key derives from', async () => {
     const agent = await generateAppIdentity()
     const { storage } = await agentGrantStorage(agent)
 
-    const outcome = await storage.revokeAgentCollectionRecipients({
-      controller: 'did:web:agent.example'
+    const { rotation } = await rotateParty({
+      storage,
+      did: 'did:web:agent.example'
     })
 
-    expect(outcome).toEqual({
+    expect(rotation).toEqual({
       collections: 0,
       rotated: 0,
       failed: 0,
@@ -3474,9 +3148,9 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     const agent = await generateAppIdentity()
     const { storage } = await agentGrantStorage(agent)
     const targets = [
-      'https://was.example/space/s-space/agent-notes',
+      `${SPACE_URL}agent-notes`,
       // Protected: the agent holds no roster entry there to rotate.
-      'https://was.example/space/s-space/private-credentials',
+      `${SPACE_URL}private-credentials`,
       // Another Space's collection.
       'https://was.example/space/elsewhere/agent-notes'
     ]
@@ -3490,7 +3164,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     ])
 
     // Once rotated off, the same targets list the agent nowhere.
-    await storage.revokeAgentCollectionRecipients({ controller: agent.did })
+    await rotateParty({ storage, did: agent.did })
     expect(
       await storage.granteeRosterCollections({
         grantees: [{ controller: agent.did, targets }]
@@ -3514,7 +3188,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
         storeFor: async collectionId => stores.storeFor(collectionId)
       }
     })
-    const target = 'https://was.example/space/s-space/agent-notes'
+    const target = `${SPACE_URL}agent-notes`
 
     const outcomes = await reader.granteeRosterCollections({
       grantees: [
@@ -3547,7 +3221,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
         storeFor: async collectionId => stores.storeFor(collectionId)
       }
     })
-    const target = 'https://was.example/space/s-space/agent-notes'
+    const target = `${SPACE_URL}agent-notes`
 
     expect(
       await reader.granteeRosterCollections({
@@ -3577,11 +3251,9 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
         persistence: transientPersistence()
       })
 
-    const outcome = await storage.revokeAgentCollectionRecipients({
-      controller: agent.did
-    })
+    const { rotation } = await rotateParty({ storage, did: agent.did })
 
-    expect(outcome).toEqual({
+    expect(rotation).toEqual({
       collections: 1,
       rotated: 1,
       failed: 0,
@@ -3601,14 +3273,15 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     expect(currentEpochKids(cached!)).toEqual([owner.keyAgreementKey.id])
     // The grant stage POSTs it again and throws the same refusal.
     await expect(
-      storage.revokeAgentGrants({
-        controller: agent.did,
-        revokedByRotation: outcome.revokedIds
+      revokeGrants({
+        storage,
+        did: agent.did,
+        revokedByRotation: rotation.revokedIds
       })
     ).rejects.toMatchObject({ name: 'ValidationError' })
   })
 
-  it('records the Revoke when the grant stage revokes what a failed pull missed', async () => {
+  it('retires the entry and records the Revoke when the grant stage revokes what a failed pull missed', async () => {
     // The pull POST fails once; the grant stage's re-POST lands. No
     // authority remains, so the revocation completes.
     const agent = await generateAppIdentity()
@@ -3626,6 +3299,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
       storage,
       user,
       agent: {
+        resourceId: '',
         controller: agent.did,
         origin: EXTERNAL_REQUEST_ORIGIN,
         grants: []
@@ -3634,6 +3308,9 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
 
     expect(outcome).toMatchObject({ revoked: 1, rotated: 1 })
     expect(attempts).toBe(2)
+    const { entry } = await readParty({ storage, did: agent.did })
+    expect(entry?.retired).toBeDefined()
+    expect(entry?.grants).toEqual([])
     const { entries: items } = await storage.listHistoryItems()
     expect(items.some(({ doc }) => doc.type?.includes('Revoke'))).toBe(true)
   })
@@ -3646,9 +3323,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
       }
     })
 
-    expect(
-      await storage.revokeAgentCollectionRecipients({ controller: agent.did })
-    ).toEqual({
+    expect((await rotateParty({ storage, did: agent.did })).rotation).toEqual({
       collections: 1,
       rotated: 1,
       failed: 0,
@@ -3666,9 +3341,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
       signerKeyId: GONE_SIGNER
     })
 
-    const rotation = await storage.revokeAgentCollectionRecipients({
-      controller: agent.did
-    })
+    const { rotation } = await rotateParty({ storage, did: agent.did })
 
     // The grant is dead already, so the rotation lands but revokes nothing.
     expect(rotation).toEqual({
@@ -3678,53 +3351,37 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
       revokedIds: []
     })
     expect(
-      await storage.revokeAgentGrants({
-        controller: agent.did,
+      await revokeGrants({
+        storage,
+        did: agent.did,
         revokedByRotation: rotation.revokedIds
       })
-    ).toEqual({
-      revoked: 0,
-      withdrawn: 0,
-      skipped: 1,
-      unrevocable: 0,
-      revokedIds: []
-    })
+    ).toEqual({ revoked: 0, withdrawn: 0, skipped: 1, revokedIds: [] })
   })
 
   it('reads no key epoch for a grant target the listing reports public', async () => {
     const agent = await generateAppIdentity()
-    const { stores, storage, setCollections, user } =
-      await agentGrantStorage(agent)
+    const { stores, storage, setCollections } = await agentGrantStorage(agent)
     setCollections([
-      {
-        id: 'agent-notes',
-        url: 'https://was.example/space/s-space/agent-notes/'
-      },
+      { id: 'agent-notes', url: `${SPACE_URL}agent-notes/` },
       {
         id: 'agent-public',
-        url: 'https://was.example/space/s-space/agent-public/',
+        url: `${SPACE_URL}agent-public/`,
         isPublic: true
       }
     ])
     const collectionEncryption = vi.spyOn(stores.source, 'collectionEncryption')
-    const publicTarget = 'https://was.example/space/s-space/agent-public'
-    const future = new Date(Date.now() + 1_000_000).toISOString()
-    await storage.addHistoryGrant({
-      user,
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      grants: [
-        {
-          id: 'g-agent-public',
-          target: publicTarget,
-          allowedActions: ['GET', 'HEAD', 'PUT'],
-          expires: future,
-          zcap: recordedGrant({
-            id: 'z-agent-public',
-            invocationTarget: publicTarget,
-            expires: future,
-            controller: agent.did
-          })
-        }
+    const publicTarget = `${SPACE_URL}agent-public`
+    await recordPartyGrants({
+      storage,
+      did: agent.did,
+      kind: 'agent',
+      zcaps: [
+        collectionGrant({
+          id: 'z-agent-public',
+          controller: agent.did,
+          target: publicTarget
+        })
       ]
     })
 
@@ -3733,10 +3390,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
         grantees: [
           {
             controller: agent.did,
-            targets: [
-              'https://was.example/space/s-space/agent-notes',
-              publicTarget
-            ]
+            targets: [`${SPACE_URL}agent-notes`, publicTarget]
           }
         ]
       })
@@ -3745,10 +3399,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     ])
     // The revocation skips the public collection as well, and rotates the
     // private one.
-    const outcome = await storage.revokeAgentCollectionRecipients({
-      controller: agent.did
-    })
-    expect(outcome).toEqual({
+    expect((await rotateParty({ storage, did: agent.did })).rotation).toEqual({
       collections: 1,
       rotated: 1,
       failed: 0,
@@ -3761,33 +3412,26 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     expect(readIds).not.toContain('agent-public')
   })
 
-  it('rotates a collection its generator stamp names, with no Grant recording it', async () => {
+  it('rotates a collection its generator stamp names, with no grant recording it', async () => {
     const agent = await generateAppIdentity()
     const { owner, storage, remoteStore, setCollections } =
       await agentGrantStorage(agent)
-    // A second collection provisioned for the agent, whose Grant activity is
-    // gone: only its `generator` stamp names the agent.
+    // A second collection provisioned for the agent, with no grant on its
+    // entry: only its `generator` stamp names the agent.
     await storage.provisionEncryptedCollection({
       collectionId: 'agent-drafts',
       recipient: agent.recipient
     })
     setCollections([
-      {
-        id: 'agent-notes',
-        url: 'https://was.example/space/s-space/agent-notes/'
-      },
+      { id: 'agent-notes', url: `${SPACE_URL}agent-notes/` },
       {
         id: 'agent-drafts',
-        url: 'https://was.example/space/s-space/agent-drafts/',
+        url: `${SPACE_URL}agent-drafts/`,
         generator: { id: agent.did }
       }
     ])
 
-    const outcome = await storage.revokeAgentCollectionRecipients({
-      controller: agent.did
-    })
-
-    expect(outcome).toEqual({
+    expect((await rotateParty({ storage, did: agent.did })).rotation).toEqual({
       collections: 2,
       rotated: 2,
       failed: 0,
@@ -3809,9 +3453,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     // Without the listing a public target cannot be told apart, so the
     // revocation cannot say the agent is off every roster. The private
     // collection is rotated all the same.
-    expect(
-      await storage.revokeAgentCollectionRecipients({ controller: agent.did })
-    ).toEqual({
+    expect((await rotateParty({ storage, did: agent.did })).rotation).toEqual({
       collections: 1,
       rotated: 1,
       failed: 1,
@@ -3819,7 +3461,7 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
     })
   })
 
-  it('records no Revoke when the listing cannot be read', async () => {
+  it('leaves the entry live and records no Revoke when the listing cannot be read', async () => {
     const agent = await generateAppIdentity()
     const { storage, remoteStore, user } = await agentGrantStorage(agent)
     vi.spyOn(remoteStore, 'listCollections').mockRejectedValue(
@@ -3831,29 +3473,539 @@ describe('StorageManager.revokeAgentCollectionRecipients', () => {
         storage,
         user,
         agent: {
+          resourceId: '',
           controller: agent.did,
           origin: EXTERNAL_REQUEST_ORIGIN,
           grants: []
         }
       })
     ).rejects.toThrow(/Could not rotate every collection/)
+    const { entry } = await readParty({ storage, did: agent.did })
+    expect(entry?.retired).toBeUndefined()
     const { entries: items } = await storage.listHistoryItems()
     expect(items.some(({ doc }) => doc.type?.includes('Revoke'))).toBe(false)
   })
+})
 
-  it('throws for an app subject no recipient key derives from', async () => {
-    const agent = await generateAppIdentity()
-    const { storage } = await agentGrantStorage(agent)
-
-    // An app-key subject is always a did:key: anything else is a malformed
-    // caller, which must not read as a rotation that found nothing to do.
-    await expect(
-      storage.revokeAppCollectionRecipients({
-        origin: 'https://app.example',
-        subjectDid: 'did:web:app.example',
-        collections: []
+describe('the admitted-recipient resolver over the connections directory', () => {
+  /**
+   * A remote session holding `app-docs` for the app being revoked and a
+   * co-admitted reader, each with its live grant there recorded on its entry.
+   * The app's grants are read before a test touches the directory.
+   *
+   * @returns {Promise<object>}
+   */
+  async function coAdmittedSession() {
+    const session = await directorySession()
+    const app = await generateAppIdentity()
+    const other = await generateAppIdentity()
+    const stranger = await generateAppIdentity()
+    for (const grantee of [app, other]) {
+      await session.storage.provisionEncryptedCollection({
+        collectionId: 'app-docs',
+        recipient: grantee.recipient
       })
-    ).rejects.toThrow()
+      await recordPartyGrants({
+        storage: session.storage,
+        did: grantee.did,
+        zcaps: [
+          collectionGrant({
+            id: `z-docs-${grantee === app ? 'app' : 'other'}`,
+            collectionId: 'app-docs',
+            controller: grantee.did
+          })
+        ]
+      })
+    }
+    const { grants } = await readParty({
+      storage: session.storage,
+      did: app.did
+    })
+    const appDocs = async () =>
+      (await session.remoteStore.collectionEncryption({
+        collectionId: 'app-docs'
+      }))!
+    return { ...session, app, other, stranger, grants, appDocs }
+  }
+
+  /**
+   * Asserts a rotation failed closed: one failure, nothing rotated, no new
+   * epoch on `app-docs`, and no revocation POSTed.
+   *
+   * @param options {object}
+   * @param options.rotation {object}   the rotation outcome
+   * @param options.before {CollectionEncryption}   `app-docs` before it ran
+   * @param options.after {CollectionEncryption}   `app-docs` after it ran
+   * @param options.revoked {unknown[]}   the fake remote's revoke recorder
+   */
+  function expectFailedClosed({
+    rotation,
+    before,
+    after,
+    revoked
+  }: {
+    rotation: Awaited<ReturnType<StorageManager['revokeCollectionRecipients']>>
+    before: CollectionEncryption
+    after: CollectionEncryption
+    revoked: unknown[]
+  }): void {
+    expect(rotation).toEqual({
+      collections: 1,
+      rotated: 0,
+      failed: 1,
+      revokedIds: []
+    })
+    expect(after).toEqual(before)
+    expect(after.epochs).toHaveLength(before.epochs!.length)
+    expect(revoked).toEqual([])
+  }
+
+  it.each<
+    [
+      string,
+      (options: {
+        memory: MemoryDirectory
+        stranger: PartyIdentity
+      }) => Promise<void>
+    ]
+  >([
+    [
+      'a listing the store cannot read',
+      async ({ memory }) => {
+        vi.spyOn(memory.store, 'list').mockResolvedValue(null)
+      }
+    ],
+    [
+      'an entry it cannot decrypt',
+      async ({ memory }) => {
+        const list = memory.store.list
+        vi.spyOn(memory.store, 'list').mockImplementation(async () => [
+          ...((await list()) ?? []),
+          {
+            resourceId: 'zUndecryptable',
+            readError: new Error('unknown epoch')
+          }
+        ])
+      }
+    ],
+    [
+      'an unparseable body at its own id',
+      async ({ memory, stranger }) => {
+        await plantEntry({
+          memory,
+          body: { version: 1, kind: 'app', id: stranger.did, grants: 'none' }
+        })
+      }
+    ],
+    [
+      'an entry from a newer build at its own id',
+      async ({ memory, stranger }) => {
+        await plantEntry({
+          memory,
+          body: entryBody({ did: stranger.did, version: 2 })
+        })
+      }
+    ]
+  ])('fails closed, wrapping nothing, on %s', async (_label, corrupt) => {
+    const { storage, memory, stranger, app, grants, revoked, appDocs } =
+      await coAdmittedSession()
+    await corrupt({ memory, stranger })
+    const before = await appDocs()
+
+    // No directory handed in, so the rotation reads it, as a caller that
+    // read the party's grants elsewhere would have it do.
+    const rotation = await storage.revokeCollectionRecipients({
+      did: app.did,
+      grants
+    })
+
+    expectFailedClosed({ rotation, before, after: await appDocs(), revoked })
+  })
+
+  it('fails closed, wrapping nothing, on an absent directory', async () => {
+    const { storage, app, grants, revoked, appDocs } = await coAdmittedSession()
+    // The real directory binding: this account holds no `connections`
+    // descriptor, so every directory read is refused.
+    vi.mocked(storage.connectionsDirectory).mockRestore()
+    await expect(storage.connectionsDirectory()).rejects.toThrow('absent')
+    const before = await appDocs()
+
+    const rotation = await storage.revokeCollectionRecipients({
+      did: app.did,
+      grants
+    })
+
+    expectFailedClosed({ rotation, before, after: await appDocs(), revoked })
+  })
+
+  it('ignores a body at an id its own members do not derive, and rotates', async () => {
+    const { owner, stores, storage, memory, stranger, app, grants, appDocs } =
+      await coAdmittedSession()
+    // A stranger on the roster, and a well-formed entry granting it the
+    // collection, misplaced at an id its own DID does not derive to.
+    await addRecipient({
+      store: stores.storeFor('app-docs'),
+      recipient: stranger.recipient,
+      owner: { keyAgreementKey: owner.keyAgreementKey }
+    })
+    await plantEntry({
+      memory,
+      resourceId: 'zMisplacedEntry',
+      body: entryBody({
+        did: stranger.did,
+        zcaps: [
+          collectionGrant({
+            id: 'z-stranger',
+            collectionId: 'app-docs',
+            controller: stranger.did
+          })
+        ]
+      })
+    })
+
+    const rotation = await storage.revokeCollectionRecipients({
+      did: app.did,
+      grants
+    })
+
+    expect(rotation).toEqual({
+      collections: 1,
+      rotated: 1,
+      failed: 0,
+      revokedIds: ['z-docs-app']
+    })
+    expect(currentEpochKids(await appDocs())).toHaveLength(2)
+  })
+
+  it('wraps no retired party, and wraps a live party whose grant expired', async () => {
+    const { owner, stores, storage, memory, app, grants, appDocs } =
+      await coAdmittedSession()
+    const retired = await generateAppIdentity()
+    const lapsed = await generateAppIdentity()
+    for (const grantee of [retired, lapsed]) {
+      await addRecipient({
+        store: stores.storeFor('app-docs'),
+        recipient: grantee.recipient,
+        owner: { keyAgreementKey: owner.keyAgreementKey }
+      })
+    }
+    // A retired entry still carrying its grant: the retirement alone keeps
+    // it out of the fresh epoch.
+    await plantEntry({
+      memory,
+      body: entryBody({
+        did: retired.did,
+        retired: '2026-09-02T00:00:00.000Z',
+        zcaps: [
+          collectionGrant({
+            id: 'z-retired',
+            collectionId: 'app-docs',
+            controller: retired.did
+          })
+        ]
+      })
+    })
+    // A live entry whose only grant expired: its recipient entry outlives
+    // the grant, so it is still admitted.
+    await recordPartyGrants({
+      storage,
+      did: lapsed.did,
+      kind: 'agent',
+      zcaps: [
+        collectionGrant({
+          id: 'z-lapsed',
+          collectionId: 'app-docs',
+          controller: lapsed.did,
+          expires: new Date(Date.now() - 1_000_000).toISOString()
+        })
+      ]
+    })
+
+    const rotation = await storage.revokeCollectionRecipients({
+      did: app.did,
+      grants
+    })
+
+    expect(rotation).toMatchObject({ rotated: 1, failed: 0 })
+    const kids = currentEpochKids(await appDocs())
+    expect(kids).toContain(lapsed.recipient.id)
+    expect(kids).not.toContain(retired.recipient.id)
+    expect(kids).not.toContain(app.recipient.id)
+    expect(kids).toHaveLength(3)
+  })
+})
+
+describe('a revocation with no history row', () => {
+  it('rotates an app and an agent off every collection and POSTs every grant', async () => {
+    const app = await generateAppIdentity()
+    const agent = await generateAppIdentity()
+    const { owner, storage, revoked, setCollections, remoteStore } =
+      await directorySession()
+    // `app-docs` the app created; the agent was admitted to it by its grant.
+    // `team-notes` carries no generator stamp, and the agent reads it by its
+    // grant alone.
+    for (const [collectionId, grantees] of [
+      ['app-docs', [app, agent]],
+      ['team-notes', [agent]]
+    ] as const) {
+      for (const grantee of grantees) {
+        await storage.provisionEncryptedCollection({
+          collectionId,
+          recipient: grantee.recipient
+        })
+      }
+    }
+    setCollections([
+      {
+        id: 'app-docs',
+        url: `${SPACE_URL}app-docs/`,
+        generator: { id: app.did }
+      },
+      { id: 'team-notes', url: `${SPACE_URL}team-notes/` }
+    ])
+    await recordPartyGrants({
+      storage,
+      did: app.did,
+      zcaps: [
+        collectionGrant({
+          id: 'z-app-docs',
+          collectionId: 'app-docs',
+          controller: app.did
+        })
+      ]
+    })
+    await recordPartyGrants({
+      storage,
+      did: agent.did,
+      kind: 'agent',
+      zcaps: [
+        collectionGrant({
+          id: 'z-agent-docs',
+          collectionId: 'app-docs',
+          controller: agent.did
+        }),
+        collectionGrant({
+          id: 'z-agent-team',
+          collectionId: 'team-notes',
+          controller: agent.did
+        })
+      ]
+    })
+    // Not one Grant, CollectionShare, or Login row exists.
+    expect((await storage.listHistoryItems()).entries).toEqual([])
+
+    for (const party of [app, agent]) {
+      const { rotation, grants } = await rotateParty({
+        storage,
+        did: party.did
+      })
+      expect(rotation.failed).toBe(0)
+      await storage.revokeConnectionGrants({
+        grants,
+        revokedByRotation: rotation.revokedIds
+      })
+    }
+
+    for (const collectionId of ['app-docs', 'team-notes']) {
+      const descriptor = await remoteStore.collectionEncryption({
+        collectionId
+      })
+      expect(currentEpochKids(descriptor!), collectionId).toEqual([
+        owner.keyAgreementKey.id
+      ])
+    }
+    expect(revokedIdsOf(revoked).sort()).toEqual([
+      'z-agent-docs',
+      'z-agent-team',
+      'z-app-docs'
+    ])
+  })
+})
+
+describe('a planted directory entry', () => {
+  it("steers no revocation at another party's grants or app key", async () => {
+    const victim = await mintAppKeyCredential({
+      app: { name: 'Victim', appUrl: 'https://victim.example/app' },
+      origin: 'https://victim.example'
+    })
+    const victimDid = (victim.credential.credentialSubject as { id: string }).id
+    const planted = await generateAppIdentity()
+    const {
+      owner,
+      storage,
+      memory,
+      ciphers,
+      seedResource,
+      remoteStore,
+      revoked
+    } = await directorySession({ appConnections: true })
+    await storage.provisionEncryptedCollection({
+      collectionId: 'app-docs',
+      recipient: x25519RecipientFromDidKey({ did: victimDid })
+    })
+    const { id: victimKeyId, envelope } = await ciphers.appConnections.encrypt({
+      data: victim.credential as unknown as Json
+    })
+    seedResource({
+      logicalKey: 'appConnections',
+      resourceId: victimKeyId,
+      body: envelope
+    })
+    // An entry at the planted party's id, carrying the victim's grant and
+    // naming the victim's app key.
+    const body = entryBody({
+      did: planted.did,
+      appKey: victimKeyId,
+      zcaps: [
+        collectionGrant({
+          id: 'z-victim',
+          collectionId: 'app-docs',
+          controller: victimDid
+        })
+      ]
+    })
+    await plantEntry({ memory, body })
+
+    // The reader checks drop a grant delegated to another party.
+    const { entry, grants } = await readParty({ storage, did: planted.did })
+    expect(entry?.appKey).toBe(victimKeyId)
+    expect(grants).toEqual([])
+    const { outcome, rotated } = await revokeAppAuthority({
+      storage,
+      subjectDid: planted.did
+    })
+    expect(outcome).toMatchObject({ revoked: 0, withdrawn: 0 })
+    expect(rotated).toBe(0)
+    expect(revoked).toEqual([])
+    const descriptor = await remoteStore.collectionEncryption({
+      collectionId: 'app-docs'
+    })
+    expect(currentEpochKids(descriptor!)).toEqual(
+      expect.arrayContaining([
+        owner.keyAgreementKey.id,
+        x25519RecipientFromDidKey({ did: victimDid }).id
+      ])
+    )
+
+    // The app key does not bind the planted DID, so it is left on the server.
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: victimKeyId,
+        did: planted.did
+      })
+    ).toBe('foreign')
+    expect(
+      (
+        await remoteStore.listSyncedDocuments({ logicalKey: 'appConnections' })
+      ).map(({ id }) => id)
+    ).toEqual([victimKeyId])
+  })
+})
+
+describe('StorageManager.deleteAppKeyResource (remote)', () => {
+  it('deletes every server copy of the key before the replica holds it', async () => {
+    // A remembered session before its pull: the local replica holds no copy,
+    // and the server holds the key twice under two ids.
+    const { storage, ciphers, seedResource, remoteStore, localStore } =
+      await directorySession({ appConnections: true })
+    const editor = await mintAppKeyCredential({
+      app: { name: 'Editor', appUrl: 'https://app.example/editor' },
+      origin: 'https://app.example'
+    })
+    const reader = await mintAppKeyCredential({
+      app: { name: 'Reader', appUrl: 'https://app.example/reader' },
+      origin: 'https://app.example'
+    })
+    const editorDid = (editor.credential.credentialSubject as { id: string }).id
+    const seeded: Record<string, string> = {}
+    for (const [label, credential] of [
+      ['editor-1', editor.credential],
+      ['editor-2', editor.credential],
+      ['reader', reader.credential]
+    ] as const) {
+      const { id, envelope } = await ciphers.appConnections.encrypt({
+        data: credential as unknown as Json
+      })
+      seedResource({
+        logicalKey: 'appConnections',
+        resourceId: id,
+        body: envelope
+      })
+      seeded[label] = id
+    }
+    expect(
+      await localStore.rxCollection('appConnections').find().exec()
+    ).toHaveLength(0)
+    const held = async () =>
+      (
+        await remoteStore.listSyncedDocuments({ logicalKey: 'appConnections' })
+      ).map(({ id }) => id)
+
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: seeded['editor-1'],
+        did: editorDid
+      })
+    ).toBe('deleted')
+
+    // Both copies of the key are gone from the server; the other app's stays.
+    expect(await held()).toEqual([seeded.reader])
+    // A dangling reference reads as already deleted.
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: seeded['editor-1'],
+        did: editorDid
+      })
+    ).toBe('absent')
+    expect(await held()).toEqual([seeded.reader])
+  })
+
+  it('deletes the named copy last, so a retry after a torn delete finds the rest', async () => {
+    const { storage, ciphers, seedResource, remoteStore } =
+      await directorySession({ appConnections: true })
+    const editor = await mintAppKeyCredential({
+      app: { name: 'Editor', appUrl: 'https://app.example/editor' },
+      origin: 'https://app.example'
+    })
+    const editorDid = (editor.credential.credentialSubject as { id: string }).id
+    const ids: string[] = []
+    for (let copy = 0; copy < 2; copy++) {
+      const { id, envelope } = await ciphers.appConnections.encrypt({
+        data: editor.credential as unknown as Json
+      })
+      seedResource({
+        logicalKey: 'appConnections',
+        resourceId: id,
+        body: envelope
+      })
+      ids.push(id)
+    }
+    const [named, other] = ids
+    const deleteSynced = remoteStore.deleteSyncedResource.bind(remoteStore)
+    const deleted: string[] = []
+    const spy = vi
+      .spyOn(remoteStore, 'deleteSyncedResource')
+      .mockImplementation(async options => {
+        deleted.push(options.resourceId)
+        if (options.resourceId === named) {
+          throw new Error('connection dropped')
+        }
+        await deleteSynced(options)
+      })
+
+    await expect(
+      storage.deleteAppKeyResource({ appKey: named, did: editorDid })
+    ).rejects.toThrow('connection dropped')
+    // The other copy went first; the named one is still there.
+    expect(deleted).toEqual([other, named])
+
+    spy.mockRestore()
+    expect(
+      await storage.deleteAppKeyResource({ appKey: named, did: editorDid })
+    ).toBe('deleted')
+    expect(
+      await remoteStore.listSyncedDocuments({ logicalKey: 'appConnections' })
+    ).toEqual([])
   })
 })
 

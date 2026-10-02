@@ -80,7 +80,10 @@ grantable only by its own declaration. An idempotent
 login-time sweep deletes app-key credentials stranded in
 `private-credentials` and retracts app-key public copies left with no private
 credential behind them; the
-affected app reconnects as a first run.
+affected app reconnects as a first run. A stranded key predates the
+`connections` directory and has no entry there, so the sweep revokes no
+grant for it. It rotates only the collections whose `generator.id` names the
+app, and the app's grants end at their own expiry.
 
 Match and consent-preview candidates come from
 `StorageManager.listAppKeys()`, so ordinary credentials stay out of the
@@ -145,9 +148,9 @@ wallet-provided `appConnect: { firstRun }` member (a JSON-literal term in
 the VP `@context`), all before signing so the DIDAuth proof covers them
 (`processAppConnect` in `src/lib/walletRequest/appConnect.ts`).
 `WalletGetPage` renders an app-centric consent panel in place of the three
-generic sections, and approval records an App Connect `Grant` activity. A
-plain "Login with Wallet" that grants nothing records a `Login` activity
-instead.
+generic sections. Approval writes the app's `connections` entry and then an
+App Connect `Grant` activity (see "The consent record" below). A plain
+"Login with Wallet" that grants nothing records a `Login` activity instead.
 
 The response VP does not take the holder dispatch above.
 `processAppConnect` passes an explicit holder override, so the holder and
@@ -161,9 +164,9 @@ did:key on a transient one. An app's own `acceptedMethods` does not steer it
 whichever path the request took: an App Connect `capabilityQuery` or the
 interaction-URL request page. Those are the only two paths that grant
 capabilities at all. The Applications page lists each one's grantees and can
-revoke them: an App Connect grant under its app's row, keyed by the app key,
-and an interaction-URL grant under its agent's row, keyed by the grantee
-`controller`. A plain CHAPI `get` carrying a standalone
+revoke them: an App Connect grant under its app's row, and an
+interaction-URL grant under its agent's row. Each row is one `connections`
+entry, keyed by the grantee DID. A plain CHAPI `get` carrying a standalone
 `AuthorizationCapabilityQuery` would have no row to land on, so the get
 popup refuses it before consent (`standaloneZcapRequest` in
 `precheckGetRequest`, see "CHAPI integration"). A provisioned
@@ -243,14 +246,13 @@ fails outright is logged, and the rows settle over the first resolution. A
 metadata read that fails, or a collection the store cannot see, gets an
 empty attribution and reads `unattributed`. The second pass also joins the
 creating app (`creatorApp: { name, appUrl }`) onto an app stamp's
-`generator.id` from the wallet's own records (`lookupCollectionCreators` in
-`src/lib/connectedApps.ts`). The app key answers while the creator is
-connected. Once it is not, the App Connect Grant activities that recorded
-grants to its DID answer, since a disconnect deletes the app key. The
-storage browser's "Created by" line reads the same join, so a creator is
-named the same way on both. The CHAPI get popup has already listed
-`app-connections` for its app-key match, and hands that listing to the
-second pass rather than listing the collection again. The
+`generator.id` from the `connections` directory (`lookupCollectionCreators`
+in `src/lib/connectedApps.ts`). It reads the directory once and matches each
+stamp in memory to the `kind: 'app'` entry whose `id` is that DID, so the
+host sees no read at the id a DID derives to. A disconnected creator still
+answers, since retirement keeps an entry's names. A failed directory read
+leaves every creator unresolved. The storage browser's "Created by" line
+reads the same join, so a creator is named the same way on both. The
 same-application test compares app URLs rather than origins, because the
 wallet tells apps apart by `appUrl` and two may share one origin. The
 creator's app URL is the collection's own `generator.url` when it carries
@@ -263,8 +265,8 @@ app URL, so it reads `other` unless the collection is its own (`this-app`).
 The reading carries the creator's display name (`creatorName`): the stamped
 `generator.name`, else the name the join recovers. The row names the creator
 by it, or by `generator.origin` otherwise. A stamp with no `origin` names an
-agent. The join skips it, since an agent holds no app key and writes no App
-Connect Grant, and an unnamed one is named by its shortened `generator.id`. A public collection carries no roster and reports no
+agent. The join skips it, and an unnamed one is named by its shortened
+`generator.id`. A public collection carries no roster and reports no
 reading. The same metadata read says whether the collection carries an
 `encryption` descriptor. A string target admits the grantee to no roster,
 so on an encrypted collection the row gets the ciphertext note once the
@@ -272,56 +274,138 @@ second pass lands.
 
 Because the user is recipient zero, the wallet decrypts these collections in
 the storage browser as an ordinary recipient with its vault KAK,
-descriptor-driven from the collection's governing log. Revoking a connected
-app rotates the epoch off the app's key for each such collection
-(`removeRecipient`, which rotates then revokes the pull-axis grants
-indivisibly), so a revoked app cannot decrypt future writes. The pull
-revokes each grant under the grant stage's per-grant policy, so a refusal
-it cannot explain fails that collection. The retiring
-entry is the app's own, derived from its subject DID the way provisioning
-wrote it, so another app admitted to the same collection keeps its access.
-Ciphertext it already fetched stays readable to it. Revoking a connected
-agent runs the same rotation over the collections its recorded grants
-target (see "The interaction-URL request page" in external-request.md).
+descriptor-driven from the collection's governing log.
 
-Which collections that rotation covers is the union of two sources. The
-first is the Space's collection listing: every collection whose Collection
-Metadata names the app's subject DID as its `generator.id`, the attribution
-stamped at provisioning. The second is the collections the app's recorded
-grants target, expired grants included, which reaches a collection the app
-was admitted to but did not create. A grant expires on its own; a recipient
-entry does not, so the listing is what keeps the rotation working for an app
-whose grants all lapsed before the user disconnected it. The unexpired
-grants still supply the capabilities the rotation revokes on its pull axis.
+**The consent record.** Every grant the wallet delegates is recorded on the
+grantee's `connections` entry, in `grants`, before the grantee is escrowed
+into any key epoch and before any presentation leaves the wallet
+(`decisions/0034-the-directory-is-the-grant-index.md`). Approval signs every
+delegation first, which is local and needs no target to exist. Then the
+app's entry is written (`recordGrants`, through `beforeProvision` in
+`composeAndDeliverResponse`). It is created as `kind: 'app'`, or merged into
+by zcap id, with the app's `name`, its attested `origin`, its canonical app
+URL as `url`, and the `app-connections` Resource holding its key as
+`appKey`. A share grant is marked `grantKind: 'share'`, and every other
+grant `'grant'`. The App Connect `Grant` activity follows, as audit trail.
+Only then is each share escrowed and each collection provisioned. Every App
+Connect writes its entry before the VP is composed, a zero-grant connect
+included, on every session kind. A guest's lands in its local directory.
 
-The recorded grants are written before any grantee is escrowed. Approval
-signs every delegation first, which is local and needs no target to exist.
-When some grant shares or provisions a collection, the Grant activity is
-then persisted with the signed grants and the connect's `firstRun`. Only
-after that is each share escrowed and each collection provisioned
-(`beforeProvision` in `processZcaps`, wired in
-`composeAndDeliverResponse`). This matters for an existing private
-collection, whose `generator.id` still names its first creator: the recorded
-grants are the only source that names it for the second app. A failed
-persist fails the request with nothing escrowed. A share or provisioning
-step that fails after the persist fails the request too, and the Grant is
-removed again, since nothing was delivered. If that removal fails, the
-Grant stays, naming a grant whose collection may not list the app.
-Revocation tolerates that: it
-skips a collection whose current key epoch does not list the grantee, and a
-collection that was never created reads as having no epochs. A request with
-nothing to provision persists its Grant after compose, as before. Either way
-one request writes one Grant.
+A failed entry write fails the request closed, with nothing escrowed and
+nothing delivered. So does an entry of another kind at the app's id, which
+wallet-core refuses with `ConnectionKindMismatchError`. A share or
+provisioning step that fails after the write fails the request too. Nothing
+was delivered, so the consent is rolled back. Each of the request's grants
+whose escrow did not land is removed (`removeGrants`, by zcap id). A grant
+whose escrow landed stays listed. Its grantee holds the decryption
+material, and the user needs a row to revoke it from. An escrow counts as
+landed when the governing-log append's response was lost but a re-read
+finds the grantee on the current epoch.
 
-A collection the rotation could not re-key, or a collection listing that
-could not be read, keeps the disconnect incomplete: the app-key row stays
-listed, no Revoke activity is recorded, and the page reports the failure so
-the user can retry. The remaining grants are still revoked first. The retry
-converges, since each stage detects its own completion. The login-time sweep
-of stranded app keys runs the same sequence (`revokeAppAuthority`). The blinded-index key is not rotated
-on revoke (see "Client revocation and the epoch cascade" in client-revocation.md), so the revoked
-app keeps the ability to compute blinded terms while the query endpoint
-stays behind the revoked pull grant.
+When no grant escrowed, the Grant is removed too. The consent cleared the
+entry's `retired` and set its `appKey`, so an entry that was absent or
+retired before the consent is retired again (`retireConnection`). The state
+before the consent is read at the app's id just ahead of the write. A
+disconnected app whose reconnect failed is therefore not listed as
+connected. An entry the consent created is retired rather than deleted. It
+keeps the app's names, and a later consent un-retires it. An entry that was
+live before stays live. When some grant escrowed, the entry stays live, and
+the Grant stays as the audit trail for the escrowed grants. It also names
+the undelivered ones.
+
+If the rollback fails, the undelivered grants stay listed, and revoking
+them POSTs revocations for capabilities no requester holds. A failed
+delivery to an exchange (`exchangeFailed`) keeps the record, since the
+composed response is offered for manual delivery.
+
+Recording before escrow matters most for an existing private collection,
+whose `generator.id` still names its first creator. The entry's grants are
+the only source that names that collection for the second app.
+
+**The Applications listing** (`listApplicationsView` in
+`src/session/applications.ts`) reads the directory once and filters in
+memory. An app row is an unretired `kind: 'app'` entry holding an `appKey`
+or any grant. Its display name is the user's `label`, then the app's
+`name`, then its origin, then its shortened DID. Rows sort by `lastSeen`,
+which only a consent moves. The page still lists `app-connections` for its
+health: the undecryptable and no-epoch-key warnings and the purge button
+read that scan. A row opens `/applications/:resourceId`, keyed by the
+entry's resource id. That page shows every grant on the entry, live and
+expired, newest first, and dates "Connected" from `firstSeen`. An app that
+connected before the directory existed has no entry. It is not listed, and
+its grants end at their own expiry
+(`decisions/0036-no-backfill-for-the-directory.md`).
+
+**Disconnecting an app** (`revokeAppAccess` in `src/lib/connectedApps.ts`)
+reads the app's entry and runs its stages in order.
+
+1. The rotation. Each candidate collection's key epoch rotates off the
+   app's key (`removeRecipient`, which rotates and then revokes the
+   pull-axis grants indivisibly), so a revoked app cannot decrypt future
+   writes. The retiring recipient is the app's own, derived from its DID the
+   way provisioning wrote it, so another party admitted to the same
+   collection keeps its access. Ciphertext the app already fetched stays
+   readable to it.
+2. The grant POSTs (`revokeConnectionGrants`), each under the grant stage's
+   per-grant policy. A grant the rotation's pull already confirmed revoked
+   is counted without a second POST.
+3. The server-side app-key delete (`StorageManager.deleteAppKeyResource`).
+   The Resource the entry's `appKey` names is read, and deleted only when
+   its credential binds the entry's DID: its subject is that DID, and
+   `appKeySeedBindsSubject` holds. Every other `app-connections` Resource
+   carrying the same credential goes with it. A 404 or a dangling `appKey`
+   reads as already deleted. A Resource that does not bind the DID is left
+   alone, since it is some other app's seed. On a session with a Space the
+   delete goes to the server whatever the session kind, so a disconnect
+   before a remembered session's pull cannot leave the key there for a
+   reconnect to match.
+4. The retirement (`retireConnection`), and then the Revoke row, as audit
+   trail.
+
+The rotation's candidates are the union of two sources. The first is every
+collection the entry's grants target, expired grants included, protected
+share targets among them. That reaches a collection the app was admitted to
+and did not create. The second is every unprotected collection whose
+Collection Metadata, in the Space listing, names the app's DID as
+`generator.id`. A grant expires on its own, and a recipient entry does not,
+so the listing keeps the rotation working for an app whose grants all
+lapsed. Only a candidate whose current epoch still lists the app is rotated.
+The unexpired grants supply the capabilities the pull revokes.
+
+A stage that does not land throws before the retirement, so the row stays
+listed and the user can retry. A collection the rotation could not re-key
+is such a failure, and so is a collection listing that could not be read.
+The remaining grants are still revoked first. The retry converges, since
+each stage detects its own completion. A collection whose current epoch no
+longer lists the app is skipped, a re-POSTed grant answered
+`AlreadyRevokedError` counts as revoked, and a key already deleted reads as
+absent. The retirement passes the ids of the grants the run handled. When a
+concurrent consent has merged another grant onto the entry since, the
+retirement throws and the row stays listed. A Revoke row that fails after
+the retirement leaves no audit row. The blinded-index key is not rotated on
+revoke (see "Client revocation and the epoch cascade" in
+client-revocation.md), so the revoked app keeps the ability to compute
+blinded terms while the query endpoint stays behind the revoked pull grant.
+Revoking a connected agent runs the same stages with no app key to delete
+(see "The interaction-URL request page" in external-request.md).
+
+**Which recipients a rotation keeps.** A rotation wraps the fresh epoch only
+to recipients the wallet admitted, through the admitted-recipient resolver
+in `StorageManager`. These are the owner, the account's user key
+generations, and the recipient kid of every grant on every unretired
+`connections` entry that targets the collection. Expired grants count, since
+a recipient entry outlives its grant. No protected-collection filter
+applies, so a share reader of `private-credentials` is kept. Any other
+roster entry receives no wrap. Every reader of the directory drops a grant
+whose `zcap.controller` is not the entry's `id`, and one whose target lies
+outside this Space, so a planted entry cannot steer the set at another
+party's capabilities. A body sitting at another id than its own derives to
+is ignored. The resolver fails closed, so nothing rotates, when the
+directory is absent or refused, when its listing fails, or when it holds an
+entry it cannot decrypt, a body it cannot parse at its own id, or an entry
+from a newer build. Reading such a directory as empty would evict every
+co-admitted party
+(`decisions/0035-the-directory-rides-the-session-backend-and-is-never-replicated.md`).
 
 A grant minted in a transient session ends at its own expiry or when its
 annex generation is collected, whichever comes first. Revocation is
@@ -368,10 +452,11 @@ ciphertext-only read.
 epoch-key recipient entry, one signed append on the collection's governing
 log) are granted together. `StorageManager.delegateShareGrant` signs the
 zcap with the request's other grants, and it rides back in the response
-VP's `zcap` array. Once the Grant records it,
-`StorageManager.shareCollection` escrows the reader and records the share.
-It refuses a zcap that is not read-only on that collection, so no code path
-grants one axis without the other.
+VP's `zcap` array. Once the reader's `connections` entry records it, marked
+`grantKind: 'share'`, `StorageManager.shareCollection` escrows the reader
+and writes a `CollectionShare` activity as audit trail. It refuses a zcap
+that is not read-only on that collection, so no code path grants one axis
+without the other.
 
 **The recipient key is derived, not transmitted.** `name` must be one of the
 shareable standard collections: every `WALLET_STANDARD_COLLECTIONS` entry
@@ -381,7 +466,9 @@ shareable, its Resources carrying app seeds. Neither is `wallet-activity`. Its
 Grant and collection-share activities carry each delegated capability verbatim,
 proof and capability chain included, so one reader of it would learn every
 connected app and agent, with its targets, verbs, and expiry, and would hold
-the capability documents themselves. The flag gates new shares only. A
+the capability documents themselves. The `connections` directory carries the
+same documents and is never grantable at all. The flag gates new shares
+only. A
 reader escrowed into `wallet-activity` before it was narrowed stays in that
 collection's key-epoch roster. The shares listing reads every encrypted
 standard collection rather than only the shareable ones, so such a reader
@@ -409,8 +496,21 @@ Storage collection list (`unshareCollection`), not expiry: the share TTL
 (`SHARE_ZCAP_TTL_MS`) is long, because expiry would end the pull axis while
 leaving the grantee in the key roster. A share also escrows the grantee into
 the collection's blinded-index HMAC key when the descriptor carries one;
-removal drops that wrap but never rotates the key (see "Client revocation
+removal drops that wrap but does not rotate the key (see "Client revocation
 and the epoch cascade" for why, and what a removed grantee keeps).
+
+The dialog lists each collection's current-epoch readers, read from the
+roster on its own, so a directory that cannot be read leaves the readers
+listed unnamed. Beside them it lists a reader whose entry still holds an
+unexpired share grant on the collection. That is the state a torn unshare
+leaves, and listing it keeps the removal retryable. A reader is named from
+the entry whose DID derives its kid, by `label`, then `name`, with its
+origin and the expiry of its latest share grant. An unshare reads the
+directory once. It rotates the epoch off the reader's kid, under the same
+admitted-recipient resolver a revocation uses, and POSTs the share grants
+the reader's entry holds on that collection. Then it removes those grants
+from the entry (`removeGrants`) and writes a `CollectionUnshare` activity.
+The entry is not retired, since the party may hold other grants.
 
 **The grantee's half lives in `@interop/was-react`.** An app declares the
 wallet-owned collections it wants in `WasAppConfig.sharedCollections`, which

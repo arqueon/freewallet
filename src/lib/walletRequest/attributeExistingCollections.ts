@@ -19,7 +19,7 @@ import {
   lookupCollectionCreators,
   type CollectionCreator
 } from '@/lib/connectedApps'
-import { recordedCreatorOf } from '@/lib/collectionAttribution'
+import { appGeneratorIds, recordedCreatorOf } from '@/lib/collectionAttribution'
 import { createLogger } from '@/lib/log'
 import {
   existingCollectionsFrom,
@@ -35,31 +35,29 @@ const log = createLogger('fw:request:attribution')
  * Re-resolves the grants with each existing collection's attribution read in.
  * It reads each such collection's own metadata (the `generator` object), in
  * parallel, joins the creator's display name and canonical `appUrl` from the
- * wallet's records (`lookupCollectionCreators`, keyed by `generator.id`), and
+ * `connections` directory (`lookupCollectionCreators`, keyed by
+ * `generator.id` and matched in memory against one listing read), and
  * resolves again. The joined `appUrl` matters only for a collection stamped
  * without `generator.url`. An agent's stamp (no `generator.origin`) is not
  * joined, and names the agent from the stamp alone. A string target naming
  * an encrypted collection also gets that collection's current key-epoch recipients
- * (`listCollectionShares`, handed an empty history so it reads no activity).
+ * (`listCollectionShares`, handed no directory entries, so the roster read
+ * stays independent of the directory read).
  * A standard collection's is read at once, usually off the session's cached
  * descriptor. Any other's is read only once its metadata says it is
  * encrypted, so a plaintext collection costs no descriptor read. Every read
  * is best-effort: a failed metadata read leaves that collection
  * unattributed, a failed roster read leaves its recipients unread (the
  * ciphertext note stays, and the interaction-URL page does not refuse on
- * it), and a failed records lookup leaves every creator unresolved,
+ * it), and a failed directory read leaves every creator unresolved,
  * so a collection this app did not create reads as another application's
- * and names its origin. A caller that has already
- * listed the app keys (the CHAPI get popup's App Connect match) hands the
- * listing in, so the lookup does not read `app-connections` a second time.
+ * and names its origin.
  *
  * @param options {object}
  * @param options.resolution {Parameters<typeof resolveGrants>[0]}   the
  *   first pass's inputs
  * @param options.grants {ResolvedGrant[]}   the first pass's result
  * @param options.storage {Session['storage']}
- * @param [options.appKeys] {Awaited<ReturnType<Session['storage']['listAppKeys']>>}
- *   the app-key listing, when the caller already holds one
  * @returns {Promise<ResolvedGrant[] | undefined>}   undefined when no grant
  *   names an existing private collection or a string target's encrypted
  *   collection, so nothing changes
@@ -67,13 +65,11 @@ const log = createLogger('fw:request:attribution')
 export async function attributeExistingCollections({
   resolution,
   grants,
-  storage,
-  appKeys
+  storage
 }: {
   resolution: Parameters<typeof resolveGrants>[0]
   grants: ResolvedGrant[]
   storage: Session['storage']
-  appKeys?: Awaited<ReturnType<Session['storage']['listAppKeys']>>
 }): Promise<ResolvedGrant[] | undefined> {
   const collectionIds = new Set(
     grants.flatMap(({ target }) =>
@@ -122,12 +118,9 @@ export async function attributeExistingCollections({
    */
   async function readRoster(collectionId: string): Promise<void> {
     try {
-      // An empty history keeps the reader off the activity scan, whose
-      // labels this pass does not use.
-      const shares = await storage.listCollectionShares({
-        collectionId,
-        items: { entries: [], unreadable: 0 }
-      })
+      // The roster alone: this pass names no reader, and a withheld
+      // directory must not change what the roster says.
+      const shares = await storage.listCollectionShares({ collectionId })
       rosters.set(
         collectionId,
         new Set(shares.map(({ recipientId }) => recipientId))
@@ -183,7 +176,14 @@ export async function attributeExistingCollections({
   )
   let creators: ReadonlyMap<string, CollectionCreator> = new Map()
   try {
-    creators = await lookupCollectionCreators({ storage, generators, appKeys })
+    if (appGeneratorIds(generators).length > 0) {
+      const { listing, spaceUrl } = await storage.readConnectionsListing()
+      creators = lookupCollectionCreators({
+        connections: listing.entries,
+        spaceUrl,
+        generators
+      })
+    }
   } catch (err) {
     log.warn("Could not look up the existing collections' creators", { err })
   }

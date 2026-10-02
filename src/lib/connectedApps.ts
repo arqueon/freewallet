@@ -1,113 +1,98 @@
 /**
- * Connected-applications model for the Applications settings section. A
- * connected app is one the user linked through the App Connect CHAPI flow: the
- * wallet holds a self-issued app-key credential for it (in the encrypted
- * `app-connections` collection, kept apart from the user's own credentials
- * because each Resource carries that app's private seed) and each connect wrote
- * a Grant activity to `wallet-activity` recording the display name and the
- * storage grants.
+ * Connected-parties model for the Applications settings section, read from
+ * the `connections` directory (`@interop/wallet-core/connections`): one
+ * encrypted entry per party the wallet has dealt with. An app connected
+ * through the App Connect CHAPI flow has a `kind: 'app'` entry carrying its
+ * attested origin, its canonical app URL, the `app-connections` Resource
+ * holding its app key (`appKey`), and every grant it was delegated. An agent
+ * that answered an interaction-URL request has a `kind: 'agent'` entry with
+ * its grants and no app key. The `wallet-activity` Grant and Revoke rows are
+ * audit trail, and nothing here reads them.
  *
- * `listConnectedApps` joins those two sources into one entry per app-key
- * credential: the credential supplies the origin, subject DID, and connected
- * date; the latest matching Grant activity supplies the raw display name, the
- * grant summaries, and the last-connected timestamp. The join is on the
- * credential's `appUrl`, which every mint and every connect records, so
- * several apps sharing an origin get their own attribution.
- * `deriveGrantsState` then reads each recorded grant's delegation signer
- * against the account
- * document's current key set (wallet-core's `deriveGrantSignerState`): a grant
- * signed by a since-disconnected wallet client is already dead (the
- * current-key-set rule), so its app lists as orphaned -- "reconnect to use
- * again" -- rather than as live. A grant minted from a transient session is
- * signed by a client-annex per-visit key the document never lists, so it
- * derives as unknown rather than orphaned; its chain is dead exactly when
- * the generation delegation it chains under no longer belongs to the
- * generation the account document points at.
- * `lookupCollectionCreators` reads the same two sources the other way round:
- * given the `generator.id` DIDs stamped on existing collections, it answers each
- * app stamp with the creating app's display name and canonical `appUrl`, from
- * the app key where the app is still connected and from its App Connect Grant
- * activities where it is not. An agent's stamp, the other kind of requester,
- * is not looked up. It is the one reader behind every surface that
- * names a collection's creator: the consent row's existing-collection
- * reading, the Storage page's collection listing, and the collection
- * contents page.
- * Wallet-core's `grantRevocationSkip` (`/clientAnnex`) is the revocation-time
- * reading of the same document, applied per grant by
- * `StorageManager#revokeZcaps`: a grant that is expired, orphaned, or chained
- * under a parent delegation whose signer has left the document (or whose
- * generation is no longer the pointed one) is dead already and is skipped
- * without a POST; every other grant is POSTed, and the server's genuine
- * `AlreadyRevokedError` reads as a confirmed revocation there.
- * `revokeAppAccess` retires an app: for each app-provisioned encrypted
- * collection it rotates the epoch to drop the app's recipient key (so the app
- * cannot decrypt future writes) and revokes those pull-axis grants
- * indivisibly, then revokes any remaining storage grants, then removes the
- * app-key credential and records the revocation. The honest limitation
- * stands: ciphertext the app already fetched stays readable to it --
- * rotation protects only prospective writes.
+ * Every lookup by DID resolves against one directory listing read and
+ * matches the decrypted `id` in memory: nothing here GETs the id a DID
+ * derives to, so the host never learns which id belongs to which DID. Every
+ * grant is read through wallet-core's `connectionGrants`, which drops a grant
+ * delegated to another party than the entry's `id` and one targeting another
+ * Space, so a planted entry cannot steer a listing or a revocation at another
+ * party's capabilities.
  *
- * The same page lists connected AGENTS: grantees that answered an
- * interaction-URL request rather than an App Connect popup, so they hold no
- * app key and no attested origin. `listConnectedAgents` joins those rows out
- * of the activity history alone -- the latest agent Grant per grantee
- * did:key, hidden again by a Revoke activity naming the same controller.
- * It keeps a row whose grants have all expired while any of them targets
- * an encrypted collection, since the agent's key stays in that collection's
- * key-epoch roster. `revokeAgentAccess` retires one: each private
- * collection the agent was granted is rotated off its recipient key, the
- * recorded capabilities are revoked, and the revocation recorded, with no
- * app key to delete.
+ * `listConnectedApps` lists the unretired app entries holding an app key or
+ * any grant, and `listConnectedAgents` the unretired agent entries holding a
+ * live grant, or an expired one on a collection whose current key epoch still
+ * lists the agent. `deriveGrantsState` reads each grant's delegation signer
+ * against the account document's current key set (wallet-core's
+ * `deriveGrantSignerState`): a grant signed by a since-disconnected wallet
+ * client is already dead (the current-key-set rule), so its row lists as
+ * orphaned -- "reconnect to use again" -- rather than as live. A grant minted
+ * from a transient session is signed by a client-annex per-visit key the
+ * document never lists, so it derives as unknown rather than orphaned.
+ * `lookupCollectionCreators` answers each app `generator.id` stamp with the
+ * entry's name and canonical app URL, and `findKnownAgents` answers the
+ * interaction-URL page's known-agent note.
+ *
+ * `revokeAppAccess` retires an app: the collections its grants target or its
+ * `generator` stamp names are rotated off its recipient key (so it cannot
+ * decrypt future writes) with their pull-axis grants revoked indivisibly,
+ * then the remaining grants are revoked, then its app key is deleted on the
+ * server, then its entry is retired, and then the revocation is recorded.
+ * `revokeAgentAccess` runs the same sequence with no app key. The honest
+ * limitation stands: ciphertext a party already fetched stays readable to it
+ * -- rotation protects only prospective writes.
  */
-import type {
-  HistoryItems,
-  RecipientRotationOutcome,
-  StorageManager
-} from '@/stores/storageManager'
+import type { StorageManager } from '@/stores/storageManager'
 import type { User } from '@/types/auth'
 import {
   deriveGrantSignerState,
   type GrantSignerState
 } from '@interop/wallet-core/clients'
 import type { AccountSignerCheck } from '@interop/wallet-core/clientAnnex'
-import { ACTIVITY_TYPE } from '@interop/wallet-core/space'
 import {
-  delegationExpired,
-  delegationProofKeyId
-} from '@interop/wallet-core/webvh'
+  connectionGrants,
+  connectionKindOf,
+  findConnection,
+  splitGrantsByExpiry,
+  type ConnectionEntry,
+  type ConnectionGrant,
+  type ConnectionsListing,
+  type GrantKind,
+  type ReadConnection
+} from '@interop/wallet-core/connections'
+import { delegationProofKeyId } from '@interop/wallet-core/webvh'
 import type { IZcap } from '@interop/data-integrity-core'
 import type { CollectionGenerator } from '@interop/was-client'
 import { appGeneratorIds } from '@/lib/collectionAttribution'
-import {
-  appKeyAppUrl,
-  appKeyOrigin,
-  presentsAsAppKey
-} from '@interop/wallet-request'
-import { subjectId } from '@/lib/vcShape'
-import {
-  EXTERNAL_REQUEST_ORIGIN,
-  isAgentActivityObject
-} from '@/lib/walletRequest/externalRequest'
+import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
 
 /**
- * One storage capability an app was granted, summarized as recorded on the
- * App Connect Grant activity's `object.zcaps`.
+ * One storage capability a party was granted, as its `connections` entry
+ * records it.
  */
 export interface AppGrant {
+  /**
+   * The capability's id.
+   */
   id: string
   target: string
   allowedActions: string[]
   /**
-   * The recorded capability's own `expires` when the activity recorded the
-   * full zcap, else the summary's; empty when neither carries one.
+   * The capability's own `expires`; empty when it carries none.
    */
   expires: string
   /**
-   * The verification-method id that signed the recorded delegation
-   * (`zcap.proof.verificationMethod`), when the activity recorded the full
-   * capability. Absent on legacy summary-only records.
+   * The verification-method id that signed the delegation
+   * (`zcap.proof.verificationMethod`).
    */
   signerKeyId?: string
+  /**
+   * `'share'` for a grant the shared-wallet-collection flow wrote, `'grant'`
+   * for every other.
+   */
+  grantKind: GrantKind
+  /**
+   * When the consent that wrote the grant ran.
+   */
+  grantedAt: string
 }
 
 /**
@@ -118,170 +103,162 @@ export interface AppGrant {
 export type { AccountSignerCheck } from '@interop/wallet-core/clientAnnex'
 
 /**
- * A connected application, joined from its app-key credential and the latest
- * matching App Connect Grant activity.
+ * A connected application: one unretired `kind: 'app'` entry.
  */
 export interface ConnectedApp {
   /**
-   * The app-key credential's content cid; identifies the app for revocation.
+   * The entry's resource id, which keys the detail route.
    */
-  cid: string
+  resourceId: string
   /**
-   * The raw display name (best-effort).
+   * The display name: the user's `label`, else the app's own `name`, else
+   * its origin. Absent when the entry carries none of them; a view then
+   * shows the shortened DID.
    */
-  name: string
+  name?: string
   /**
    * The CHAPI requesting origin the app key is bound to.
    */
-  origin: string
+  origin?: string
   /**
    * The application URL the app key is scoped to within that origin. Two
-   * applications sharing an origin are distinct connected apps and are told
-   * apart by this value.
+   * applications sharing an origin are distinct connected apps.
    */
-  appUrl: string
+  appUrl?: string
   /**
-   * The app-key credential's subject (self-issued) did:key.
+   * The app-key credential's subject (self-issued) did:key, the entry's
+   * `id`.
    */
   subjectDid: string
   /**
-   * When the app key was issued (the credential's `issuanceDate`).
+   * The `app-connections` Resource holding the app key, when the entry
+   * names one.
+   */
+  appKey?: string
+  /**
+   * When the entry was created (`firstSeen`).
    */
   connectedAt?: string
   /**
-   * The storage grants recorded on the latest matching connect, if any.
+   * The latest consent's timestamp (`lastSeen`).
+   */
+  lastConnectedAt?: string
+  /**
+   * Every grant on the entry, live and expired, newest first.
+   */
+  grants: AppGrant[]
+}
+
+/**
+ * A connected agent: one unretired `kind: 'agent'` entry, a grantee that
+ * answered an interaction-URL request rather than an App Connect popup, so it
+ * has no app key and no origin of its own.
+ */
+export interface ConnectedAgent {
+  /**
+   * The entry's resource id, which keys the detail route.
+   */
+  resourceId: string
+  /**
+   * The grantee did:key, the entry's `id`.
+   */
+  controller: string
+  /**
+   * The display name: the user's `label`, else the self-declared `name` the
+   * request carried. Display-only: the requester chose it, and nothing
+   * verifies it.
+   */
+  name?: string
+  /**
+   * The origin marker an agent grant is recorded under
+   * (`EXTERNAL_REQUEST_ORIGIN` -- there is no attested requesting origin on
+   * this path).
+   */
+  origin: string
+  /**
+   * Every grant on the entry, live and expired, newest first.
    */
   grants: AppGrant[]
   /**
-   * The latest matching connect's timestamp, if a Grant activity was found.
+   * When the newest grant was written.
+   */
+  grantedAt?: string
+  /**
+   * When the entry was created (`firstSeen`).
+   */
+  connectedAt?: string
+  /**
+   * The latest consent's timestamp (`lastSeen`).
    */
   lastConnectedAt?: string
+  /**
+   * Set when every grant has expired. Such a row is listed only because a
+   * grant targets an encrypted collection whose current key epoch still
+   * holds the agent's key, until a revocation rotates it away.
+   */
+  expired?: true
 }
 
-// The suffix `mintAppKeyCredential` appends to the app name in `vc.name`.
-const APP_KEY_NAME_SUFFIX = ' app key'
+/**
+ * The grants of one entry that pass the reader checks. A session with no
+ * Space has none: it delegates nothing.
+ *
+ * @param options {object}
+ * @param options.entry {ConnectionEntry}
+ * @param [options.spaceUrl] {string}   this Space's container URL
+ * @returns {ConnectionGrant[]}
+ */
+function partyGrants({
+  entry,
+  spaceUrl
+}: {
+  entry: ConnectionEntry
+  spaceUrl?: string
+}): ConnectionGrant[] {
+  return spaceUrl === undefined ? [] : connectionGrants({ entry, spaceUrl })
+}
 
 /**
- * A string-valued member of an unknown object, or undefined when the value is
- * absent or not a string. The one shape guard the recorded-activity readers
- * below share.
+ * A grant as the views read it.
  *
- * @param value {unknown}   the (possibly non-object) container
- * @param key {string}   the member to read
- * @returns {string | undefined}
+ * @param grant {ConnectionGrant}
+ * @returns {AppGrant}
  */
-function stringField(value: unknown, key: string): string | undefined {
-  if (!value || typeof value !== 'object') {
-    return undefined
+function appGrantOf(grant: ConnectionGrant): AppGrant {
+  const signerKeyId = delegationProofKeyId(grant.zcap as unknown as IZcap)
+  return {
+    id: grant.zcapId,
+    target: grant.target,
+    allowedActions: [grant.allowedAction ?? []].flat(),
+    expires: grant.expires ?? '',
+    ...(signerKeyId !== undefined && { signerKeyId }),
+    grantKind: grant.grantKind,
+    grantedAt: grant.grantedAt
   }
-  const member = (value as Record<string, unknown>)[key]
-  return typeof member === 'string' ? member : undefined
 }
 
 /**
- * The origin an App Connect Grant activity recorded, when it is one.
+ * Grants as the views read them, newest first by `grantedAt`.
  *
- * @param object {unknown}   the activity's `object` member
- * @returns {string | undefined}
- */
-function grantOrigin(object: unknown): string | undefined {
-  return stringField(object, 'origin')
-}
-
-/**
- * The display name an App Connect Grant activity recorded
- * (`object.appConnect.name`), when present.
- *
- * @param object {unknown}   the activity's `object` member
- * @returns {string | undefined}
- */
-function grantAppName(object: unknown): string | undefined {
-  if (!object || typeof object !== 'object') {
-    return undefined
-  }
-  return stringField((object as { appConnect?: unknown }).appConnect, 'name')
-}
-
-/**
- * The `appUrl` an App Connect Grant activity recorded
- * (`object.appConnect.appUrl`). Every connect writes one; a record carrying
- * none is not a row this listing can attribute to an app.
- *
- * @param object {unknown}   the activity's `object` member
- * @returns {string | undefined}
- */
-function grantAppUrl(object: unknown): string | undefined {
-  if (!object || typeof object !== 'object') {
-    return undefined
-  }
-  return stringField((object as { appConnect?: unknown }).appConnect, 'appUrl')
-}
-
-/**
- * The grant summaries an App Connect Grant activity recorded
- * (`object.zcaps`), normalized to {@link AppGrant}s.
- *
- * @param object {unknown}   the activity's `object` member
+ * @param grants {ConnectionGrant[]}
  * @returns {AppGrant[]}
  */
-function recordedGrants(object: unknown): AppGrant[] {
-  if (!object || typeof object !== 'object' || !('zcaps' in object)) {
-    return []
-  }
-  const { zcaps } = object as { zcaps?: unknown }
-  if (!Array.isArray(zcaps)) {
-    return []
-  }
-  return zcaps.map(entry => {
-    const grant = (entry ?? {}) as {
-      id?: unknown
-      target?: unknown
-      allowedActions?: unknown
-      expires?: unknown
-      zcap?: unknown
-    }
-    return {
-      id: typeof grant.id === 'string' ? grant.id : '',
-      target: typeof grant.target === 'string' ? grant.target : '',
-      allowedActions: Array.isArray(grant.allowedActions)
-        ? grant.allowedActions.filter(
-            (action): action is string => typeof action === 'string'
-          )
-        : [],
-      expires: grantExpires(grant),
-      signerKeyId: grantSignerKeyId(grant.zcap)
-    }
-  })
+function newestFirst(grants: ConnectionGrant[]): AppGrant[] {
+  return grants
+    .map(appGrantOf)
+    .sort((first, second) => second.grantedAt.localeCompare(first.grantedAt))
 }
 
 /**
- * A recorded grant's expiry: the full capability's own `expires` when the
- * activity recorded one (the same value the revocation lookup reads), else
- * the summary's, for a legacy summary-only record; empty when neither.
+ * Sorts rows by their latest consent, newest first.
  *
- * @param record {{ expires?: unknown; zcap?: unknown }}
- * @returns {string}
+ * @param rows {Array<{ lastConnectedAt?: string }>}
+ * @returns {void}
  */
-function grantExpires(record: { expires?: unknown; zcap?: unknown }): string {
-  return (
-    stringField(record.zcap, 'expires') ??
-    (typeof record.expires === 'string' ? record.expires : '')
+function sortByLastSeen(rows: Array<{ lastConnectedAt?: string }>): void {
+  rows.sort((first, second) =>
+    (second.lastConnectedAt ?? '').localeCompare(first.lastConnectedAt ?? '')
   )
-}
-
-/**
- * The verification-method id that signed a recorded grant capability's
- * delegation proof, when the record carries the full zcap: wallet-core's
- * `delegationProofKeyId`, the same accessor the parent check reads, behind
- * the guard an unvalidated activity record needs.
- *
- * @param zcap {unknown}   the recorded full capability, if any
- * @returns {string | undefined}
- */
-function grantSignerKeyId(zcap: unknown): string | undefined {
-  return zcap && typeof zcap === 'object'
-    ? delegationProofKeyId(zcap as IZcap)
-    : undefined
 }
 
 /**
@@ -289,10 +266,10 @@ function grantSignerKeyId(zcap: unknown): string | undefined {
  * rule (a delegation verifies iff its verification method is in the resolved
  * account document now), over a bare grant list so the app rows and the agent
  * rows share it. The rule is wallet-core's `deriveGrantSignerState`; this
- * binds it to the recorded {@link AppGrant} shape. `orphaned` means the
- * enrolled client that minted the grants has since been disconnected;
- * `unknown` covers nothing to check against AND a grant a transient session
- * minted, whose annex signer the account document never lists.
+ * binds it to the {@link AppGrant} shape. `orphaned` means the enrolled
+ * client that minted the grants has since been disconnected; `unknown`
+ * covers nothing to check against AND a grant a transient session minted,
+ * whose annex signer the account document never lists.
  *
  * @param options {object}
  * @param options.grants {AppGrant[]}
@@ -320,177 +297,446 @@ export function deriveGrantsState({
 }
 
 /**
- * Whether an activity is an App Connect Grant: a `Grant` activity carrying an
- * `appConnect` member (distinguishing it from an agent Grant).
+ * Lists the user's connected applications: every unretired `kind: 'app'`
+ * entry that holds an app key or any grant. The display name reads the
+ * user's `label`, then the app's `name`, then its origin. Rows sort by the
+ * latest consent (`lastSeen`), which only a consent moves, so a read does
+ * not reorder them.
  *
  * @param options {object}
- * @param options.doc {{ type?: string[]; object?: unknown }}
- * @returns {boolean}
+ * @param options.connections {ReadConnection[]}   the directory's entries,
+ *   from one listing read
+ * @param [options.spaceUrl] {string}   this Space's container URL, for the
+ *   grant checks; absent on a session with no Space
+ * @returns {ConnectedApp[]}   sorted latest-connected first
  */
-function isAppConnectGrant({
-  doc
+export function listConnectedApps({
+  connections,
+  spaceUrl
 }: {
-  doc: { type?: string[]; object?: unknown }
-}): boolean {
-  return (
-    Array.isArray(doc.type) &&
-    doc.type.includes(ACTIVITY_TYPE.Grant) &&
-    grantAppName(doc.object) !== undefined
-  )
+  connections: ReadConnection[]
+  spaceUrl?: string
+}): ConnectedApp[] {
+  const apps: ConnectedApp[] = []
+  for (const { resourceId, entry } of connections) {
+    if (
+      connectionKindOf(entry) !== 'app' ||
+      entry.retired !== undefined ||
+      entry.id === undefined
+    ) {
+      continue
+    }
+    const grants = partyGrants({ entry, spaceUrl })
+    if (entry.appKey === undefined && grants.length === 0) {
+      continue
+    }
+    const name = entry.label ?? entry.name ?? entry.origin
+    apps.push({
+      resourceId,
+      ...(name !== undefined && { name }),
+      ...(entry.origin !== undefined && { origin: entry.origin }),
+      ...(entry.url !== undefined && { appUrl: entry.url }),
+      subjectDid: entry.id,
+      ...(entry.appKey !== undefined && { appKey: entry.appKey }),
+      connectedAt: entry.firstSeen,
+      lastConnectedAt: entry.lastSeen,
+      grants: newestFirst(grants)
+    })
+  }
+  sortByLastSeen(apps)
+  return apps
 }
 
 /**
- * Whether an activity is the App Connect Grant for a given origin.
+ * The unretired agent entries with at least one grant, as rows, before the
+ * expired-row check. A row whose every grant has expired is flagged.
  *
  * @param options {object}
- * @param options.doc {{ type?: string[]; object?: unknown }}
- * @param options.origin {string}
- * @returns {boolean}
+ * @param options.connections {ReadConnection[]}
+ * @param [options.spaceUrl] {string}
+ * @returns {ConnectedAgent[]}
  */
-function isAppConnectGrantFor({
-  doc,
-  origin
+function agentRows({
+  connections,
+  spaceUrl
 }: {
-  doc: { type?: string[]; object?: unknown }
-  origin: string
-}): boolean {
-  return isAppConnectGrant({ doc }) && grantOrigin(doc.object) === origin
+  connections: ReadConnection[]
+  spaceUrl?: string
+}): ConnectedAgent[] {
+  const agents: ConnectedAgent[] = []
+  for (const { resourceId, entry } of connections) {
+    if (
+      connectionKindOf(entry) !== 'agent' ||
+      entry.retired !== undefined ||
+      entry.id === undefined
+    ) {
+      continue
+    }
+    const grants = partyGrants({ entry, spaceUrl })
+    if (grants.length === 0) {
+      continue
+    }
+    const rows = newestFirst(grants)
+    const name = entry.label ?? entry.name
+    const expired = splitGrantsByExpiry({ grants }).live.length === 0
+    agents.push({
+      resourceId,
+      controller: entry.id,
+      ...(name !== undefined && { name }),
+      origin: EXTERNAL_REQUEST_ORIGIN,
+      grants: rows,
+      grantedAt: rows[0].grantedAt,
+      connectedAt: entry.firstSeen,
+      lastConnectedAt: entry.lastSeen,
+      ...(expired && { expired: true as const })
+    })
+  }
+  return agents
 }
 
 /**
- * Lists the user's connected applications, one per app-key credential in the
- * `app-connections` collection, joined with the latest matching App Connect
- * Grant activity.
+ * Lists the agents holding storage grants answered from an interaction-URL
+ * request: every unretired `kind: 'agent'` entry with a live grant. A row
+ * whose every grant has already expired is kept, flagged `expired`, while
+ * some current key epoch of a collection its grants target still lists the
+ * agent: that roster entry does not expire, and only a revocation rotates it
+ * away. That check reads the governed descriptor of each distinct collection
+ * the expired rows' grants target, once however many rows target it, and
+ * only when some row has fully expired. When a collection's key epochs cannot
+ * be read the row is kept: hiding a row that may still be revocable is the
+ * worse failure. An agent entry with no grants is not listed.
  *
  * @param options {object}
  * @param options.storage {StorageManager}
- * @param [options.items] {HistoryItems}
- *   the activity history, when the caller has already read it (the sibling
- *   agent listing scans the same collection)
- * @param [options.appKeys] {Awaited<ReturnType<StorageManager['listAppKeys']>>}
- *   an already-listed app-key collection, so a caller holding one does not
- *   list it again
- * @returns {Promise<ConnectedApp[]>}   sorted latest-connected first
+ * @param options.connections {ReadConnection[]}   the directory's entries,
+ *   from one listing read
+ * @param [options.spaceUrl] {string}   this Space's container URL
+ * @returns {Promise<ConnectedAgent[]>}   sorted latest-connected first
  */
-export async function listConnectedApps({
+export async function listConnectedAgents({
   storage,
-  items,
-  appKeys
+  connections,
+  spaceUrl
 }: {
   storage: StorageManager
-  items?: HistoryItems
-  appKeys?: Awaited<ReturnType<StorageManager['listAppKeys']>>
-}): Promise<ConnectedApp[]> {
-  const [{ appKeys: credentials }, history] = await Promise.all([
-    appKeys ?? storage.listAppKeys(),
-    items ?? storage.listHistoryItems()
-  ])
-
-  // One pass over the history, into an index by `appUrl`, so the
-  // per-credential loop below is a lookup rather than a filter-and-sort each.
-  // The `appUrl` is the join on both sides: every mint writes
-  // `credentialSubject.appUrl` and every connect records
-  // `object.appConnect.appUrl`, and it is what tells two apps sharing an
-  // origin apart.
-  type HistoryItem = (typeof history.entries)[number]
-  const latestGrantByAppUrl = new Map<string, HistoryItem>()
-  for (const item of history.entries) {
-    const origin = grantOrigin(item.doc.object)
-    if (!origin || !isAppConnectGrantFor({ doc: item.doc, origin })) {
-      continue
-    }
-    const appUrl = grantAppUrl(item.doc.object)
-    if (appUrl === undefined) {
-      continue
-    }
-    const current = latestGrantByAppUrl.get(appUrl)
-    if (!current || (current.doc.created ?? '') < (item.doc.created ?? '')) {
-      latestGrantByAppUrl.set(appUrl, item)
-    }
-  }
-
-  const apps: ConnectedApp[] = []
-  for (const { cid, vc: credential } of credentials) {
-    const subject = subjectId(credential)
-    const origin = appKeyOrigin(credential)
-    const appUrl = appKeyAppUrl(credential)
-    // The collection holds app keys only, so the per-Resource check is the
-    // marker type plus the three members this listing reads: anything else in
-    // there (an opaque Resource planted server-side through a space import,
-    // say) is not something the page can render or revoke.
-    if (!presentsAsAppKey(credential) || !subject || !origin || !appUrl) {
-      continue
-    }
-
-    // The latest matching App Connect Grant supplies the raw display name, the
-    // grants, and the last-connected timestamp.
-    const latestGrant = latestGrantByAppUrl.get(appUrl)
-
-    const vcName = (credential as { name?: unknown }).name
-    const strippedName =
-      typeof vcName === 'string' && vcName.endsWith(APP_KEY_NAME_SUFFIX)
-        ? vcName.slice(0, -APP_KEY_NAME_SUFFIX.length)
-        : undefined
-    const name =
-      (latestGrant && grantAppName(latestGrant.doc.object)) ??
-      strippedName ??
-      origin
-
-    const issuanceDate = (credential as { issuanceDate?: unknown }).issuanceDate
-
-    apps.push({
-      cid,
-      name,
-      origin,
-      appUrl,
-      subjectDid: subject,
-      connectedAt: typeof issuanceDate === 'string' ? issuanceDate : undefined,
-      grants: latestGrant ? recordedGrants(latestGrant.doc.object) : [],
-      lastConnectedAt: latestGrant?.doc.created
+  connections: ReadConnection[]
+  spaceUrl?: string
+}): Promise<ConnectedAgent[]> {
+  const agents = agentRows({ connections, spaceUrl })
+  let listed = agents
+  const expiredAgents = agents.filter(agent => agent.expired)
+  if (expiredAgents.length > 0) {
+    const outcomes = await storage.granteeRosterCollections({
+      grantees: expiredAgents.map(({ controller, grants }) => ({
+        controller,
+        targets: grants.map(grant => grant.target)
+      }))
     })
-  }
-
-  return apps.sort((first, second) =>
-    (second.lastConnectedAt ?? second.connectedAt ?? '').localeCompare(
-      first.lastConnectedAt ?? first.connectedAt ?? ''
+    const drop = new Set(
+      outcomes
+        .filter(
+          ({ collectionIds, failed }) =>
+            collectionIds.length === 0 && failed === 0
+        )
+        .map(({ controller }) => controller)
     )
-  )
+    listed = agents.filter(agent => !drop.has(agent.controller))
+  }
+  sortByLastSeen(listed)
+  return listed
 }
 
 /**
- * Revokes a connected app's access. Order matters: the key rotation and grant
- * revocation happen on the WAS server first ({@link revokeAppAuthority}), and
- * only if that succeeds is the app-key credential deleted and the revocation
- * recorded. A network failure while revoking the grants therefore surfaces as
- * an error and leaves the credential in place, so the user can retry rather
- * than being left with a deleted key whose grants are still live.
+ * Which of the given controllers this account has granted storage to
+ * through an interaction-URL request: an unretired `kind: 'agent'` entry
+ * whose `id` is the controller, holding at least one grant. Each carries the
+ * entry's name and the newest grant's `grantedAt`. Matched in memory against
+ * one listing read, so the host learns nothing about which DID the page
+ * asked after. A wallet-client entry, an app entry, and a retired agent
+ * entry answer nothing.
+ *
+ * The claim it backs is only "you granted this key before and have not
+ * revoked it", which holds for an expired grant too. Naming someone else's
+ * DID gains a requester nothing, since only the key holder can invoke grants
+ * delegated to it, so the result is safe to show without a proof of
+ * possession.
+ *
+ * @param options {object}
+ * @param options.connections {ReadConnection[]}   the directory's entries
+ * @param [options.spaceUrl] {string}   this Space's container URL
+ * @param options.controllers {string[]}   the grantee DIDs to look up
+ * @returns {Map<string, { name?: string; grantedAt?: string }>}
+ *   the known controllers only
+ */
+export function findKnownAgents({
+  connections,
+  spaceUrl,
+  controllers
+}: {
+  connections: ReadConnection[]
+  spaceUrl?: string
+  controllers: string[]
+}): Map<string, { name?: string; grantedAt?: string }> {
+  const wanted = new Set(controllers)
+  const known = new Map<string, { name?: string; grantedAt?: string }>()
+  for (const agent of agentRows({ connections, spaceUrl })) {
+    if (!wanted.has(agent.controller)) {
+      continue
+    }
+    known.set(agent.controller, {
+      ...(agent.name !== undefined && { name: agent.name }),
+      ...(agent.grantedAt !== undefined && { grantedAt: agent.grantedAt })
+    })
+  }
+  return known
+}
+
+/**
+ * The application that created a collection, as the wallet's directory
+ * names it: what every surface showing a collection's creator reads, by the
+ * `generator.id` did:key stamped on the collection.
+ */
+export interface CollectionCreator {
+  /**
+   * The display name: the user's `label`, else the app's `name`, else its
+   * origin.
+   */
+  name: string
+  /**
+   * The canonical application URL, which tells apps sharing an origin apart.
+   */
+  appUrl: string
+  /**
+   * The app's entry resource id while the app is listed on the Applications
+   * page, for a link to its detail page. A disconnected creator has no row,
+   * so it carries none.
+   */
+  resourceId?: string
+}
+
+/**
+ * What the directory says about the apps that created a set of collections,
+ * by the `generator.id` DID stamped on each: the display name and the
+ * canonical app URL off the `kind: 'app'` entry whose `id` is that DID,
+ * matched in memory against one listing read, with no GET at the id a DID
+ * derives to (the host serves `generator.id` in plaintext, and a GET right
+ * after would hand it the id-to-DID mapping). A retired entry still names its
+ * app, since retirement keeps `name`, `origin`, and `url`; only a listed app
+ * carries the `resourceId` a link needs. Only an app stamp (one carrying a
+ * `generator.origin`) is looked up. An agent's stamp names itself, and is
+ * dropped here. A creator no entry names is absent from the result, and the
+ * surface names its origin.
+ *
+ * @param options {object}
+ * @param options.connections {ReadConnection[]}   the directory's entries,
+ *   from one listing read
+ * @param [options.spaceUrl] {string}   this Space's container URL
+ * @param options.generators {Iterable<CollectionGenerator | undefined>}   the
+ *   collections' stamps, an unstamped collection's `undefined` included
+ * @returns {ReadonlyMap<string, CollectionCreator>}   keyed by `generator.id`
+ *   DID
+ */
+export function lookupCollectionCreators({
+  connections,
+  spaceUrl,
+  generators
+}: {
+  connections: ReadConnection[]
+  spaceUrl?: string
+  generators: Iterable<CollectionGenerator | undefined>
+}): ReadonlyMap<string, CollectionCreator> {
+  const wanted = new Set(appGeneratorIds(generators))
+  const creators = new Map<string, CollectionCreator>()
+  if (wanted.size === 0) {
+    return creators
+  }
+  const listed = new Set(
+    listConnectedApps({ connections, spaceUrl }).map(app => app.resourceId)
+  )
+  for (const { resourceId, entry } of connections) {
+    if (
+      connectionKindOf(entry) !== 'app' ||
+      entry.id === undefined ||
+      !wanted.has(entry.id)
+    ) {
+      continue
+    }
+    const name = entry.label ?? entry.name ?? entry.origin
+    if (name === undefined || entry.url === undefined) {
+      continue
+    }
+    creators.set(entry.id, {
+      name,
+      appUrl: entry.url,
+      ...(listed.has(resourceId) && { resourceId })
+    })
+  }
+  return creators
+}
+
+/**
+ * Reads one party's entry off the directory for a revocation: its grants as
+ * the reader checks pass them, and the entry itself. An absent entry has no
+ * grants.
+ *
+ * @param options {object}
+ * @param options.directory {object}   the listing, as
+ *   `StorageManager.readConnectionsListing` returns it
+ * @param options.did {string}   the party's DID
+ * @returns {{ entry?: ConnectionEntry; grants: ConnectionGrant[] }}
+ */
+function partyOf({
+  directory,
+  did
+}: {
+  directory: { listing: ConnectionsListing; spaceUrl?: string }
+  did: string
+}): { entry?: ConnectionEntry; grants: ConnectionGrant[] } {
+  const entry = findConnection({ listing: directory.listing, did })?.entry
+  return {
+    ...(entry !== undefined && { entry }),
+    grants: entry ? partyGrants({ entry, spaceUrl: directory.spaceUrl }) : []
+  }
+}
+
+/**
+ * The two server-side stages every party revocation shares. The key
+ * rotation runs first, so a revoked grantee cannot decrypt future writes,
+ * and the capabilities its pull axis confirmed revoked are handed to the
+ * grant stage, which counts them without a second POST. The grant stage runs
+ * even when some collection could not be re-keyed, so every grant that can
+ * be revoked is revoked now. A rotation that left the grantee a recipient of
+ * some collection's current epoch then throws, so the caller does not retire
+ * the entry and the revoke can be retried. A collection whose rotation landed
+ * but whose pull failed is not counted in `rotation.failed`: the grant stage
+ * POSTs the capabilities the pull missed and throws if any still fails. So
+ * this throws only when some authority remains, a recipient entry or a live
+ * grant.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param options.did {string}   the party's DID
+ * @param options.grants {ConnectionGrant[]}   the party's grants
+ * @param options.directory {object}   the listing the grants were read from
+ * @param [options.collections] {Array<StorageCollection>}   the Space
+ *   collection listing, when the caller has already read it
+ * @param options.failureMessage {string}   the error a failed rotation throws
+ * @returns {Promise<{ outcome: object; rotated: number }>}   the grant
+ *   stage's outcome, plus the collections the rotation re-keyed
+ */
+async function rotateThenRevokeGrants({
+  storage,
+  did,
+  grants,
+  directory,
+  collections,
+  failureMessage
+}: {
+  storage: StorageManager
+  did: string
+  grants: ConnectionGrant[]
+  directory: { listing: ConnectionsListing; spaceUrl?: string }
+  collections?: Awaited<ReturnType<StorageManager['listCollections']>>
+  failureMessage: string
+}): Promise<{
+  outcome: Awaited<ReturnType<StorageManager['revokeConnectionGrants']>>
+  rotated: number
+}> {
+  const rotation = await storage.revokeCollectionRecipients({
+    did,
+    grants,
+    directory,
+    ...(collections && { collections })
+  })
+  const outcome = await storage.revokeConnectionGrants({
+    grants,
+    revokedByRotation: rotation.revokedIds
+  })
+  if (rotation.failed > 0) {
+    throw new Error(failureMessage)
+  }
+  return { outcome, rotated: rotation.rotated }
+}
+
+/**
+ * Retires an app's live authority on the WAS server: the sequence both the
+ * interactive revoke ({@link revokeAppAccess}) and the login-time sweep of
+ * stranded app keys run. The key rotation runs first: for each collection the
+ * app's entry has a grant on, or whose `generator.id` names the app, it
+ * appends a fresh epoch without the app's key and revokes that collection's
+ * pull-axis grants with it. Then the remaining grants are revoked. See
+ * {@link rotateThenRevokeGrants} for what a failure in either stage does. An
+ * app with no entry (one that connected before the directory existed) has no
+ * grant to revoke, and only its attributed collections are rotated.
+ *
+ * @param options {object}
+ * @param options.storage {StorageManager}
+ * @param options.subjectDid {string}   the app-key credential's subject DID
+ * @param [options.directory] {object}   the directory listing, when the
+ *   caller has already read it
+ * @param [options.collections] {Array<StorageCollection>}   the Space
+ *   collection listing, when the caller has already read it
+ * @returns {Promise<{ outcome: object; rotated: number; entry?:
+ *   ConnectionEntry; handledZcapIds: string[] }>}   the grant stage's
+ *   outcome, the collections the rotation re-keyed, the entry the grants
+ *   were read from, and the ids of every grant this run handled
+ */
+export async function revokeAppAuthority({
+  storage,
+  subjectDid,
+  directory,
+  collections
+}: {
+  storage: StorageManager
+  subjectDid: string
+  directory?: { listing: ConnectionsListing; spaceUrl?: string }
+  collections?: Awaited<ReturnType<StorageManager['listCollections']>>
+}): Promise<{
+  outcome: Awaited<ReturnType<StorageManager['revokeConnectionGrants']>>
+  rotated: number
+  entry?: ConnectionEntry
+  handledZcapIds: string[]
+}> {
+  const read = directory ?? (await storage.readConnectionsListing())
+  const { entry, grants } = partyOf({ directory: read, did: subjectDid })
+  const { outcome, rotated } = await rotateThenRevokeGrants({
+    storage,
+    did: subjectDid,
+    grants,
+    directory: read,
+    collections,
+    failureMessage:
+      'Could not rotate every collection off the app being disconnected.'
+  })
+  return {
+    outcome,
+    rotated,
+    ...(entry !== undefined && { entry }),
+    handledZcapIds: grants.map(grant => grant.zcapId)
+  }
+}
+
+/**
+ * Revokes a connected app's access, in the order every stage's retry relies
+ * on: the collection rotation and the grant POSTs ({@link
+ * revokeAppAuthority}), then the confirmed server-side delete of the app key
+ * the entry names (`StorageManager.deleteAppKeyResource`), then the entry's
+ * retirement, then the Revoke row. A stage that does not land throws before
+ * the retirement, so the row stays listed and a retry re-runs every stage:
+ * the rotation is idempotent (a collection whose current epoch no longer
+ * lists the app is skipped), a re-POSTed grant answered `AlreadyRevokedError`
+ * counts as revoked, and a key already deleted reads as absent. The
+ * retirement passes the ids of the grants this run handled, so a grant a
+ * concurrent consent merged makes it throw and the row stays listed. A
+ * Revoke-row failure after the retirement leaves no audit row.
  *
  * Which grants are POSTed is settled by wallet-core's `grantRevocationSkip`
- * against the same verified document the listing marked the row with: an expired
- * grant, an orphaned root-delegated grant, and a grant chained under a parent
- * delegation that has rotted (its signer gone, or its generation no longer
- * the pointed one) are dead already and skipped without a POST. Every other
- * recorded grant is POSTed, whatever the row's
- * marker, since a grant minted in a transient session derives as unknown
- * while chaining under a generation delegation that stays alive until its
- * own TTL. Of the POSTs, the server's genuine `AlreadyRevokedError` counts as
- * revoked. Any other refusal or failure -- a plain `ValidationError`
- * included, since a read-replica lag on a live grant answers the same way as
- * a dead chain -- propagates after the sibling POSTs settle, before the
- * credential is deleted or the Revoke recorded, so the row stays listed and a
- * retry re-runs the whole sequence. The verified document's reading is the
- * storage manager's own, bound at construction; without one (no verified
- * document this session) only the expiry skip applies and everything else is
- * POSTed.
- *
- * What a failure leaves behind: the collections the rotation could re-key
- * are rotated off the app's recipient key, and the grants that could be
- * revoked are revoked, while the credential is kept and no Revoke is
- * recorded. That state is safe to retry from. The rotation is idempotent (a
- * collection whose current epoch no longer lists the app is skipped), the
- * grants that did land are answered `AlreadyRevokedError` on the re-POST and
- * count as revoked then, and the run converges once the failed stage
- * succeeds.
+ * against the verified document: an expired grant, an orphaned
+ * root-delegated grant, and a grant chained under a parent delegation that
+ * has rotted are dead already and skipped without a POST. Every other grant
+ * is POSTed, whatever the row's marker, since a grant minted in a transient
+ * session derives as unknown while chaining under a generation delegation
+ * that stays alive until its own TTL.
  *
  * @param options {object}
  * @param options.storage {StorageManager}
@@ -515,729 +761,57 @@ export async function revokeAppAccess({
   skipped: number
   rotated: number
 }> {
-  const { outcome, rotated } = await revokeAppAuthority({
+  const { outcome, rotated, entry, handledZcapIds } = await revokeAppAuthority({
     storage,
-    origin: app.origin,
     subjectDid: app.subjectDid
   })
-  await storage.deleteAppKey({ cid: app.cid })
+  // The key the entry names now, which a consent since the listing may have
+  // re-pointed.
+  if (entry?.appKey !== undefined) {
+    await storage.deleteAppKeyResource({
+      appKey: entry.appKey,
+      did: app.subjectDid
+    })
+  }
+  await storage.retireConnectionEntry({
+    did: app.subjectDid,
+    handledZcapIds
+  })
   await storage.addHistoryAppRevoke({
     user,
-    origin: app.origin,
-    name: app.name,
-    cid: app.cid,
+    origin: app.origin ?? '',
+    name: app.name ?? app.subjectDid,
     revoked: outcome.revoked,
     skipped: outcome.skipped
   })
-  return { ...outcome, rotated }
-}
-
-/**
- * Retires an app's live authority on the WAS server, the sequence both the
- * interactive revoke ({@link revokeAppAccess}) and the login-time sweep of
- * stranded app keys run. The key rotation runs first
- * (`revokeAppCollectionRecipients`): for each collection the app provisioned
- * or was granted -- found through the Collection Metadata `generator.id`
- * attribution as well as the recorded grants, so an app whose grants have all
- * expired is still rotated out -- it appends a fresh epoch without the app's
- * key and revokes those collections' pull-axis grants with it, so the app
- * cannot decrypt anything written afterward. Then the remaining grants are
- * revoked (`revokeAppGrants`). See {@link rotateThenRevokeGrants} for what a
- * failure in either stage does.
- *
- * @param options {object}
- * @param options.storage {StorageManager}
- * @param options.origin {string}   the app's origin
- * @param options.subjectDid {string}   the app-key credential's subject DID
- * @param [options.items] {HistoryItems}   the activity history, when the
- *   caller has already read it
- * @param [options.collections] {Array<StorageCollection>}   the Space
- *   collection listing, when the caller has already read it
- * @returns {Promise<{ outcome: { revoked: number; withdrawn: number;
- *   skipped: number }; rotated: number }>}   the grant stage's outcome, plus
- *   the collections the rotation re-keyed
- */
-export async function revokeAppAuthority({
-  storage,
-  origin,
-  subjectDid,
-  items,
-  collections
-}: {
-  storage: StorageManager
-  origin: string
-  subjectDid: string
-  items?: HistoryItems
-  collections?: Awaited<ReturnType<StorageManager['listCollections']>>
-}): Promise<{
-  outcome: { revoked: number; withdrawn: number; skipped: number }
-  rotated: number
-}> {
-  return await rotateThenRevokeGrants({
-    items: items ?? (await storage.listHistoryItems()),
-    rotate: history =>
-      storage.revokeAppCollectionRecipients({
-        origin,
-        subjectDid,
-        items: history,
-        ...(collections && { collections })
-      }),
-    revokeGrants: ({ items: history, revokedByRotation }) =>
-      storage.revokeAppGrants({
-        origin,
-        subjectDid,
-        items: history,
-        revokedByRotation
-      }),
-    failureMessage:
-      'Could not rotate every collection off the app being disconnected.'
-  })
-}
-
-/**
- * The two server-side stages both revocations share, over one history scan.
- * The key rotation runs first, so a revoked grantee cannot decrypt future
- * writes, and the capabilities its pull axis confirmed revoked are handed to
- * the grant stage, which counts them without a second POST. The grant stage
- * runs even when some collection could not be re-keyed, so every grant that
- * can be revoked is revoked now. A rotation that left the grantee a
- * recipient of some collection's current epoch then throws, so the caller
- * keeps its row and records no Revoke, and the revoke can be retried. A
- * collection whose rotation landed but whose pull failed is not counted in
- * `rotation.failed`: the grant stage POSTs the capabilities the pull missed
- * and throws if any still fails. So this throws only when some authority
- * remains, a recipient entry or a live grant. The
- * grants withdrawn on the failed run reach the Revoke the retry records,
- * since a re-POST answered `AlreadyRevokedError` counts as revoked. A
- * Revoke recorded on the failed run would hide an agent's row, which is
- * what the retry needs.
- *
- * @param options {object}
- * @param options.items {HistoryItems}   the activity history both stages read
- * @param options.rotate {Function}   the grantee's key-rotation stage
- * @param options.revokeGrants {Function}   the grantee's grant stage
- * @param options.failureMessage {string}   the error a failed rotation throws
- * @returns {Promise<{ outcome: Outcome; rotated: number }>}   the grant
- *   stage's outcome, plus the collections the rotation re-keyed
- */
-async function rotateThenRevokeGrants<Outcome>({
-  items,
-  rotate,
-  revokeGrants,
-  failureMessage
-}: {
-  items: HistoryItems
-  rotate: (items: HistoryItems) => Promise<RecipientRotationOutcome>
-  revokeGrants: (options: {
-    items: HistoryItems
-    revokedByRotation: string[]
-  }) => Promise<Outcome>
-  failureMessage: string
-}): Promise<{ outcome: Outcome; rotated: number }> {
-  const rotation = await rotate(items)
-  const outcome = await revokeGrants({
-    items,
-    revokedByRotation: rotation.revokedIds
-  })
-  if (rotation.failed > 0) {
-    throw new Error(failureMessage)
+  return {
+    revoked: outcome.revoked,
+    withdrawn: outcome.withdrawn,
+    skipped: outcome.skipped,
+    rotated
   }
-  return { outcome, rotated: rotation.rotated }
 }
 
 /**
- * The application that created a collection, as the wallet's own records
- * name it: what every surface showing a collection's creator reads, by the
- * `generator.id` did:key stamped on the collection.
- */
-export interface CollectionCreator {
-  /**
-   * The display name the app's latest App Connect Grant recorded.
-   */
-  name: string
-  /**
-   * The canonical application URL, which tells apps sharing an origin apart.
-   */
-  appUrl: string
-  /**
-   * The app-key credential's cid while the app is still connected, for a link
-   * to its Applications row. A disconnected creator has no row, so it carries
-   * none.
-   */
-  cid?: string
-}
-
-/**
- * What the wallet's own records say about the requesters (each an app,
- * service, or agent) that created a set of collections, by the `generator.id`
- * DID stamped on each. Only an app stamp gets an answer here: the display name
- * and the canonical `appUrl`. A connected app answers from its app key
- * and latest Grant ({@link listConnectedApps}), with its app-key cid. A
- * disconnected one has no app key left, since removing it is what a
- * disconnect does, so its App Connect Grant activities answer instead: the
- * latest one whose recorded grants were delegated to that DID supplies both
- * members. A creator neither source knows is absent from the result, and the
- * surface names its origin. Only an app stamp (one carrying a
- * `generator.origin`) is looked up. An agent's stamp has no app key or App
- * Connect Grant to answer it, and names itself, so it is dropped here.
- *
- * @param options {object}
- * @param options.storage {StorageManager}
- * @param options.generators {Iterable<CollectionGenerator | undefined>}   the
- *   collections' stamps, an unstamped collection's `undefined` included
- * @param [options.items] {HistoryItems}
- *   the activity history, when the caller has already read it
- * @param [options.appKeys] {Awaited<ReturnType<StorageManager['listAppKeys']>>}
- *   an already-listed app-key collection, so a caller holding one does not
- *   list it again
- * @returns {Promise<ReadonlyMap<string, CollectionCreator>>}   keyed by
- *   `generator.id` DID
- */
-export async function lookupCollectionCreators({
-  storage,
-  generators,
-  items,
-  appKeys
-}: {
-  storage: StorageManager
-  generators: Iterable<CollectionGenerator | undefined>
-  items?: HistoryItems
-  appKeys?: Awaited<ReturnType<StorageManager['listAppKeys']>>
-}): Promise<ReadonlyMap<string, CollectionCreator>> {
-  const wanted = new Set(appGeneratorIds(generators))
-  const creators = new Map<string, CollectionCreator>()
-  if (wanted.size === 0) {
-    return creators
-  }
-  const [history, listedAppKeys] = await Promise.all([
-    items ?? storage.listHistoryItems(),
-    appKeys ?? storage.listAppKeys()
-  ])
-  // Latest connect first, so the first entry for a subject DID stays.
-  for (const app of await listConnectedApps({
-    storage,
-    items: history,
-    appKeys: listedAppKeys
-  })) {
-    if (wanted.has(app.subjectDid) && !creators.has(app.subjectDid)) {
-      creators.set(app.subjectDid, {
-        name: app.name,
-        appUrl: app.appUrl,
-        cid: app.cid
-      })
-    }
-  }
-  // The rest are disconnected: the latest App Connect Grant that recorded
-  // grants delegated to the DID still names the app.
-  const latestGrantByController = new Map<
-    string,
-    { created: string; name: string; appUrl: string }
-  >()
-  for (const { doc } of history.entries) {
-    if (!isAppConnectGrant({ doc })) {
-      continue
-    }
-    const controller = grantController(doc.object)
-    if (!controller || !wanted.has(controller) || creators.has(controller)) {
-      continue
-    }
-    const appUrl = grantAppUrl(doc.object)
-    const name = grantAppName(doc.object)
-    const created = doc.created ?? ''
-    const current = latestGrantByController.get(controller)
-    if (appUrl && name && (!current || current.created < created)) {
-      latestGrantByController.set(controller, { created, name, appUrl })
-    }
-  }
-  for (const [controller, { name, appUrl }] of latestGrantByController) {
-    creators.set(controller, { name, appUrl })
-  }
-  return creators
-}
-
-/**
- * A connected agent: a grantee that answered an interaction-URL request
- * rather than an App Connect popup, so it has no app-key credential and no
- * origin of its own. Its identity is the grantee did:key its grants were
- * delegated to.
- */
-export interface ConnectedAgent {
-  /**
-   * The grantee did:key the grants were delegated to; identifies the agent
-   * for revocation.
-   */
-  controller: string
-  /**
-   * The self-declared display name the request carried, when it named one.
-   * Display-only: the requester chose it, and nothing verifies it.
-   */
-  name?: string
-  /**
-   * The origin marker the grant was recorded under (`EXTERNAL_REQUEST_ORIGIN`
-   * -- there is no attested requesting origin on this path).
-   */
-  origin: string
-  /**
-   * The storage grants recorded on the latest matching request.
-   */
-  grants: AppGrant[]
-  /**
-   * When the latest matching request was granted.
-   */
-  grantedAt?: string
-  /**
-   * Set when every recorded grant has expired. Such a row is listed only
-   * because a grant targets an encrypted collection, whose key-epoch roster
-   * still holds the agent's key until a revocation rotates it away.
-   */
-  expired?: true
-}
-
-/**
- * The self-declared agent name a Grant activity recorded (`object.actor.name`),
- * when present.
- *
- * @param object {unknown}   the activity's `object` member
- * @returns {string | undefined}
- */
-function grantAgentName(object: unknown): string | undefined {
-  if (!object || typeof object !== 'object') {
-    return undefined
-  }
-  return stringField((object as { actor?: unknown }).actor, 'name')
-}
-
-/**
- * The grantee did:key a Grant activity's recorded grants were delegated to:
- * the `controller` of the first recorded full capability. The request page's
- * precheck (`precheckExternalRequest`) refuses a request whose capability
- * queries name more than one `controller`, and each grant is delegated to its
- * query's own, so every grant a request page approval records names the same
- * controller and the first one names the agent.
- *
- * @param object {unknown}   the activity's `object` member
- * @returns {string | undefined}
- */
-function grantController(object: unknown): string | undefined {
-  if (!object || typeof object !== 'object') {
-    return undefined
-  }
-  const { zcaps } = object as { zcaps?: unknown }
-  if (!Array.isArray(zcaps)) {
-    return undefined
-  }
-  for (const entry of zcaps) {
-    const { zcap } = (entry ?? {}) as { zcap?: unknown }
-    if (!zcap || typeof zcap !== 'object') {
-      continue
-    }
-    const { controller } = zcap as { controller?: unknown }
-    const named = Array.isArray(controller) ? controller[0] : controller
-    if (typeof named === 'string' && named) {
-      return named
-    }
-  }
-  return undefined
-}
-
-/**
- * Whether an activity is an agent Grant: a `Grant` whose object is an
- * agent's (`isAgentActivityObject`: the interaction-URL origin marker and no
- * `appConnect` member), carrying at least one recorded full capability
- * (without one there is nothing to list or revoke).
- *
- * @param options {object}
- * @param options.doc {{ type?: string[]; object?: unknown }}
- * @returns {boolean}
- */
-export function isAgentGrant({
-  doc
-}: {
-  doc: { type?: string[]; object?: unknown }
-}): boolean {
-  return (
-    Array.isArray(doc.type) &&
-    doc.type.includes(ACTIVITY_TYPE.Grant) &&
-    isAgentActivityObject(doc.object) &&
-    grantController(doc.object) !== undefined
-  )
-}
-
-/**
- * Whether every recorded grant of an agent row has already expired. The
- * expiry is the grant's `expires` as {@link AppGrant} carries it (the
- * capability's own where recorded), under wallet-core's `delegationExpired`.
- * A grant with no recorded expiry (or an unparseable one) counts as still
- * live, so a row is never hidden on a missing stamp.
- *
- * An expired row is not simply dropped. It stays listed while the agent's key
- * still sits in a granted collection's current key epoch (see
- * {@link expiredRowsToDrop}).
- *
- * @param options {object}
- * @param options.grants {AppGrant[]}
- * @param options.now {number}
- * @returns {boolean}
- */
-function allGrantsExpired({
-  grants,
-  now
-}: {
-  grants: AppGrant[]
-  now: number
-}): boolean {
-  if (grants.length === 0) {
-    return true
-  }
-  return grants.every(grant =>
-    delegationExpired({
-      zcap: { expires: grant.expires } as unknown as IZcap,
-      now
-    })
-  )
-}
-
-/**
- * Which fully expired agent rows are dropped from the listing, by controller.
- * A row stays while the agent's key still sits in the current key epoch of a
- * collection its grants target, the rule the revocation rotates on
- * (`StorageManager.granteeRosterCollections`). The grants are dead, but that
- * roster entry does not expire, and only a revocation rotates it away. A row
- * whose targets list the agent in no current epoch is dropped.
- *
- * One roster read covers every expired row, so a collection several rows
- * target is read once. When there is no remote store, or a collection's key
- * epochs cannot be read, the roster read reports a failure and the row is
- * kept: hiding a row that may still be revocable is the worse failure.
- *
- * @param options {object}
- * @param options.storage {StorageManager}
- * @param options.agents {ConnectedAgent[]}   the fully expired rows
- * @returns {Promise<Set<string>>}   the controllers whose rows are dropped
- */
-async function expiredRowsToDrop({
-  storage,
-  agents
-}: {
-  storage: StorageManager
-  agents: ConnectedAgent[]
-}): Promise<Set<string>> {
-  const outcomes = await storage.granteeRosterCollections({
-    grantees: agents.map(({ controller, grants }) => ({
-      controller,
-      targets: grants.map(grant => grant.target)
-    }))
-  })
-  return new Set(
-    outcomes
-      .filter(
-        ({ collectionIds, failed }) =>
-          collectionIds.length === 0 && failed === 0
-      )
-      .map(({ controller }) => controller)
-  )
-}
-
-/**
- * Whether an activity is an agent-grant Revoke: the activity
- * {@link revokeAgentAccess} writes. Scoped exactly like the agent Grant side
- * -- the interaction-URL origin marker, no `appConnect` member -- and carrying
- * a grantee `controller`, so an app revocation (or any other Revoke that
- * happens to name a controller) can never hide an agent row.
- *
- * @param options {object}
- * @param options.doc {{ type?: string[]; object?: unknown }}
- * @returns {boolean}
- */
-function isAgentRevoke({
-  doc
-}: {
-  doc: { type?: string[]; object?: unknown }
-}): boolean {
-  return (
-    Array.isArray(doc.type) &&
-    doc.type.includes(ACTIVITY_TYPE.Revoke) &&
-    isAgentActivityObject(doc.object) &&
-    stringField(doc.object, 'controller') !== undefined
-  )
-}
-
-/**
- * Whether a Revoke hides a Grant in the agent join. Deliberately explicit
- * about the missing stamps: a Grant carrying no `created` is never hidden (its
- * age is unknowable, and hiding a row silently loses a revocable grant), and a
- * Revoke carrying none never hides. The comparison stays `>=` -- the Revoke
- * writer stamps a forward floor above the Grant it retires, so a tie can only
- * be someone else's stamp, and a tie there means the revocation is at least as
- * new as the grant.
- *
- * @param options {object}
- * @param [options.grantCreated] {string}
- * @param [options.revokeCreated] {string}
- * @returns {boolean}
- */
-function revokeHidesGrant({
-  grantCreated,
-  revokeCreated
-}: {
-  grantCreated?: string
-  revokeCreated?: string
-}): boolean {
-  if (!grantCreated || !revokeCreated) {
-    return false
-  }
-  return revokeCreated >= grantCreated
-}
-
-/**
- * The agent Grants in the activity history, grouped by grantee
- * controller, minus those a matching agent Revoke hides
- * ({@link revokeHidesGrant}). A controller whose every Grant is hidden is
- * absent, so each group holds at least one Grant.
- *
- * @param options {object}
- * @param options.items {HistoryItems}
- * @returns {Map<string, HistoryItems['entries']>}   the live Grants, by
- *   controller
- */
-function liveAgentGrants({
-  items
-}: {
-  items: HistoryItems
-}): Map<string, HistoryItems['entries']> {
-  const rowsByController = new Map<string, HistoryItems['entries']>()
-  const latestRevokeByController = new Map<string, string>()
-  for (const item of items.entries) {
-    const { doc } = item
-    if (isAgentGrant({ doc })) {
-      const controller = grantController(doc.object)
-      if (!controller) {
-        continue
-      }
-      const existing = rowsByController.get(controller)
-      if (existing) {
-        existing.push(item)
-      } else {
-        rowsByController.set(controller, [item])
-      }
-      continue
-    }
-    if (!isAgentRevoke({ doc })) {
-      continue
-    }
-    const controller = stringField(doc.object, 'controller')
-    const created = doc.created
-    if (!controller || !created) {
-      continue
-    }
-    if ((latestRevokeByController.get(controller) ?? '') < created) {
-      latestRevokeByController.set(controller, created)
-    }
-  }
-
-  const live = new Map<string, HistoryItems['entries']>()
-  for (const [controller, rows] of rowsByController) {
-    const revokeCreated = latestRevokeByController.get(controller)
-    const unhidden = rows.filter(
-      ({ doc }) =>
-        !revokeHidesGrant({ grantCreated: doc.created, revokeCreated })
-    )
-    if (unhidden.length > 0) {
-      live.set(controller, unhidden)
-    }
-  }
-  return live
-}
-
-/**
- * The newest of a non-empty set of Grants by `created` stamp. A Grant with no
- * stamp sorts oldest.
- *
- * @param rows {HistoryItems['entries']}   at least one Grant
- * @returns {HistoryItems['entries'][number]}
- */
-function newestGrant(
-  rows: HistoryItems['entries']
-): HistoryItems['entries'][number] {
-  return rows.reduce((newest, item) =>
-    (newest.doc.created ?? '') < (item.doc.created ?? '') ? item : newest
-  )
-}
-
-/**
- * Which of the given controllers this account has granted storage to through
- * an interaction-URL request and not since revoked: a controller with at
- * least one agent Grant no later agent Revoke hides. Each entry carries
- * the newest such Grant's self-declared name and `created` stamp, the same
- * newest-Grant rule {@link listConnectedAgents} applies.
- *
- * Unlike the listing, this reads no key-epoch roster for fully expired rows.
- * The claim it backs is only "you granted this key before and have not
- * revoked it", which holds for an expired grant too. Naming someone else's
- * DID gains a requester nothing, since only the key holder can invoke grants
- * delegated to it, so the result is safe to show without a proof of
- * possession.
- *
- * @param options {object}
- * @param options.items {HistoryItems}   the activity history
- * @param options.controllers {string[]}   the grantee DIDs to look up
- * @returns {Map<string, { name?: string; grantedAt?: string }>}
- *   the known controllers only
- */
-export function findKnownAgents({
-  items,
-  controllers
-}: {
-  items: HistoryItems
-  controllers: string[]
-}): Map<string, { name?: string; grantedAt?: string }> {
-  const live = liveAgentGrants({ items })
-  const known = new Map<string, { name?: string; grantedAt?: string }>()
-  for (const controller of controllers) {
-    const rows = live.get(controller)
-    if (!rows) {
-      continue
-    }
-    const latest = newestGrant(rows)
-    const name = grantAgentName(latest.doc.object)
-    known.set(controller, {
-      ...(name !== undefined && { name }),
-      ...(latest.doc.created !== undefined && {
-        grantedAt: latest.doc.created
-      })
-    })
-  }
-  return known
-}
-
-/**
- * Lists the agents holding storage grants answered from an interaction-URL
- * request, one row per grantee did:key.
- *
- * The join is over the activity history alone (there is no credential to hang
- * a row off): every agent Grant for a controller that a matching Revoke
- * does not hide contributes its grants, deduplicated by capability id, and
- * `grantedAt` is the newest of those Grants. The union is what the row counts,
- * expires, and checks signers against -- one controller can hold live grants
- * from several requests, and the revocation scans every Grant too, so a
- * latest-Grant-only view would under-report what is about to be revoked. A row
- * whose every recorded grant has already expired is kept, flagged `expired`,
- * while any grant targets an encrypted collection of this Space: the agent's
- * key stays in that collection's key-epoch roster until a revocation rotates
- * it away. It is dropped when every grant targets a public collection or
- * something outside this Space. That check reads the governed descriptor of
- * each distinct collection the expired rows' grants target, once however many
- * rows target it, and only when some row has fully expired. A later re-grant writes a newer
- * Grant and lists again.
- *
- * @param options {object}
- * @param options.storage {StorageManager}
- * @param [options.items] {HistoryItems}
- *   the activity history, when the caller has already read it (the sibling
- *   app listing scans the same collection)
- * @returns {Promise<ConnectedAgent[]>}   sorted latest-granted first
- */
-export async function listConnectedAgents({
-  storage,
-  items
-}: {
-  storage: StorageManager
-  items?: HistoryItems
-}): Promise<ConnectedAgent[]> {
-  const history = items ?? (await storage.listHistoryItems())
-
-  const now = Date.now()
-  const agents: ConnectedAgent[] = []
-  for (const [controller, live] of liveAgentGrants({ items: history })) {
-    // The union of every live Grant's grants, deduplicated by capability id:
-    // one controller can hold grants from several requests, and the newest
-    // request is not necessarily the one with the longest-lived grants.
-    const grants: AppGrant[] = []
-    const seen = new Set<string>()
-    for (const { doc } of live) {
-      for (const grant of recordedGrants(doc.object)) {
-        if (grant.id && seen.has(grant.id)) {
-          continue
-        }
-        if (grant.id) {
-          seen.add(grant.id)
-        }
-        grants.push(grant)
-      }
-    }
-    const expired = allGrantsExpired({ grants, now })
-
-    // The newest live Grant supplies the display members and the granted
-    // stamp; the grants above are the union across all of them.
-    const latest = newestGrant(live)
-    const name = grantAgentName(latest.doc.object)
-    agents.push({
-      controller,
-      ...(name !== undefined && { name }),
-      origin: EXTERNAL_REQUEST_ORIGIN,
-      grants,
-      grantedAt: latest.doc.created,
-      ...(expired && { expired: true as const })
-    })
-  }
-
-  let listed = agents
-  const expiredAgents = agents.filter(agent => agent.expired)
-  if (expiredAgents.length > 0) {
-    const drop = await expiredRowsToDrop({ storage, agents: expiredAgents })
-    listed = agents.filter(agent => !drop.has(agent.controller))
-  }
-  return listed.sort((first, second) =>
-    (second.grantedAt ?? '').localeCompare(first.grantedAt ?? '')
-  )
-}
-
-/**
- * Revokes a connected agent's storage grants: the key rotation and the grant
- * revocation run on the WAS server first, and only if both succeed is the
- * revocation recorded -- a network failure therefore leaves the row listed,
- * so the user can retry. There is no app key to delete.
- *
- * The key rotation runs first (`revokeAgentCollectionRecipients`), as on the
- * app path: a private collection provisioned for an agent escrows the agent's
- * identity key-agreement key into its key epochs, so each collection the
- * agent's recorded grants target or its `generator` stamp names gains a
- * fresh epoch without that key, and its pull-axis grants are revoked with
- * it. The grant stage counts the ones
- * the rotation confirmed revoked and names them on the recorded Revoke
- * without POSTing them again. A collection the rotation could not re-key
- * keeps the agent a recipient of the current epoch, so the call throws once
- * the grant revocation has run, and records no Revoke: a Revoke would hide
- * the row the retry needs. The retry's Revoke names the grants the failed
- * run withdrew, since their re-POST is answered `AlreadyRevokedError`.
- *
- * Which recorded grants are POSTed follows the app path exactly
- * (wallet-core's `grantRevocationSkip` over the storage manager's own
- * verified-document reading): an expired grant, an
- * orphaned root-delegated grant, and a grant under a rotted parent
- * delegation are skipped without a POST, and every other
- * grant is POSTed whatever the row's marker, since a grant delegated from a
- * transient session is signed by an annex key the account document never
- * lists and keeps verifying under the generation delegation until that
- * delegation's own TTL. The server's `AlreadyRevokedError` counts as
- * revoked there; any other refusal or failure propagates from
- * `revokeAgentGrants` before the Revoke is recorded, so the row stays listed.
- *
- * The recorded Revoke is stamped with a forward floor -- one millisecond past
- * the row's newest Grant when this clock is behind it -- so the listing's
- * hide-on-revoke join cannot be defeated by skew between the client that
- * granted and the client that revokes.
+ * Revokes a connected agent's storage grants: the collection rotation and
+ * the grant POSTs run on the WAS server first, then the agent's entry is
+ * retired, then the revocation is recorded. There is no app key to delete. A
+ * stage that does not land throws before the retirement, so the row stays
+ * listed and a retry re-runs every stage, as on the app path
+ * ({@link revokeAppAccess}). The rotation covers every collection the
+ * entry's grants target, one the agent was admitted to and did not create
+ * included, and every collection its `generator` stamp names. The recorded
+ * Revoke names the grants the run confirmed revoked; it is audit trail, and
+ * the retirement is what takes the row off the listing.
  *
  * @param options {object}
  * @param options.storage {StorageManager}
  * @param options.user {User}   the session user (activity actor)
  * @param options.agent {ConnectedAgent}
  * @returns {Promise<{ revoked: number; withdrawn: number; skipped: number;
- *   unrevocable: number; rotated: number }>}   the grant outcome, plus the
- *   collections the rotation re-keyed. `withdrawn` counts the grants this
- *   call's own POSTs revoked, leaving out any already revoked. `unrevocable`
- *   counts the grants with no capability to POST, which end only at their
- *   own expiry
+ *   rotated: number }>}   the grant outcome, plus the collections the
+ *   rotation re-keyed. `withdrawn` counts the grants this call's own POSTs
+ *   revoked, leaving out any already revoked
  */
 export async function revokeAgentAccess({
   storage,
@@ -1251,24 +825,21 @@ export async function revokeAgentAccess({
   revoked: number
   withdrawn: number
   skipped: number
-  unrevocable: number
   rotated: number
 }> {
+  const directory = await storage.readConnectionsListing()
+  const { grants } = partyOf({ directory, did: agent.controller })
   const { outcome, rotated } = await rotateThenRevokeGrants({
-    items: await storage.listHistoryItems(),
-    rotate: items =>
-      storage.revokeAgentCollectionRecipients({
-        controller: agent.controller,
-        items
-      }),
-    revokeGrants: ({ items, revokedByRotation }) =>
-      storage.revokeAgentGrants({
-        controller: agent.controller,
-        items,
-        revokedByRotation
-      }),
+    storage,
+    did: agent.controller,
+    grants,
+    directory,
     failureMessage:
       'Could not rotate every collection off the agent being revoked.'
+  })
+  await storage.retireConnectionEntry({
+    did: agent.controller,
+    handledZcapIds: grants.map(grant => grant.zcapId)
   })
   await storage.addHistoryAgentRevoke({
     user,
@@ -1277,32 +848,52 @@ export async function revokeAgentAccess({
     zcaps: outcome.revokedIds.map(id => ({ id })),
     ...(agent.name !== undefined && { actor: { name: agent.name } }),
     revoked: outcome.revoked,
-    skipped: outcome.skipped,
-    created: revokeStampAfter({ grantedAt: agent.grantedAt })
+    skipped: outcome.skipped
   })
   return {
     revoked: outcome.revoked,
     withdrawn: outcome.withdrawn,
     skipped: outcome.skipped,
-    unrevocable: outcome.unrevocable,
     rotated
   }
 }
 
 /**
- * The `created` stamp for an agent Revoke: now, floored to one millisecond
- * past the Grant it retires when this client's clock is behind the client that
- * granted. Both stamps are wall-clock from possibly different machines, and
- * the listing hides a Grant only for a Revoke at or after it, so without the
- * floor a slow clock would write a revocation the listing ignores.
+ * Retires a party's `connections` entry of any kind once its grants are
+ * revoked: the wallet-client disconnect's and the forget's retirement. A
+ * wallet-client entry normally carries no grants, and then it is only
+ * retired. One that does (a planted entry, or a write before the kind check)
+ * does not lose them silently: they are POSTed and their grantee is rotated
+ * off their targets first, as an app or agent revocation does, and the
+ * retirement passes their ids. Throws what a stage throws, before the
+ * retirement.
  *
  * @param options {object}
- * @param [options.grantedAt] {string}   the row's newest Grant `created`
- * @returns {string}   an ISO stamp
+ * @param options.storage {StorageManager}
+ * @param options.did {string}   the party's DID
+ * @returns {Promise<void>}
  */
-function revokeStampAfter({ grantedAt }: { grantedAt?: string }): string {
-  const now = Date.now()
-  const granted = grantedAt ? new Date(grantedAt).getTime() : Number.NaN
-  const at = Number.isFinite(granted) ? Math.max(now, granted + 1) : now
-  return new Date(at).toISOString()
+export async function retireConnectionParty({
+  storage,
+  did
+}: {
+  storage: StorageManager
+  did: string
+}): Promise<void> {
+  const directory = await storage.readConnectionsListing()
+  const { grants } = partyOf({ directory, did })
+  if (grants.length > 0) {
+    await rotateThenRevokeGrants({
+      storage,
+      did,
+      grants,
+      directory,
+      failureMessage:
+        'Could not rotate every collection off the party being retired.'
+    })
+  }
+  await storage.retireConnectionEntry({
+    did,
+    handledZcapIds: grants.map(grant => grant.zcapId)
+  })
 }

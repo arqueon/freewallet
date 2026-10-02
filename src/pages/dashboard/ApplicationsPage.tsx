@@ -1,21 +1,26 @@
 /**
  * The Applications settings section: lists the apps connected through the App
- * Connect flow (one per self-issued app-key credential), each with its origin
- * and connected date. An app whose recorded grants were all signed by a
+ * Connect flow, one per app entry in the `connections` directory, each with
+ * its origin and connected date. An app whose grants were all signed by a
  * since-disconnected wallet client is marked as needing a reconnect (the
  * current-key-set rule already killed those grants). Clicking a row opens the
- * app detail page; a button on the row revokes access. Revoking removes the
- * app-key credential and records the revocation.
+ * detail page; a button on the row revokes access. Revoking rotates the app
+ * off its collections, revokes its grants, deletes its app key, retires its
+ * entry, and records the revocation.
  *
  * The same list carries the connected AGENTS: grantees that answered an
  * interaction-URL request rather than an App Connect popup. An agent row is
  * marked with an Agent chip and titled by the self-declared name the request
- * carried (or by the grantee key when it named none), and it is not clickable
- * -- there is no app key and no detail page behind it. Revoking one revokes
- * its recorded storage grants and records the revocation, which is what takes
- * the row out of the listing. A row whose grants have all expired but that
- * still holds a key in an encrypted collection's key-epoch roster carries an
- * Access expired chip and a note that it can still decrypt new writes.
+ * carried (or by the grantee key when it named none), and opens the same
+ * detail page. Revoking one rotates it off its collections, revokes its
+ * grants, and retires its entry, which is what takes the row out of the
+ * listing. A row whose grants have all expired but that still holds a key in
+ * an encrypted collection's key-epoch roster carries an Access expired chip
+ * and a note that it can still decrypt new writes.
+ *
+ * The page keeps reading the `app-connections` collection beside the
+ * directory, for its health: the undecryptable and no-epoch-key warnings and
+ * the purge button.
  */
 import { useCallback, useState } from 'react'
 import { Link as RouterLink, useNavigate } from 'react-router'
@@ -37,10 +42,7 @@ import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { RevokeAppDialog } from '@/components/RevokeAppDialog'
 import { useAsyncLoad } from '@/hooks/useAsyncLoad'
 import { usePullSettled } from '@/hooks/usePullSettled'
-import {
-  APP_CONNECTIONS_COLLECTION,
-  WALLET_ACTIVITY_COLLECTION
-} from '@interop/wallet-core/space'
+import { APP_CONNECTIONS_COLLECTION } from '@interop/wallet-core/space'
 import { useAuthStore } from '@/stores/authStore'
 import { showToast } from '@/stores/toastStore'
 import { dashboardStyles } from '@/styles/appStyles'
@@ -59,11 +61,9 @@ import { createLogger } from '@/lib/log'
 
 const log = createLogger('fw:ui:applications')
 
-// The collections whose pulls change what this page lists.
-const PULLED_COLLECTIONS = [
-  APP_CONNECTIONS_COLLECTION,
-  WALLET_ACTIVITY_COLLECTION
-]
+// The collection whose pulls change what this page shows: the app-key
+// health counts. The directory is read remote-direct and never replicated.
+const PULLED_COLLECTIONS = [APP_CONNECTIONS_COLLECTION]
 
 /**
  * The soonest still-future expiry among a row's recorded grants, so the row
@@ -139,10 +139,9 @@ export function ApplicationsPage() {
     }
   )
 
-  // The app rows come from `app-connections` and the grant state (the
-  // orphaned marker included) from the Grant activities in
-  // `wallet-activity`; on a fresh browser either pull can land after the
-  // mount read, so re-list when one settles.
+  // The app-key health counts come from `app-connections`; on a fresh
+  // browser its pull can land after the mount read, so re-list when it
+  // settles.
   const reloadAfterPull = useCallback(() => {
     reload().catch((err: unknown) => {
       log.error('Could not reload applications after a pull', { err })
@@ -273,13 +272,13 @@ export function ApplicationsPage() {
             <List disablePadding sx={dashboardStyles.applicationsList}>
               {apps.map(app => (
                 <ListItem
-                  key={app.cid}
+                  key={app.resourceId}
                   disablePadding
                   sx={dashboardStyles.applicationsAppCard}
                 >
                   <ListItemButton
                     sx={{ p: 0.5, minWidth: 0, borderRadius: 1 }}
-                    onClick={() => navigate(`/applications/${app.cid}`)}
+                    onClick={() => navigate(`/applications/${app.resourceId}`)}
                   >
                     <Stack sx={{ gap: 0.5, minWidth: 0 }}>
                       <Stack
@@ -290,7 +289,10 @@ export function ApplicationsPage() {
                           variant="subtitle1"
                           sx={{ fontWeight: 'bold' }}
                         >
-                          {app.name}
+                          {app.name ??
+                            t('settings.clients.keyFingerprint', {
+                              did: app.subjectDid
+                            })}
                         </Typography>
                         {deriveGrantsState({
                           grants: app.grants,
@@ -303,12 +305,14 @@ export function ApplicationsPage() {
                           />
                         )}
                       </Stack>
-                      <Typography
-                        variant="body2"
-                        sx={dashboardStyles.sharedRecipientDid}
-                      >
-                        {t('applications.origin')} {app.origin}
-                      </Typography>
+                      {app.origin !== undefined && (
+                        <Typography
+                          variant="body2"
+                          sx={dashboardStyles.sharedRecipientDid}
+                        >
+                          {t('applications.origin')} {app.origin}
+                        </Typography>
+                      )}
                     </Stack>
                     <Box
                       sx={dashboardStyles.applicationsRowChevron}
@@ -352,72 +356,89 @@ export function ApplicationsPage() {
                 const expires = nearestExpiry({ grants: agent.grants })
                 return (
                   <ListItem
-                    key={agent.controller}
+                    key={agent.resourceId}
                     disablePadding
                     sx={dashboardStyles.applicationsAppCard}
                   >
-                    <Stack sx={{ gap: 0.5, minWidth: 0, p: 0.5 }}>
-                      <Stack
-                        direction="row"
-                        sx={{ gap: 1, alignItems: 'center', flexWrap: 'wrap' }}
-                      >
-                        <Typography
-                          variant="subtitle1"
-                          sx={{ fontWeight: 'bold', wordBreak: 'break-all' }}
+                    <ListItemButton
+                      sx={{ p: 0.5, minWidth: 0, borderRadius: 1 }}
+                      onClick={() =>
+                        navigate(`/applications/${agent.resourceId}`)
+                      }
+                    >
+                      <Stack sx={{ gap: 0.5, minWidth: 0 }}>
+                        <Stack
+                          direction="row"
+                          sx={{
+                            gap: 1,
+                            alignItems: 'center',
+                            flexWrap: 'wrap'
+                          }}
                         >
-                          {agent.name ?? fingerprint}
-                        </Typography>
-                        <Chip
-                          size="small"
-                          label={t('applications.agentChip')}
-                        />
-                        {agent.expired && (
+                          <Typography
+                            variant="subtitle1"
+                            sx={{ fontWeight: 'bold', wordBreak: 'break-all' }}
+                          >
+                            {agent.name ?? fingerprint}
+                          </Typography>
                           <Chip
                             size="small"
-                            color="warning"
-                            label={t('applications.agentExpiredChip')}
+                            label={t('applications.agentChip')}
                           />
+                          {agent.expired && (
+                            <Chip
+                              size="small"
+                              color="warning"
+                              label={t('applications.agentExpiredChip')}
+                            />
+                          )}
+                          {orphaned && (
+                            <Chip
+                              size="small"
+                              color="warning"
+                              label={t('applications.orphanedChip')}
+                            />
+                          )}
+                        </Stack>
+                        {agent.name !== undefined && (
+                          <>
+                            <Typography
+                              variant="body2"
+                              sx={dashboardStyles.sharedRecipientDid}
+                            >
+                              {fingerprint}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              {t('applications.agentNameNote')}
+                            </Typography>
+                          </>
                         )}
-                        {orphaned && (
-                          <Chip
-                            size="small"
-                            color="warning"
-                            label={t('applications.orphanedChip')}
-                          />
+                        <Typography variant="body2" color="text.secondary">
+                          {t('applications.agentGrants', {
+                            count: agent.grants.length
+                          })}
+                          {expires
+                            ? ` -- ${t('applications.grantExpires', {
+                                date: formatDate({
+                                  isoDate: expires,
+                                  locale: i18n.language
+                                })
+                              })}`
+                            : ''}
+                        </Typography>
+                        {agent.expired && (
+                          <Typography variant="body2" color="text.secondary">
+                            {t('applications.agentExpiredNote')}
+                          </Typography>
                         )}
                       </Stack>
-                      {agent.name !== undefined && (
-                        <>
-                          <Typography
-                            variant="body2"
-                            sx={dashboardStyles.sharedRecipientDid}
-                          >
-                            {fingerprint}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {t('applications.agentNameNote')}
-                          </Typography>
-                        </>
-                      )}
-                      <Typography variant="body2" color="text.secondary">
-                        {t('applications.agentGrants', {
-                          count: agent.grants.length
-                        })}
-                        {expires
-                          ? ` -- ${t('applications.grantExpires', {
-                              date: formatDate({
-                                isoDate: expires,
-                                locale: i18n.language
-                              })
-                            })}`
-                          : ''}
-                      </Typography>
-                      {agent.expired && (
-                        <Typography variant="body2" color="text.secondary">
-                          {t('applications.agentExpiredNote')}
-                        </Typography>
-                      )}
-                    </Stack>
+                      <Box
+                        sx={dashboardStyles.applicationsRowChevron}
+                        aria-hidden
+                      >
+                        <MdChevronRight />
+                      </Box>
+                    </ListItemButton>
                     <Stack sx={dashboardStyles.applicationsAppMeta}>
                       <Typography variant="body2" color="text.secondary">
                         {agent.grantedAt
@@ -474,7 +495,12 @@ export function ApplicationsPage() {
 
       <RevokeAppDialog
         open={revokeTarget !== null}
-        appName={revokeTarget?.name ?? ''}
+        appName={
+          revokeTarget?.name ??
+          t('settings.clients.keyFingerprint', {
+            did: revokeTarget?.subjectDid ?? ''
+          })
+        }
         orphaned={
           !!revokeTarget &&
           deriveGrantsState({ grants: revokeTarget.grants, signerCheck }) ===

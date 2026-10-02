@@ -207,6 +207,91 @@ export async function sessionSpaceId(page: Page): Promise<string> {
 }
 
 /**
+ * One `connections` directory entry as the live session decrypts it, with
+ * only the members the assertions read.
+ */
+export interface DirectoryEntrySummary {
+  resourceId: string
+  /**
+   * Set when the session could not open the stored envelope.
+   */
+  readError?: string
+  kind?: string
+  id?: string
+  name?: string
+  label?: string
+  appKey?: string
+  retired?: string
+  grantZcapIds: string[]
+}
+
+/**
+ * Every entry the `connections` directory holds, decrypted by the live
+ * session through the E2E storage seam (`connectionsDirectory()` on the
+ * published `StorageManager`). This is the store's raw listing: retired
+ * entries and entries of every kind are included, and nothing is filtered by
+ * the listing rules the pages apply.
+ *
+ * @param page {Page}   a page holding a logged-in session
+ * @returns {Promise<DirectoryEntrySummary[]>}
+ */
+export async function readConnectionsDirectory(
+  page: Page
+): Promise<DirectoryEntrySummary[]> {
+  const entries = await page.evaluate(async () => {
+    const storage = (
+      window as unknown as {
+        __E2E_STORAGE__?: {
+          connectionsDirectory(): Promise<{
+            store: {
+              list(): Promise<Array<{
+                resourceId: string
+                body?: unknown
+                readError?: unknown
+              }> | null>
+            }
+          }>
+        }
+      }
+    ).__E2E_STORAGE__
+    if (!storage) {
+      throw new Error('No session published __E2E_STORAGE__ on this page.')
+    }
+    const { store } = await storage.connectionsDirectory()
+    const listed = (await store.list()) ?? []
+    return listed.map(({ resourceId, body, readError }) => {
+      const entry = (body ?? {}) as {
+        kind?: string
+        id?: string
+        name?: string
+        label?: string
+        appKey?: string
+        retired?: string
+        grants?: Array<{ zcap?: { id?: string } }>
+      }
+      return {
+        resourceId,
+        ...(readError !== undefined && { readError: String(readError) }),
+        kind: entry.kind,
+        id: entry.id,
+        name: entry.name,
+        label: entry.label,
+        appKey: entry.appKey,
+        retired: entry.retired,
+        grantZcapIds: (entry.grants ?? [])
+          .map(grant => grant.zcap?.id)
+          .filter((zcapId): zcapId is string => typeof zcapId === 'string')
+      }
+    })
+  })
+  return entries.map(entry =>
+    Object.fromEntries(
+      Object.entries(entry).filter(([, value]) => value !== undefined)
+    )
+  ) as unknown as DirectoryEntrySummary[]
+}
+
+/**
  * A public-terminal browser: a fresh context holding nothing.
  *
  * @param browser {Browser}

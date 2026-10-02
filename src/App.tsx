@@ -177,7 +177,7 @@ function App() {
           />
           <Route path="/applications" element={<ApplicationsPage />} />
           <Route
-            path="/applications/:cid"
+            path="/applications/:resourceId"
             element={<ApplicationDetailPage />}
           />
           <Route path="/history" element={<HistoryPage />} />

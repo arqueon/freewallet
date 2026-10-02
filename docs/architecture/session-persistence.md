@@ -23,8 +23,11 @@ tier a session may write to is decided once at login, by the typed
 of the strategy's type, so a write site consults no flag and takes no branch
 (`decisions/0001-no-memory-overlay-storage-fork.md`). Riding the strategy:
 the unlock-methods registry cache, the passkey-safety notice, the
-descriptor/meta cache pair (one instance per scope per session), and the
-`writerId` mint. The keyed chain-head pin store and the roster-epoch pin
+descriptor/meta cache pair (one instance per scope per session), the
+`writerId` mint, and the writer first-seen record the `connections`
+directory's writer registration reads (its second-session rule), keyed by
+the login credential's unlock Space id. The keyed chain-head pin store and
+the roster-epoch pin
 ride it without varying by tier, being in memory on both variants
 (`decisions/0012-no-durable-continuity-pins.md`).
 
@@ -72,6 +75,14 @@ popup is this same shape (see "Remote-direct popup storage" in chapi.md).
 `userKeyRosterDescriptorStore` takes the same option, so a session holding
 only a delegated Space-subtree zcap (the generation delegation) can read the
 roster. Absent the option, every request invokes the root capability.
+
+The `connections` directory is not on the persistence axis. It is never
+replicated, so its tier follows the session's backend rather than the
+strategy. A session with a Space, transient or remembered, reads and writes
+it remote-direct under that same bound capability. A guest or a no-WAS
+session has no Space, and keeps it as a local RxDB collection in its
+`BrowserStore`, the only copy, under a locally minted blinded-index key
+(`decisions/0035-the-directory-rides-the-session-backend-and-is-never-replicated.md`).
 
 **The transient login (the default on a non-remembered browser).** Both
 keyring login entry points run one post-KDF routing decision

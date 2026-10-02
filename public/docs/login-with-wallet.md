@@ -111,8 +111,9 @@ describe the target abstractly and the wallet maps it onto its own Space
 
 No grant reaches the whole Space. `https://w3id.org/byoe#space` is a reserved
 type, and a string naming the Space URL itself (with or without a trailing
-slash) is unsatisfiable. The `app-connections`, `key-map`, and
-`unlock-methods` collections are never granted, whatever the target form.
+slash) is unsatisfiable. The `app-connections`, `connections`, `key-map`,
+and `unlock-methods` collections are never granted, whatever the target
+form.
 
 An unknown descriptor `type` is unsatisfiable, so a wallet that predates a
 descriptor refuses visibly rather than degrading into something weaker.

@@ -1,9 +1,11 @@
 /**
  * The Settings "wallets connected to this account" glue
- * (`src/session/clients.ts`), at its one write path: the disconnect drives
- * the revocation cascade and then reports the cascade's ceremony-tail entry.
- * Also the user key generation kids a collection key rotation keeps, read
- * off the verified user key roster.
+ * (`src/session/clients.ts`): the disconnect drives the revocation cascade
+ * and then reports the cascade's ceremony-tail entry; the listing names its
+ * rows from the `connections` directory's wallet-client entries; and the
+ * rename writes the user's `label` on the client's entry. Also the user key
+ * generation kids a collection key rotation keeps, read off the verified
+ * user key roster.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from '@/types/auth'
@@ -26,34 +28,60 @@ const MENDED = [
 
 const state = {
   calls: [] as string[],
-  /** whether dropping the disconnected client's label fails */
-  labelDropFails: false,
   /** whether this session resolves an account-ceremony context */
   contextResolves: true,
   /** what the context's roster store `read()` does */
-  rosterRead: (async () => null) as () => Promise<unknown>
+  rosterRead: (async () => null) as () => Promise<unknown>,
+  /** the session's `connections` directory */
+  directory: memoryConnectionsStore()
 }
 
 vi.mock('@interop/wallet-core/clients', async importOriginal => ({
   ...(await importOriginal<typeof import('@interop/wallet-core/clients')>()),
-  revokedClientKeysFor: vi.fn(() => REVOKED_KEYS)
-}))
-
-vi.mock('@interop/wallet-core/keys', async importOriginal => ({
-  ...(await importOriginal<typeof import('@interop/wallet-core/keys')>()),
-  removeClientLabel: vi.fn(async () => {
-    state.calls.push('removeClientLabel')
-    if (state.labelDropFails) {
-      throw new Error('the labels resource is unreachable')
+  revokedClientKeysFor: vi.fn(() => REVOKED_KEYS),
+  // The verified document lists the revoked client and this listing's two
+  // rows, so the directory may create an entry for any of them.
+  currentAccountSigningKeys: vi.fn(
+    async () => new Set([REVOKED_KEYS.signingKeyMultibase, 'z6MkSecond'])
+  ),
+  // The shared listing over the verified log, reduced to the join under
+  // test: two document clients, named from the directory's entries.
+  listAccountClients: vi.fn(
+    async ({
+      readDirectoryEntries
+    }: {
+      readDirectoryEntries: () => Promise<
+        ReadonlyArray<{ kind: string; id?: string; label?: string }>
+      >
+    }) => {
+      const entries = await readDirectoryEntries()
+      return [REVOKED_KEYS.signingKeyMultibase, 'z6MkSecond'].map(
+        signingKeyMultibase => {
+          const entry = entries.find(
+            item =>
+              item.kind === 'wallet-client' &&
+              item.id === `did:key:${signingKeyMultibase}`
+          )
+          return {
+            signingKeyMultibase,
+            ...(entry?.label !== undefined && { label: entry.label }),
+            isCurrent: false
+          }
+        }
+      )
     }
-  })
+  )
 }))
 
 vi.mock('@/session/accountCeremonyContext', () => ({
   accountCeremonyContext: vi.fn(async () =>
     state.contextResolves
       ? {
-          remoteStore: { clientLabelsStore: () => ({ isLabelStore: true }) },
+          pointer: {
+            did: 'did:webvh:QmScid:was.example:space:s:id',
+            spaceId: 's',
+            host: 'https://was.example'
+          },
           rosterStore: { read: () => state.rosterRead() }
         }
       : null
@@ -67,6 +95,8 @@ vi.mock('@/session/verifiedLog', () => ({
 }))
 
 vi.mock('@/session/revocation', () => ({
+  walletClientDid: ({ signingKeyMultibase }: { signingKeyMultibase: string }) =>
+    `did:key:${signingKeyMultibase}`,
   revokeEnrolledClient: vi.fn(async () => {
     state.calls.push('revokeEnrolledClient')
     return {
@@ -84,9 +114,16 @@ vi.mock('@/session/menders/ceremonyTail', () => ({
 }))
 
 import {
+  connectionResourceId,
+  parseConnectionEntry
+} from '@interop/wallet-core/connections'
+import {
   accountUserKeyGenerationKids,
-  disconnectAccountClient
+  disconnectAccountClient,
+  listAccountClients,
+  renameAccountClient
 } from '@/session/clients'
+import { HMAC_KEY, memoryConnectionsStore } from './memoryConnections'
 import { revokeEnrolledClient } from '@/session/revocation'
 import { reportCeremonyTail } from '@/session/menders/ceremonyTail'
 
@@ -101,7 +138,13 @@ function makeSession(): Session {
     user: { id: 'did:key:z6MkUser' },
     registryReady: Promise.resolve(),
     profile: {},
-    storage: {}
+    storage: {
+      connectionsDirectory: async () => ({
+        store: state.directory.store,
+        hmacKey: HMAC_KEY,
+        spaceUrl: 'https://was.example/space/s/'
+      })
+    }
   } as unknown as Session
 }
 
@@ -119,7 +162,7 @@ function makeClient(): AccountClientView {
 
 beforeEach(() => {
   state.calls = []
-  state.labelDropFails = false
+  state.directory = memoryConnectionsStore()
   state.contextResolves = true
   state.rosterRead = async () => null
   vi.clearAllMocks()
@@ -142,18 +185,81 @@ describe('disconnectAccountClient', () => {
     expect(outcome.mended).toEqual(MENDED)
   })
 
-  it('reports it before the label hygiene, and whatever that does', async () => {
-    state.labelDropFails = true
+  it('reports it after the cascade, which retires the entry itself', async () => {
     await disconnectAccountClient({
       session: makeSession(),
       client: makeClient()
     })
 
-    expect(state.calls).toEqual([
-      'revokeEnrolledClient',
-      'reportCeremonyTail',
-      'removeClientLabel'
+    expect(state.calls).toEqual(['revokeEnrolledClient', 'reportCeremonyTail'])
+    // The history row names the client as the listing did.
+    expect(vi.mocked(revokeEnrolledClient)).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'Old phone' })
+    )
+  })
+
+  it("names the history row by the client's own name when it has no label", async () => {
+    await disconnectAccountClient({
+      session: makeSession(),
+      client: {
+        signingKeyMultibase: REVOKED_KEYS.signingKeyMultibase,
+        name: 'Freewallet'
+      } as unknown as AccountClientView
+    })
+    expect(vi.mocked(revokeEnrolledClient)).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'Freewallet' })
+    )
+  })
+})
+
+describe('the Connected wallets listing and rename over the directory', () => {
+  it("writes the user's label on the client's wallet-client entry", async () => {
+    const session = makeSession()
+    await renameAccountClient({
+      session,
+      signingKeyMultibase: 'z6MkSecond',
+      label: 'Work laptop'
+    })
+
+    const resourceId = await connectionResourceId({
+      hmacKey: HMAC_KEY,
+      did: 'did:key:z6MkSecond'
+    })
+    const entry = parseConnectionEntry(
+      state.directory.rows.get(resourceId)?.body
+    )
+    expect(entry).toMatchObject({
+      kind: 'wallet-client',
+      id: 'did:key:z6MkSecond',
+      label: 'Work laptop',
+      grants: []
+    })
+  })
+
+  it('names the listed rows from the entries, joined on the did:key', async () => {
+    const session = makeSession()
+    await renameAccountClient({
+      session,
+      signingKeyMultibase: 'z6MkSecond',
+      label: 'Work laptop'
+    })
+
+    const rows = await listAccountClients({ session })
+    expect(rows.map(row => [row.signingKeyMultibase, row.label])).toEqual([
+      [REVOKED_KEYS.signingKeyMultibase, undefined],
+      ['z6MkSecond', 'Work laptop']
     ])
+  })
+
+  it('refuses to create an entry for a client the document does not list', async () => {
+    await expect(
+      renameAccountClient({
+        session: makeSession(),
+        signingKeyMultibase: 'z6MkNotEnrolled',
+        label: 'Stranger'
+      })
+    ).rejects.toThrow('verified account document')
+    expect(state.directory.writes).toEqual([])
   })
 })
 

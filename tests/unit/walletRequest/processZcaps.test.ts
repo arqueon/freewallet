@@ -297,17 +297,20 @@ beforeAll(async () => {
     async provisionEncryptedCollection({
       collectionId,
       recipient,
-      generator
+      generator,
+      onEscrowLanded
     }: {
       collectionId: string
       recipient: { id: string }
       generator?: CollectionGenerator
+      onEscrowLanded?: () => void
     }) {
       provisionCalls.push({
         collectionId,
         recipientId: recipient.id,
         ...(generator && { generator })
       })
+      onEscrowLanded?.()
       return { scheme: 'edv' }
     },
     async delegateShareGrant({
@@ -333,12 +336,14 @@ beforeAll(async () => {
       collectionId,
       recipient,
       zcap,
-      app
+      app,
+      onEscrowLanded
     }: {
       collectionId: string
       recipient: { id: string }
       zcap: { controller: string; expires?: string }
       app?: { name: string; origin: string }
+      onEscrowLanded?: () => void
     }) {
       shareCalls.push({
         collectionId,
@@ -347,6 +352,7 @@ beforeAll(async () => {
         expires: zcap.expires ? new Date(zcap.expires) : undefined,
         app
       })
+      onEscrowLanded?.()
       return { descriptor: { scheme: 'edv' } }
     }
   }
@@ -1564,6 +1570,7 @@ describe('processZcaps', () => {
     provisionCalls.length = 0
     const order: string[] = []
     let hookZcaps: IZcap[] = []
+    let hookShareIds: string[] = []
     const zcaps = await processZcaps({
       zcapRequests: [
         { ...collectionDetail, controller: granteeDid },
@@ -1571,15 +1578,18 @@ describe('processZcaps', () => {
         publicCollectionDetail
       ],
       session,
-      beforeProvision: async signed => {
+      beforeProvision: async ({ zcaps: signed, shareZcapIds }) => {
         // Every delegation is already signed; nothing is provisioned yet.
         order.push(
           `hook:${signed.length}:${provisionCalls.length}:${ensureCalls.length}`
         )
         hookZcaps = [...signed]
+        hookShareIds = shareZcapIds
       }
     })
     expect(order).toEqual(['hook:3:0:0'])
+    // No share among them.
+    expect(hookShareIds).toEqual([])
     expect(provisionCalls).toHaveLength(1)
     expect(ensureCalls).toEqual([{ id: 'example-app-public', isPublic: true }])
     // The hook saw the same signed grants the call returns, each carrying
@@ -1640,6 +1650,66 @@ describe('processZcaps', () => {
     expect(provisionCalls.map(call => call.collectionId)).toEqual([
       'example-app-data'
     ])
+  })
+
+  it('reports each provisioned collection as escrowed with the grants it covers, and stops at a failure', async () => {
+    delegated.length = 0
+    provisionCalls.length = 0
+    const reported: Array<{ ids: string[]; provisionedAtReport: number }> = []
+    const failingSession = {
+      ...session,
+      storage: {
+        ...session.storage,
+        async provisionEncryptedCollection(options: {
+          collectionId: string
+          recipient: { id: string }
+        }) {
+          if (options.collectionId === 'agent-y') {
+            throw new Error('provisioning failed')
+          }
+          return session.storage.provisionEncryptedCollection(
+            options as unknown as Parameters<
+              Session['storage']['provisionEncryptedCollection']
+            >[0]
+          )
+        }
+      }
+    } as unknown as Session
+    const collectionX = {
+      ...collectionDetail,
+      referenceId: 'x',
+      controller: granteeDid,
+      invocationTarget: {
+        type: 'https://w3id.org/byoe#private-collection',
+        name: 'agent-x'
+      }
+    }
+    const collectionY = {
+      ...collectionX,
+      referenceId: 'y',
+      invocationTarget: {
+        type: 'https://w3id.org/byoe#private-collection',
+        name: 'agent-y'
+      }
+    }
+    await expect(
+      processZcaps({
+        zcapRequests: [collectionX, collectionY],
+        session: failingSession,
+        onEscrowed: ({ zcapIds }) => {
+          reported.push({
+            ids: zcapIds,
+            provisionedAtReport: provisionCalls.length
+          })
+        }
+      })
+    ).rejects.toThrow('provisioning failed')
+    // X's provisioning landed and is reported with X's grant alone; Y's
+    // failed and is not reported.
+    const xGrant = delegated.find(
+      zcap => zcap.invocationTarget === `${SPACE_URL}agent-x/`
+    )
+    expect(reported).toEqual([{ ids: [xGrant?.id], provisionedAtReport: 1 }])
   })
 
   it('refuses a private-collection grant to an underivable controller at resolution', async () => {
@@ -1992,17 +2062,57 @@ describe('processZcaps', () => {
     shareCalls.length = 0
     let sharesAtHook = -1
     let signedAtHook: unknown[] = []
+    let shareIdsAtHook: string[] = []
     const zcaps = await processZcaps({
       zcapRequests: [shareDetail],
       session,
-      beforeProvision: async signed => {
+      beforeProvision: async ({ zcaps: signed, shareZcapIds }) => {
         sharesAtHook = shareCalls.length
         signedAtHook = signed
+        shareIdsAtHook = shareZcapIds
       }
     })
     expect(sharesAtHook).toBe(0)
     expect(signedAtHook).toEqual(zcaps)
+    // The share's grant is named as one, so the consent records it as a share.
+    expect(shareIdsAtHook).toEqual([zcaps[0].id])
     expect(shareCalls).toHaveLength(1)
+  })
+
+  it('reports a share as escrowed only once shareCollection lands', async () => {
+    shareCalls.length = 0
+    const reported: Array<{ ids: string[]; sharesAtReport: number }> = []
+    const zcaps = await processZcaps({
+      zcapRequests: [shareDetail],
+      session,
+      onEscrowed: ({ zcapIds }) => {
+        reported.push({ ids: zcapIds, sharesAtReport: shareCalls.length })
+      }
+    })
+    expect(reported).toEqual([{ ids: [zcaps[0].id], sharesAtReport: 1 }])
+  })
+
+  it('reports no escrow for a share whose shareCollection fails', async () => {
+    const reported: string[][] = []
+    const failingSession = {
+      ...session,
+      storage: {
+        ...session.storage,
+        async shareCollection() {
+          throw new Error('epoch append failed')
+        }
+      }
+    } as unknown as Session
+    await expect(
+      processZcaps({
+        zcapRequests: [shareDetail],
+        session: failingSession,
+        onEscrowed: ({ zcapIds }) => {
+          reported.push(zcapIds)
+        }
+      })
+    ).rejects.toThrow('epoch append failed')
+    expect(reported).toEqual([])
   })
 
   it('escrows no share when beforeProvision throws', async () => {

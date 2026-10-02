@@ -658,18 +658,35 @@ const DECLARATIONS: ReadonlyArray<
     evidence: ['verified-log', 'host-listing']
   },
   // 35
-  // converger: wallet-core's `sweepRegisteredWriters`, the writer roster's
-  // sweep-on-read. This wallet does not read the roster yet, so nothing
-  // runs it here; the history view gains it as an `encounter` site.
+  // converger: wallet-core's `sweepConnectionWriters`, the two-phase expiry
+  // of every `connections` entry's `writers`, run at the directory listing
+  // read as an `encounter` site (`CONNECTION_WRITERS_SWEEP_ENCOUNTER`) on
+  // both session kinds. A sweep is a content write under the session's own
+  // directory access, so it needs no account authority.
   {
     id: 'no-registered-writer-outlives-its-expiry',
     statement:
-      'No registered-writers entry stands past its inactivity window, and the roster holds no more than its entry limit once a sweep has run.',
+      'No writer of a `connections` entry stays active past its inactivity window, and no entry carries more writers than its cap once a sweep has run.',
     standsOn: ['ladder-anchored', 'enrolled'],
-    authority: 'account',
-    triggers: [],
+    authority: 'none',
+    triggers: ['encounter'],
     ceremonies: [],
     evidence: ['host-listing', 'local-clock']
+  },
+  // 36
+  // No converger: a party that connected before the directory existed, or
+  // one whose entry a deleted and re-created directory lost, has no entry
+  // and nothing writes one. A detector would walk the collection rosters
+  // against the directory listing (FW-569).
+  {
+    id: 'every-party-with-authority-has-a-connection-entry',
+    statement:
+      "Every party holding a live grant, or listed in an unprotected collection's current epoch, has an unretired `connections` entry.",
+    standsOn: ['ladder-anchored', 'enrolled'],
+    authority: 'none',
+    triggers: [],
+    ceremonies: [],
+    evidence: ['host-listing']
   }
 ]
 

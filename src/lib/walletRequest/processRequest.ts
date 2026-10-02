@@ -44,10 +44,14 @@ export { domainMatchesOrigin } from '@interop/wallet-request'
  *   interaction-URL page opts in. Without it the pipeline delegates no
  *   standalone grant.
  * @param [options.beforeProvision] {Function}   awaited with the signed
- *   grants (and, on App Connect, the connect's `appConnect` result) once
- *   every delegation is signed and before any collection is provisioned.
- *   Called only when some grant needs provisioning. A throw ends the request
- *   with nothing provisioned.
+ *   grants (`zcaps`), the share grants' ids (`shareZcapIds`), and, on App
+ *   Connect, the connect's `appConnect` result with its app-key Resource id
+ *   (`appKey`), once every delegation is signed and before any collection is
+ *   provisioned. On App Connect it runs exactly once, before the VP is
+ *   composed; on the standalone path only when some grant needs
+ *   provisioning. A throw ends the request with nothing provisioned.
+ * @param [options.onEscrowed] {Function}   called with the grant ids each
+ *   landed escrow covers (see `processZcaps`)
  * @returns {Promise<WalletResponse>} The response VP, or `{}` when there is
  *   nothing to send.
  */
@@ -58,7 +62,8 @@ export async function processRequest({
   selectedVCs = [],
   expectedAppKeyDid,
   delegateStandaloneZcaps = false,
-  beforeProvision
+  beforeProvision,
+  onEscrowed
 }: {
   request: IVPRDetails
   session: Session
@@ -68,8 +73,10 @@ export async function processRequest({
   delegateStandaloneZcaps?: boolean
   beforeProvision?: (options: {
     zcaps: IZcap[]
-    appConnect?: WalletResponse['appConnect']
+    shareZcapIds: string[]
+    appConnect?: { firstRun: boolean; subjectDid: string; appKey: string }
   }) => Promise<void>
+  onEscrowed?: (options: { zcapIds: string[] }) => void
 }): Promise<WalletResponse> {
   const queries = queriesOf(request)
   const didAuth = isDIDAuthRequested({ queries })
@@ -112,9 +119,8 @@ export async function processRequest({
             // the grant provisions. Classification already validated it, so
             // this read does not throw.
             agent: requestingAgentOf(specRequest),
-            ...(beforeProvision && {
-              beforeProvision: zcaps => beforeProvision({ zcaps })
-            })
+            ...(beforeProvision && { beforeProvision }),
+            ...(onEscrowed && { onEscrowed })
           })
       }),
       // The shared layer validates the `AppConnectQuery` (its `app.appUrl`
@@ -137,7 +143,8 @@ export async function processRequest({
           didAuthRequested,
           cryptosuite,
           expectedSubjectDid: expectedAppKeyDid,
-          beforeProvision
+          beforeProvision,
+          onEscrowed
         })
     }
   })

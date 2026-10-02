@@ -10,10 +10,13 @@
  * the dedicated `app-connections` collection.
  *
  * The second half covers that collection's surface: `addMintedAppKey` /
- * `listAppKeys` / `deleteAppKey`, their idempotence on the credential's
- * content cid, and the two separations that keep an app's seed out of the
- * credential-wide surfaces (no Resource among the credentials, no
- * credential-created activity).
+ * `listAppKeys` / `deleteAppKeyResource`, their idempotence on the
+ * credential's content cid, the delete's binding check against the
+ * connection's DID, and the two separations that keep an app's seed out of
+ * the credential-wide surfaces (no Resource among the credentials, no
+ * credential-created activity). A key the connection names that the local
+ * replica holds but cannot open refuses the delete. The delete against a remote Space is covered
+ * in `storageManager.sharing.test.ts`.
  *
  * The manager runs over a real BrowserStore on memory RxDB with real EDV
  * ciphers and no remote store, so a stored credential really round-trips
@@ -23,6 +26,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
+import type { Json } from '@interop/was-sync'
 import { CapabilityAgent } from '@interop/capability-agent'
 import {
   AppKeyMintInvariantError,
@@ -81,6 +85,17 @@ async function plantedAppKey(): Promise<IVerifiableCredential> {
   ;(credential as { issuer: string }).issuer = attacker.id
   ;(credential.credentialSubject as { id: string }).id = attacker.id
   return credential
+}
+
+/**
+ * The subject DID of an app-key credential: the DID its own seed derives, and
+ * the `id` of the app's connections entry.
+ *
+ * @param credential {IVerifiableCredential}
+ * @returns {string}
+ */
+function subjectOf(credential: IVerifiableCredential): string {
+  return (credential.credentialSubject as { id: string }).id
 }
 
 describe('StorageManager.addCredential app-key screening', () => {
@@ -175,33 +190,144 @@ describe('StorageManager app-key collection surface', () => {
     expect((await storage.listAppKeys()).appKeys).toHaveLength(1)
   })
 
-  it('lists two apps apart and deletes one by cid', async () => {
+  it('names the Resource holding the key on a store and on its re-store', async () => {
+    const { storage } = await makeStorage()
+    const { credential } = await mintAppKeyCredential({ app, origin })
+
+    const stored = await storage.addMintedAppKey({ credential })
+    // A skipped duplicate names the Resource already holding the key, which
+    // the app's connections entry records as `appKey`.
+    expect(await storage.addMintedAppKey({ credential })).toEqual(stored)
+
+    const { appKeys } = await storage.listAppKeys()
+    expect(appKeys.map(({ resourceId }) => resourceId)).toEqual([
+      stored.resourceId
+    ])
+  })
+
+  it('lists two apps apart and deletes the one its connection names', async () => {
     const { storage } = await makeStorage()
     const editor = await mintAppKeyCredential({ app, origin })
     const reader = await mintAppKeyCredential({
       app: { name: 'Reader', appUrl: 'https://app.example/reader' },
       origin
     })
-    await storage.addMintedAppKey({ credential: editor.credential })
-    await storage.addMintedAppKey({ credential: reader.credential })
+    const { resourceId: editorKey } = await storage.addMintedAppKey({
+      credential: editor.credential
+    })
+    const { resourceId: readerKey } = await storage.addMintedAppKey({
+      credential: reader.credential
+    })
 
     // Two inserts can land in the same millisecond, so the listing's
-    // `updatedAt` order is not decidable here: assert membership, and address
-    // the delete by the credential's own cid.
+    // `updatedAt` order is not decidable here: assert membership.
     const { appKeys: listed } = await storage.listAppKeys()
-    expect(listed.map(({ vc }) => vc)).toEqual(
-      expect.arrayContaining([editor.credential, reader.credential])
+    expect(listed.map(({ resourceId }) => resourceId).sort()).toEqual(
+      [editorKey, readerKey].sort()
     )
-    expect(listed).toHaveLength(2)
-    const editorCid = listed.find(({ vc }) => vc === editor.credential)!.cid
 
-    await storage.deleteAppKey({ cid: editorCid })
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: editorKey,
+        did: subjectOf(editor.credential)
+      })
+    ).toBe('deleted')
 
     expect((await storage.listAppKeys()).appKeys.map(({ vc }) => vc)).toEqual([
       reader.credential
     ])
-    // Deleting an already-absent app key is a no-op, not an error.
-    await storage.deleteAppKey({ cid: editorCid })
+    // A key already deleted reads as absent, which is not an error.
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: editorKey,
+        did: subjectOf(editor.credential)
+      })
+    ).toBe('absent')
     expect((await storage.listAppKeys()).appKeys).toHaveLength(1)
+  })
+
+  it("leaves a key that does not bind the connection's DID", async () => {
+    // A connection entry naming another app's key: its seed is that app's,
+    // so the delete refuses it and leaves it stored.
+    const { storage } = await makeStorage()
+    const editor = await mintAppKeyCredential({ app, origin })
+    const reader = await mintAppKeyCredential({
+      app: { name: 'Reader', appUrl: 'https://app.example/reader' },
+      origin
+    })
+    const { resourceId: editorKey } = await storage.addMintedAppKey({
+      credential: editor.credential
+    })
+
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: editorKey,
+        did: subjectOf(reader.credential)
+      })
+    ).toBe('foreign')
+    expect((await storage.listAppKeys()).appKeys.map(({ vc }) => vc)).toEqual([
+      editor.credential
+    ])
+  })
+
+  it('reads a key reference no Resource answers as absent', async () => {
+    const { storage } = await makeStorage()
+    const { credential } = await mintAppKeyCredential({ app, origin })
+    await storage.addMintedAppKey({ credential })
+    const { credential: other } = await mintAppKeyCredential({ app, origin })
+
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: 'z6DanglingAppKeyResource',
+        did: subjectOf(other)
+      })
+    ).toBe('absent')
+    expect((await storage.listAppKeys()).appKeys).toHaveLength(1)
+  })
+
+  it('refuses when the local replica of the key it names will not open', async () => {
+    // A guest or no-WAS session: the Resource `appKey` names is held locally
+    // but will not open, and nothing else binds the DID. Reading it as absent
+    // would retire the entry and strand the key.
+    const { storage, localStore } = await makeStorage()
+    const { credential } = await mintAppKeyCredential({ app, origin })
+    const appKey = 'z6UndecryptableAppKey'
+    await localStore.rxCollection('appConnections').insert({
+      id: appKey,
+      updatedAt: new Date().toISOString(),
+      version: 0,
+      data: {
+        id: appKey,
+        sequence: 0,
+        jwe: { ciphertext: 'not-json{' }
+      } as Json
+    })
+    // The listing reports the skipped replica by count alone.
+    const { appKeys, skipped } = await storage.listAppKeys()
+    expect(appKeys).toEqual([])
+    expect(skipped.integrity).toBe(1)
+
+    await expect(
+      storage.deleteAppKeyResource({ appKey, did: subjectOf(credential) })
+    ).rejects.toThrow('could not be read')
+    const held = await localStore
+      .rxCollection('appConnections')
+      .findOne(appKey)
+      .exec()
+    expect(held).not.toBeNull()
+  })
+
+  it('deletes a key binding the DID when the reference it names is gone', async () => {
+    const { storage } = await makeStorage()
+    const { credential } = await mintAppKeyCredential({ app, origin })
+    await storage.addMintedAppKey({ credential })
+
+    expect(
+      await storage.deleteAppKeyResource({
+        appKey: 'z6DanglingAppKeyResource',
+        did: subjectOf(credential)
+      })
+    ).toBe('deleted')
+    expect((await storage.listAppKeys()).appKeys).toEqual([])
   })
 })

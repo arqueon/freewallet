@@ -4,8 +4,9 @@
  * is a property of the strategy's TYPE rather than a flag a write site
  * consults -- the browser-local variant reaches the `freewallet-session`
  * IndexedDB database (it alone carries the `idb` factory), the localStorage
- * caches, and the persistent `writerId` mint, while the in-memory variant
- * holds a per-visit `writerId` and one in-memory descriptor/meta cache pair
+ * caches, the persistent `writerId` mint, and the writer first-seen records,
+ * while the in-memory variant holds a per-visit `writerId`, the first-seen
+ * records in tab memory, and one in-memory descriptor/meta cache pair
  * -- and no sessionKey factory at all, so code needing that database must
  * hold (and assert for) the browser-local variant. The two continuity pin
  * stores are the exception both variants share: they are in memory
@@ -22,6 +23,10 @@
 import type { IZcap } from '@interop/data-integrity-core'
 import type { CollectionEncryption } from '@interop/was-client'
 import type { EncryptionDescriptorCache } from '@interop/was-client/edv'
+import type {
+  WriterFirstSeenRecord,
+  WriterFirstSeenStore
+} from '@interop/wallet-core/connections'
 import {
   memoryResourceLogPinStore,
   type ResourceLogPinStore
@@ -31,10 +36,13 @@ import { getOrCreateWriterId } from '@/lib/writerId'
 import {
   deletePasskeySafetyNotice,
   deleteUnlockMethodsCache,
+  hasClientKeyRecord,
   loadPasskeySafetyNotice,
   loadUnlockMethodsCache,
+  loadWriterFirstSeen,
   savePasskeySafetyNotice,
-  saveUnlockMethodsCache
+  saveUnlockMethodsCache,
+  saveWriterFirstSeen
 } from '@/lib/sessionKey'
 
 /**
@@ -140,6 +148,12 @@ interface SessionPersistenceBase {
   passkeyNotices: PasskeySafetyNoticeStore
   // This session's writer id for history attribution and LWW tie-breaks.
   getWriterId(): string
+  // The writer first-seen record the `connections` directory's writer
+  // registration reads (its second-session rule), keyed by the unlock Space
+  // id of the credential the session logged in with. Unlock-local state on
+  // the browser-local variant, deleted with it; tab memory on the in-memory
+  // variant, which declares no `writerId` and so never registers.
+  writerFirstSeen(options: { unlockSpaceId: string }): WriterFirstSeenStore
   // The per-scope encryption-descriptor cache (the offline fallback). One
   // instance per scope per session; a strategy that persists no caches (a
   // guest's mint-only descriptors) serves a session-lifetime in-memory one.
@@ -495,6 +509,28 @@ export function browserLocalSessionPersistence({
     getWriterId() {
       return getOrCreateWriterId()
     },
+    /**
+     * The writer first-seen record rides beside the client-key record under
+     * the same unlock Space id, and is deleted with it. So `put` writes
+     * nothing when no client-key record stands under that id. A writer
+     * registration that lands after a ceremony deleted this unlock method's
+     * local state then cannot re-create the record alone.
+     */
+    writerFirstSeen({ unlockSpaceId }) {
+      return {
+        async get() {
+          return await loadWriterFirstSeen({ spaceId: unlockSpaceId, idb })
+        },
+        async put(record) {
+          // The create-nothing probe, so a put after a whole-database wipe
+          // does not re-create an empty `freewallet-session` either.
+          if (!(await hasClientKeyRecord({ spaceId: unlockSpaceId, idb }))) {
+            return
+          }
+          await saveWriterFirstSeen({ spaceId: unlockSpaceId, record, idb })
+        }
+      }
+    },
     descriptorCache({ scope }) {
       let cache = descriptorCaches.get(scope)
       if (!cache) {
@@ -535,6 +571,7 @@ export function transientSessionStores(): TransientSessionStores {
   const descriptors = memoryDescriptorCache()
   const metas = memoryMetaCache()
   const writerId = uuidv7()
+  const firstSeen = new Map<string, WriterFirstSeenRecord>()
   return {
     storage: STORAGE_IN_MEMORY,
     logPins: memoryResourceLogPinStore(),
@@ -562,6 +599,16 @@ export function transientSessionStores(): TransientSessionStores {
     },
     getWriterId() {
       return writerId
+    },
+    writerFirstSeen({ unlockSpaceId }) {
+      return {
+        async get() {
+          return firstSeen.get(unlockSpaceId) ?? null
+        },
+        async put(record) {
+          firstSeen.set(unlockSpaceId, record)
+        }
+      }
     },
     descriptorCache() {
       return descriptors

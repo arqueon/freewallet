@@ -201,18 +201,20 @@ function includesWrite(allowedActions: string[]): boolean {
 /**
  * Whether a collection id names a collection no grant may ever name, whatever
  * the descriptor form and whatever actions it asks for: a wallet Space roster
- * entry (`WALLET_SPACE_PROVISION_ROSTER`, the synced feeds plus the system
- * collections) that declares `grantable: false`. An id the roster does not
- * list stays grantable, since a requester-provisioned collection is not a
- * roster entry.
+ * entry (`WALLET_SPACE_PROVISION_ROSTER`, the synced feeds, the
+ * `connections` directory, and the system collections) that declares
+ * `grantable: false`. An id the roster does not list stays grantable, since a
+ * requester-provisioned collection is not a roster entry.
  *
- * Today that is three collections. `app-connections` holds one app-key
+ * Today that is four collections. `connections` is the wallet's party
+ * directory: every party's names, origins, and delegated capabilities.
+ * `app-connections` holds one app-key
  * credential per connected app, each carrying that app's private seed in
  * `credentialSubject.seed`. `key-map` is plaintext on the server. Its user key
  * roster (`user-key.jsonl`) carries a passphrase credential's derived
  * key-agreement key beside a wrap of the user key, so a read of it is an
  * offline passphrase-guessing oracle. `unlock-methods` is the account's
- * credential registry. Neither is any third party's business to read.
+ * credential registry. None is any third party's business to read.
  *
  * `resolveInvocationTarget` checks the resolved collection id once, after
  * every descriptor form, so a grant naming one of these collections is
@@ -1388,10 +1390,18 @@ export function resolveGrants({
  *   validated VPR-root `agent` member, when the request carried one. Its
  *   `name` is stamped beside the grantee did:key on each collection this
  *   call creates without an `app`.
- * @param [options.beforeProvision] {Function}   `(zcaps) => Promise<void>`,
- *   awaited with every signed grant once signing is done and before any
- *   share is escrowed or collection provisioned; called only when some grant
- *   needs one. A throw ends the request with nothing escrowed.
+ * @param [options.beforeProvision] {Function}   awaited with every signed
+ *   grant (`zcaps`) and the ids of the share grants among them
+ *   (`shareZcapIds`) once signing is done and before any share is escrowed
+ *   or collection provisioned; called only when some grant needs one. A
+ *   throw ends the request with nothing escrowed.
+ * @param [options.onEscrowed] {Function}   called with the ids of the grants
+ *   (`zcapIds`) one landed escrow covers: a share's grant once its reader is
+ *   escrowed, and every grant on a provisioned collection once its grantee
+ *   is a recipient (or, for a public collection, once it stands), each
+ *   reported before that step's later bookkeeping. A caller rolling back a request that failed
+ *   partway keeps those grants recorded, since their grantee holds the
+ *   decryption material.
  * @returns {Promise<IZcap[]>}
  */
 export async function processZcaps({
@@ -1402,7 +1412,8 @@ export async function processZcaps({
   shareTtlMs = SHARE_ZCAP_TTL_MS,
   app,
   agent,
-  beforeProvision
+  beforeProvision,
+  onEscrowed
 }: {
   zcapRequests: ICapabilityQueryDetail[]
   session: Session
@@ -1411,7 +1422,11 @@ export async function processZcaps({
   shareTtlMs?: number
   app?: { name: string; origin: string; appUrl: string }
   agent?: { name: string }
-  beforeProvision?: (zcaps: IZcap[]) => Promise<void>
+  beforeProvision?: (options: {
+    zcaps: IZcap[]
+    shareZcapIds: string[]
+  }) => Promise<void>
+  onEscrowed?: (options: { zcapIds: string[] }) => void
 }): Promise<IZcap[]> {
   if (zcapRequests.length === 0) {
     return []
@@ -1565,18 +1580,23 @@ export async function processZcaps({
    * @param [options.recipient] {ReturnType<typeof x25519RecipientFromDidKey>}
    *   the grantee's recipient key, derived in the signing pass; required for
    *   a private collection
+   * @param options.onEscrowLanded {Function}   called once the grantee holds
+   *   what the grant needs: a private collection's escrow landed, or a
+   *   public collection stands
    * @returns {Promise<void>}
    */
   async function provisionFor({
     collectionId,
     isPublic,
     controller,
-    recipient
+    recipient,
+    onEscrowLanded
   }: {
     collectionId: string
     isPublic: boolean
     controller?: string
     recipient?: ReturnType<typeof x25519RecipientFromDidKey>
+    onEscrowLanded: () => void
   }): Promise<void> {
     // `generator` is typed as a DID downstream, and the controller arrives
     // here as a plain request string. `isEd25519DidKey` is the check that
@@ -1604,7 +1624,8 @@ export async function processZcaps({
       await session.storage.provisionEncryptedCollection({
         collectionId,
         recipient,
-        ...attribution
+        ...attribution,
+        onEscrowLanded
       })
       return
     }
@@ -1613,6 +1634,7 @@ export async function processZcaps({
       isPublic,
       ...attribution
     })
+    onEscrowLanded()
   }
 
   // Pass 1 signs each resolved row's delegation. Signing is local and inert
@@ -1622,7 +1644,8 @@ export async function processZcaps({
   // request before anything is persisted. The record holds one entry per
   // collection and grantee, so two rows naming one new collection provision
   // it once. A second grantee on the same collection keeps its own entry,
-  // since its key needs its own escrow.
+  // since its key needs its own escrow. Each entry also collects the ids of
+  // the grants its provisioning covers.
   const zcaps: IZcap[] = []
   const pending = new Map<
     string,
@@ -1631,6 +1654,7 @@ export async function processZcaps({
       isPublic: boolean
       controller?: string
       recipient?: ReturnType<typeof x25519RecipientFromDidKey>
+      zcapIds: string[]
     }
   >()
   const pendingShares: Array<{
@@ -1682,7 +1706,8 @@ export async function processZcaps({
             controller: descriptor.controller,
             requirement: 'Provisioning an encrypted collection'
           })
-        })
+        }),
+        zcapIds: []
       })
     }
     // Write grants live for the shorter write TTL; read-only grants for the
@@ -1696,6 +1721,9 @@ export async function processZcaps({
       expires
     })
     zcaps.push(zcap as IZcap)
+    if (target.needsProvisioning) {
+      pending.get(pendingKey)?.zcapIds.push(zcap.id)
+    }
   }
 
   if (pending.size === 0 && pendingShares.length === 0) {
@@ -1705,9 +1733,14 @@ export async function processZcaps({
   // both add the grantee to key epochs, and revocation finds that grantee
   // only through a stored record of the signed grants. The hook writes that
   // record. A hook that throws ends the request here, with nothing escrowed.
-  await beforeProvision?.(zcaps)
+  await beforeProvision?.({
+    zcaps,
+    shareZcapIds: pendingShares.map(({ zcap }) => zcap.id)
+  })
 
-  // Pass 2 escrows the shares, then provisions, each in request order.
+  // Pass 2 escrows the shares, then provisions, each in request order. Each
+  // landed escrow is reported, so a caller rolling back a later failure keeps
+  // the grants whose grantee already holds the decryption material.
   for (const { collectionId, recipient, zcap } of pendingShares) {
     await session.storage.shareCollection({
       profile: session.profile,
@@ -1716,11 +1749,20 @@ export async function processZcaps({
       recipient,
       zcap,
       // The share activity records the app's name and origin alone.
-      ...(app && { app: { name: app.name, origin: app.origin } })
+      ...(app && { app: { name: app.name, origin: app.origin } }),
+      // Reported as soon as the reader is escrowed, so a failure in the
+      // share's later bookkeeping does not read as an escrow that never
+      // landed.
+      ...(onEscrowed && {
+        onEscrowLanded: () => onEscrowed({ zcapIds: [zcap.id] })
+      })
     })
   }
-  for (const entry of pending.values()) {
-    await provisionFor(entry)
+  for (const { zcapIds, ...entry } of pending.values()) {
+    await provisionFor({
+      ...entry,
+      onEscrowLanded: () => onEscrowed?.({ zcapIds })
+    })
   }
   return zcaps
 }

@@ -114,6 +114,26 @@ import {
 } from '@/session/revocation'
 import { adoptFollowerUserKey } from '@/session/userKeyAdoption'
 import type { Session } from '@/types/auth'
+import {
+  connectionResourceId,
+  parseConnectionEntry,
+  readConnections,
+  recordGrants,
+  retireConnection,
+  setConnectionLabel,
+  type ConnectionGrant
+} from '@interop/wallet-core/connections'
+import { HMAC_KEY, memoryConnectionsStore } from './memoryConnections'
+
+/**
+ * The account Space's container URL, every directory grant's target prefix.
+ */
+const SPACE_URL = 'https://was.example.test/space/space-123/'
+
+/**
+ * The session's `connections` directory, fresh per test.
+ */
+let directory = memoryConnectionsStore()
 
 const POINTER = {
   did: 'did:webvh:QmScidForTests:was.example.test:space:space-123:id',
@@ -291,7 +311,52 @@ function sessionWith(
       }),
       addHistoryClientRevoked: vi.fn(async () => {
         state.calls.push('addHistoryClientRevoked')
-      })
+      }),
+      // The directory seams the client's retirement runs through, over the
+      // in-memory store with wallet-core's own reader and writer.
+      readConnectionsListing: vi.fn(async () => {
+        state.calls.push('readConnectionsListing')
+        const listing = await readConnections({
+          store: directory.store,
+          hmacKey: HMAC_KEY
+        })
+        return { listing: listing!, spaceUrl: SPACE_URL }
+      }),
+      revokeCollectionRecipients: vi.fn(
+        async (_options: { did: string; grants: ConnectionGrant[] }) => {
+          state.calls.push('revokeCollectionRecipients')
+          return { collections: 1, rotated: 1, failed: 0, revokedIds: [] }
+        }
+      ),
+      revokeConnectionGrants: vi.fn(
+        async ({ grants }: { grants: ConnectionGrant[] }) => {
+          state.calls.push('revokeConnectionGrants')
+          return {
+            revoked: grants.length,
+            withdrawn: grants.length,
+            skipped: 0,
+            revokedIds: grants.map(grant => grant.zcapId)
+          }
+        }
+      ),
+      retireConnectionEntry: vi.fn(
+        async ({
+          did,
+          handledZcapIds
+        }: {
+          did: string
+          handledZcapIds: Iterable<string>
+        }) => {
+          state.calls.push('retireConnectionEntry')
+          await retireConnection({
+            store: directory.store,
+            hmacKey: HMAC_KEY,
+            did,
+            handledZcapIds,
+            spaceUrl: SPACE_URL
+          })
+        }
+      )
     },
     profile: {
       accountPointer:
@@ -327,6 +392,7 @@ function sessionWith(
 }
 
 beforeEach(() => {
+  directory = memoryConnectionsStore()
   state.wasUrl = 'https://was.example.test'
   state.calls = []
   state.renewed = true
@@ -448,6 +514,10 @@ describe('the cascade, rotated path', () => {
       'holdRotatedVaultKeys',
       'cascadeCollections',
       'adoptRotatedVaultKeys',
+      // The client's directory entry retires ahead of the audit row. It
+      // carries no grants, so no server stage runs first.
+      'readConnectionsListing',
+      'retireConnectionEntry',
       'addHistoryClientRevoked'
     ])
     expect(outcome).toEqual({
@@ -536,6 +606,77 @@ describe('the cascade, rotated path', () => {
     expect(vi.mocked(userKeyVaultKeys)).toHaveBeenCalledWith({
       userKey: FRESH_USER_KEY
     })
+  })
+
+  it("retires the revoked client's connections entry, keeping its names", async () => {
+    const did = `did:key:${REVOKED.signingKeyMultibase}`
+    await setConnectionLabel({
+      store: directory.store,
+      hmacKey: HMAC_KEY,
+      did,
+      kind: 'wallet-client',
+      name: 'Freewallet',
+      label: 'Old laptop',
+      enrolledSigningKeys: new Set([REVOKED.signingKeyMultibase])
+    })
+
+    await revokeEnrolledClient({ session: sessionWith(), client: REVOKED })
+
+    const resourceId = await connectionResourceId({ hmacKey: HMAC_KEY, did })
+    const entry = parseConnectionEntry(directory.rows.get(resourceId)?.body)
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry).toMatchObject({ name: 'Freewallet', label: 'Old laptop' })
+  })
+
+  it("POSTs and rotates off the grants a client's entry carries before retiring it", async () => {
+    const did = `did:key:${REVOKED.signingKeyMultibase}`
+    const zcap = {
+      id: 'urn:zcap:client-grant',
+      controller: did,
+      invocationTarget: `${SPACE_URL}notes/`,
+      allowedAction: ['GET'],
+      expires: '2099-01-01T00:00:00.000Z'
+    }
+    await recordGrants({
+      store: directory.store,
+      hmacKey: HMAC_KEY,
+      did,
+      kind: 'wallet-client',
+      spaceUrl: SPACE_URL,
+      grants: [{ zcap, grantKind: 'grant' }]
+    })
+    const session = sessionWith()
+
+    await revokeEnrolledClient({ session, client: REVOKED })
+
+    expect(state.calls.slice(-4)).toEqual([
+      'revokeCollectionRecipients',
+      'revokeConnectionGrants',
+      'retireConnectionEntry',
+      'addHistoryClientRevoked'
+    ])
+    const { revokeCollectionRecipients, revokeConnectionGrants } =
+      session.storage as unknown as {
+        revokeCollectionRecipients: ReturnType<typeof vi.fn>
+        revokeConnectionGrants: ReturnType<typeof vi.fn>
+      }
+    const [rotation] = revokeCollectionRecipients.mock.calls[0] as [
+      { did: string; grants: ConnectionGrant[] }
+    ]
+    expect(rotation.did).toBe(did)
+    expect(rotation.grants.map(grant => grant.zcapId)).toEqual([
+      'urn:zcap:client-grant'
+    ])
+    const [posted] = revokeConnectionGrants.mock.calls[0] as [
+      { grants: ConnectionGrant[] }
+    ]
+    expect(posted.grants.map(grant => grant.zcapId)).toEqual([
+      'urn:zcap:client-grant'
+    ])
+    const resourceId = await connectionResourceId({ hmacKey: HMAC_KEY, did })
+    const entry = parseConnectionEntry(directory.rows.get(resourceId)?.body)
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry?.grants).toEqual([])
   })
 
   it('records the audit history with the per-collection tallies', async () => {

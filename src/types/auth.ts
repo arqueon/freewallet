@@ -252,6 +252,15 @@ export interface Session {
   // `registryReady` rather than with it. In memory only, scalar detail
   // only, and it never rejects.
   mends?: Promise<MendReport<CeremonyId>>
+  // Settles when this login's writer registration has run
+  // (`registerOwnConnectionWriter`), which may un-retire this client's own
+  // `connections` entry while the verified document still lists it. The
+  // forget ceremony awaits it before it retires that entry, so the two
+  // writes never interleave. Never rejects (the registration is
+  // best-effort and logs its own failure). Absent on a session that runs
+  // none: a transient session, the CHAPI popup, a guest, and the
+  // new-wallet flows.
+  writerRegistration?: Promise<void>
   // Aborted once this session is torn down (`src/session/sessionLifecycle.ts`):
   // a logout or account switch, a CHAPI popup page's teardown, a
   // never-entered session released, and the forget and account-deletion

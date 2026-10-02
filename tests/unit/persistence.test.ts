@@ -1,7 +1,7 @@
 /**
  * The session persistence seam: the transient strategy's in-memory
- * members and refusals, and the browser-local strategy's cache
- * memoization.
+ * members and refusals, the browser-local strategy's cache memoization, and
+ * the writer first-seen record on both variants.
  */
 import { describe, expect, it } from 'vitest'
 import type { IZcap } from '@interop/data-integrity-core'
@@ -14,6 +14,14 @@ import {
   transientSessionStores,
   type InMemorySessionPersistence
 } from '@/session/persistence'
+import { saveClientKeyRecord } from '@/lib/sessionKey'
+import { createFakeSessionIdb } from './fakeSessionIdb'
+
+const FIRST_SEEN = {
+  accountDid: 'did:webvh:example',
+  writerId: 'writer-1',
+  firstSessionAt: '2026-10-01T00:00:00.000Z'
+}
 
 /**
  * A full transient handle over fresh stores, with a stub annex identity --
@@ -187,6 +195,68 @@ describe('the browser-local persistence strategy', () => {
     // The write reached no browser-local storage.
     expect(
       localStorage.getItem('freewallet:collection-encryption:space:contacts')
+    ).toBeNull()
+  })
+})
+
+describe('the writer first-seen record', () => {
+  it('round-trips in the session database, keyed by the unlock Space id', async () => {
+    const { idb, sessionStore } = createFakeSessionIdb()
+    await saveClientKeyRecord({ spaceId: 'unlock-1', record: {}, idb })
+    const persistence = browserLocalSessionPersistence({ idb })
+    const store = persistence.writerFirstSeen({ unlockSpaceId: 'unlock-1' })
+    expect(await store.get()).toBeNull()
+    await store.put(FIRST_SEEN)
+    expect(await store.get()).toEqual(FIRST_SEEN)
+    expect(sessionStore.get('writer-first-seen/unlock-1')).toEqual(FIRST_SEEN)
+    // Another credential's record is its own, and a second strategy over the
+    // same database reads what the first wrote.
+    expect(
+      await persistence.writerFirstSeen({ unlockSpaceId: 'unlock-2' }).get()
+    ).toBeNull()
+    expect(
+      await browserLocalSessionPersistence({ idb })
+        .writerFirstSeen({ unlockSpaceId: 'unlock-1' })
+        .get()
+    ).toEqual(FIRST_SEEN)
+  })
+
+  it('writes nothing when no client-key record stands under the unlock Space id', async () => {
+    const { idb, sessionStore } = createFakeSessionIdb()
+    const store = browserLocalSessionPersistence({ idb }).writerFirstSeen({
+      unlockSpaceId: 'unlock-1'
+    })
+    await store.put(FIRST_SEEN)
+    expect(await store.get()).toBeNull()
+    expect(sessionStore.has('writer-first-seen/unlock-1')).toBe(false)
+  })
+
+  it('writes the record once a client-key record stands under the unlock Space id', async () => {
+    const { idb, sessionStore } = createFakeSessionIdb()
+    await saveClientKeyRecord({ spaceId: 'unlock-1', record: {}, idb })
+    const store = browserLocalSessionPersistence({ idb }).writerFirstSeen({
+      unlockSpaceId: 'unlock-1'
+    })
+    await store.put(FIRST_SEEN)
+    expect(sessionStore.get('writer-first-seen/unlock-1')).toEqual(FIRST_SEEN)
+  })
+
+  it('round-trips in tab memory on the in-memory variant, per handle', async () => {
+    const handle = transientHandle()
+    const store = handle.writerFirstSeen({ unlockSpaceId: 'unlock-1' })
+    expect(await store.get()).toBeNull()
+    await store.put(FIRST_SEEN)
+    expect(
+      await handle.writerFirstSeen({ unlockSpaceId: 'unlock-1' }).get()
+    ).toEqual(FIRST_SEEN)
+    expect(
+      await handle.writerFirstSeen({ unlockSpaceId: 'unlock-2' }).get()
+    ).toBeNull()
+    // A new visit holds nothing of the last one.
+    expect(
+      await transientHandle()
+        .writerFirstSeen({ unlockSpaceId: 'unlock-1' })
+        .get()
     ).toBeNull()
   })
 })

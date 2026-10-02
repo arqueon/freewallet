@@ -62,8 +62,9 @@ constrained to DID methods no session on this deployment could present
 (`unsupported`), and a `domain` that does not match the attested origin
 (`domainMismatch`). The origin cell is read ahead of the request body, so an
 unattributable request is refused before the popup opens a VC API exchange on
-behalf of the requester (an app, service, or agent). The consent screen's requester label and the recorded
-activity's `origin` both come from that attested value, and
+behalf of the requester (an app, service, or agent). The consent screen's requester label, the
+recorded activity's `origin`, and an App Connect app's `connections` entry
+`origin` all come from that attested value, and
 `requestingOriginOf` returns undefined for a value that does not parse as well
 as for one whose origin is opaque (`mailto:`, `data:`, `file:`, which
 serialize their origin as the string `null`). Consent therefore renders with a
@@ -171,3 +172,9 @@ tombstone, which the pull side maps to a removal like any other.
 The remote-direct backend is selected only when a remote store is
 configured. Reads gate on `StorageManager.ready()`: the local collections
 being open, or nothing at all in remote-direct mode.
+
+The `connections` directory sits outside that choice. It is never
+replicated and rides its own store seam, read and written remote-direct on
+every session with a Space. So the consent a popup records before escrow,
+the app's entry with its grants, lands on the server on both popup routings
+(see "The consent record" in app-connect.md).

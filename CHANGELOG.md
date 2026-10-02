@@ -4,6 +4,55 @@
 
 ### Fixed
 
+- A consent rolled back after a failure re-retires the party's `connections`
+  entry when it was absent or retired before and no grant escrowed, so a
+  disconnected app whose reconnect failed is not listed as connected. Under
+  partial escrow the entry stays live and its Grant activity is kept.
+- An escrow whose governing-log append landed with its response lost is
+  re-read and reported as landed, so the rollback keeps the grant on the
+  entry instead of leaving the grantee an unlisted epoch recipient.
+- The browser-local writer first-seen record is written only beside a
+  standing client-key record, so a registration landing after
+  `deleteUnlockLocalState` cannot re-create it.
+- `listedClientDids` resolves the session's own did:key on an account whose
+  pointer names no did:webvh, so the interaction-URL page's enrolled-client
+  refusal no longer fails open there.
+- The application detail page shows the load error when the directory cannot
+  be listed, instead of "not found".
+- The `connections` directory binding no longer caches an `absent` verdict,
+  so one masked 404 on the metadata read does not refuse every consent for
+  the rest of the session. The structural refusals stay cached per
+  descriptor.
+- The forget ceremony awaits this login's writer registration
+  (`session.writerRegistration`) before retiring this client's entry, so the
+  registration cannot un-retire it after the forget.
+- Removed the uncalled `readWriterResolver`.
+- The interaction-URL page refuses a grantee `controller` that is not a bare
+  Ed25519 did:key, on every target class. A verification method id such as
+  `did:key:z6Mk...#z6Mk...` no longer slips past the enrolled-client
+  refusal on a plain-URL or existing-collection grant.
+- A request that escrows nothing rolls its `connections` entry write back
+  when that write fails, as the provisioning path already did, so a PUT that
+  landed with its response lost leaves no grants the requester never
+  received.
+- The Storage page's shares listing re-runs on reload after a failed
+  directory read, so a removed reader no longer stays listed on an account
+  with no `connections` collection.
+- The `connections` directory joins the stranded report only when its
+  descriptor is stranded by epoch. A foreign recipient, a `generator` stamp,
+  or a missing blinded-index key still refuses every directory operation,
+  but no longer fires a stranded encounter the user key cascade cannot
+  converge and then grades converged.
+- On a session with no remote Space, deleting an app key whose local replica
+  will not open refuses, as the remote path does, rather than reporting the
+  key absent and retiring its entry.
+- A remembered login un-retires this client's own `connections` entry when
+  the verified document still lists the client, so a forget torn after its
+  retirement no longer leaves the entry retired for up to a day.
+- The Forget-this-browser confirm button has its label in both locales.
+- Decision 0036 now describes the stranded app-key sweep as the code has it:
+  the sweep stays, reads grants from the directory alone, and leaves every
+  stranded key in place when the directory cannot be read.
 - Revoking an app whose grant was signed by a since-disconnected wallet
   client succeeds again. The server now answers that dead grant with a
   masked 404, and wallet-core's refusal reading counts it as skipped
@@ -140,6 +189,114 @@
 
 ### Changed
 
+- BREAKING: the new `connections` directory is the record of which grants
+  a party holds, in place of the `wallet-activity` history. It is an
+  encrypted collection in the provision roster with one entry per party (an
+  app, an agent, or a wallet client; `contact` is reserved), at a resource
+  id keyed by an HMAC of the party's DID under the collection's
+  blinded-index key. Revocation, unsharing, the admitted-recipient resolver,
+  the Applications page, the shares dialog, the collection-creator lookup,
+  and the known-agent note read it. The Grant, Login, Revoke,
+  CollectionShare, CollectionUnshare, and ClientRevoke activities are audit
+  trail only, and nothing that decides about a party reads them.
+- BREAKING: an app or agent connected before this release has no directory
+  entry. It is not listed on the Applications page, and its grants can only
+  lapse at their own expiry. Nothing backfills the directory.
+- BREAKING: an account created before this release has no `connections`
+  collection, so App Connect and interaction-URL grants fail closed there.
+  No mender provisions it.
+- App Connect and the interaction-URL page write the party's entry once the
+  delegations are signed (`recordGrants`), before the Grant activity, any
+  escrow, and any delivery. App Connect writes a `kind: 'app'` entry with
+  its `appKey`, `origin`, `url`, and `name`, and the interaction-URL page a
+  `kind: 'agent'` entry. A shared-wallet-collection grant is marked
+  `grantKind: 'share'`. A `name` outside the 64-code-point display rule is
+  not stored. A failed entry write fails the request closed.
+- Every App Connect writes its entry before the VP is composed, a zero-grant
+  connect included, on every session kind. A guest's lands in its local
+  directory.
+- The directory is never replicated. On a session with a Space it is read
+  and written remote-direct, each write a read-modify-write under `ifMatch`
+  or a create under `ifNoneMatch`. On a guest or no-WAS session it is a
+  local RxDB collection, the only copy, under a locally minted
+  blinded-index key. A page reads it once and matches DIDs in memory.
+- The directory binding refuses a `connections` collection whose current
+  epoch lists a recipient outside the account's user key generations, one
+  carrying a `generator` stamp, and one with no blinded-index key.
+- The encrypted-collection rules read one roster-wide set,
+  `ENCRYPTED_WALLET_COLLECTION_IDS`, which adds the directory to the synced
+  encrypted collections: descriptor acquisition, the local descriptor mint,
+  the stranded report, the user key cascade's base set, the
+  credential-anchored mend, the shares listing, the Storage page grouping,
+  and `decryptCollectionResource`. Protection covers the whole provision
+  roster.
+- Disconnecting an app runs the rotation, the grant POSTs, a confirmed
+  server-side delete of the app key the entry's `appKey` names, the entry's
+  retirement, and then the Revoke row. The rotation covers the collections
+  the entry's grants target, protected share targets included, and every
+  collection whose `generator.id` is the app's DID. The key delete checks
+  that the key binds the entry's DID (`appKeySeedBindsSubject`), deletes
+  every Resource holding the same credential, reads a 404 or a dangling
+  `appKey` as deleted, and leaves a key bound to another DID alone.
+- Revoking an agent runs the same stages with no key delete.
+- A retirement throws when the entry gained a grant the revocation did not
+  handle, so a consent that raced the revoke keeps the row listed.
+- Unsharing rotates the collection off the reader's kid, POSTs the share
+  grants the reader's entry holds on it, removes them from the entry
+  (`removeGrants`), and writes the CollectionUnshare row. The entry is not
+  retired.
+- Disconnecting a wallet client and the forget ceremony retire the client's
+  entry, best-effort, POSTing and rotating off any grants it carries first.
+- The admitted-recipient resolver admits the owner, the user key
+  generations, and the recipient kid of every grant on every unretired
+  entry targeting the collection, expired grants included, with no
+  protected-collection filter. It fails closed, rotating nothing, on an
+  absent or refused directory, a failed listing, an undecryptable entry, an
+  unparseable body at its own id, or an entry from a newer build. A body at
+  the wrong id is ignored.
+- Every directory reader drops a grant whose `zcap.controller` is not the
+  entry's `id`, or whose target is outside the Space.
+- The Applications page lists unretired app entries holding an `appKey` or
+  any grant, and agent entries holding a live grant or an expired one on a
+  collection whose current key epoch still lists the agent. A row is named
+  by its `label`, then `name`, then origin, then shortened DID, and rows
+  sort by the latest consent. The app-key health warnings and the purge
+  button still read `app-connections`.
+- BREAKING: the application detail route is `/applications/:resourceId`,
+  keyed by the entry's resource id (was `/applications/:cid`). Agent rows
+  open it too. It lists every grant, live and expired, newest first, dates
+  "Connected" from `firstSeen`, and is headed "Connection detail: {{name}}"
+  (`applications.connectionDetailTitle` replaces `applications.detailTitle`).
+- The shares dialog lists a collection's current-epoch readers plus any
+  reader whose entry holds an unexpired share grant on it, named from the
+  entry. The roster is read whether or not the directory read succeeds.
+- The collection-creator lookup and the known-agent note read the
+  directory. A creator link uses the entry's resource id, and a retired
+  entry still names its app.
+- Wallet-client names live on each client's `wallet-client` entry. Signup
+  and self-enrollment write the client's own entry, enrollment approval
+  writes `name`, and a rename writes `label`. Settings > Connected wallets
+  still takes membership from the verified account document.
+- A remembered session registers its `writerId` on its own wallet-client
+  entry from its second session on, and touches it at most once a day. The
+  writer sweep runs as an encounter site at every directory listing read,
+  on both session kinds. Invariant `no-registered-writer-outlives-its-expiry`
+  now covers the directory's `writers`, with authority `none` and the
+  `encounter` trigger. The writer first-seen record rides the persistence
+  strategy and is unlock-local state.
+- The stranded app-key sweep reads grants from the directory. A stranded
+  key has no entry, so the sweep revokes no grant for it and rotates only
+  the collections whose `generator` names it.
+- `app-connections` listing rows carry their Resource id, and
+  `addMintedAppKey` returns it.
+- `StorageManager.revokeAppGrants` and `revokeAgentGrants` are replaced by
+  `revokeConnectionGrants`, and `revokeAppCollectionRecipients` and
+  `revokeAgentCollectionRecipients` by `revokeCollectionRecipients`. New:
+  `connectionsDirectory`, `readConnectionsListing`, `retireConnectionEntry`,
+  and `deleteAppKeyResource`. `listCollectionShares` takes `connections` in
+  place of `items`.
+- Requires `@interop/wallet-core` 0.96.0 and `@interop/was-client` 0.82.0,
+  consumed via `file:` references pending their release.
 - The never-grantable collections (`app-connections`, `key-map`,
   `unlock-methods`) are now read from the wallet-core roster's `grantable`
   field in place of a hardcoded list. Needs `@interop/wallet-core` 0.94.0.
@@ -289,8 +446,32 @@
   rename of `SyncedRow` to `SyncedResourceReplica` and `getDirtyRows` to
   `getDirtyResourceReplicas`.
 
+### Removed
+
+- `key-map/client-labels.json` and its store
+  (`WASRemoteStore.clientLabelsStore`). Wallet-client names live on the
+  directory.
+- The history-ordering helpers, which stamped a Revoke past its latest
+  Grant. Retirement replaces ordering.
+- `StorageManager.deleteAppKey`, the replica soft delete a disconnect used.
+- The agent revocation's partial outcome and its toast
+  (`applications.revokeAgentSuccessPartial`). No summary-only grant exists.
+- The CHAPI get popup's hand-off of its `app-connections` listing to the
+  consent row's attribution pass.
+
 ### Added
 
+- The interaction-URL page refuses, before consent, a request whose grantee
+  `controller` is the did:key of a wallet client the verified account
+  document lists or ever listed (`enrolledClient`), with its own copy in
+  English and Spanish.
+- A consent that finds an entry of another kind at the party's id fails
+  closed with wallet-core's `ConnectionKindMismatchError`.
+- A request that fails after its entry write removes, by zcap id, its grants
+  whose escrow did not land. A grant whose escrow landed stays listed. A
+  failed delivery to the exchange (`exchangeFailed`) keeps the record.
+- The mender registry declares invariant
+  `every-party-with-authority-has-a-connection-entry` as a `none` gap.
 - The interaction-URL request page refuses, before consent, a plain URL
   `invocationTarget` naming an existing encrypted collection (or a Resource
   inside one) whose current key epoch does not list the agent. Such a grant

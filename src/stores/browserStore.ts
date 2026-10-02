@@ -43,7 +43,7 @@ import { createContactsConflictHandler } from '@/stores/contactsConflictHandler'
 import { compareContactRevisionsNewestFirst } from '@/lib/contactRevisions'
 import { isEncryptedEnvelope, type DocCipher } from '@interop/was-client/edv'
 import { classifyDecryptFailure } from '@/lib/decryptFailure'
-import type { StoredCredential } from '@/types/credential'
+import type { StoredAppKey, StoredCredential } from '@/types/credential'
 import type { StoredContact } from '@/types/contact'
 import type { WalletActivity } from '@/stores/storageManager'
 import { createLogger } from '@/lib/log'
@@ -108,6 +108,13 @@ export class BrowserStore {
   // `#collections`, which is typed to `SyncedDoc` and enumerates exactly the
   // collections that replicate.
   #contactsHistoryIndex?: RxCollection<{ id: string; contactId: string }>
+  // The local `connections` directory of a session with no remote Space (a
+  // guest, a no-WAS login): one resource replica per party entry, on the
+  // generic synced-doc schema. Held apart from `#collections`, which
+  // enumerates exactly the collections that replicate: the directory is
+  // never replicated, and only the directory store's local adapter reads or
+  // writes it.
+  #connections?: RxCollection<SyncedDoc>
   #storage: RxStorage<unknown, unknown>
   #ciphers?: Record<string, DocCipher>
   // Count of resource replicas the most recent list read had to skip because
@@ -268,10 +275,24 @@ export class BrowserStore {
    * collections. `addCollections` is idempotent, so this is safe to call on
    * every login.
    *
-   * @param user {User}
+   * The local `connections` directory is opened too when `localDirectory` is
+   * set: a session with no remote Space keeps its directory here. A session
+   * with one reads the remote collection directly, so its database opens no
+   * collection for it (RxDB caps the collections one process holds open).
+   *
+   * @param options {object}
+   * @param options.user {User}
+   * @param [options.localDirectory] {boolean}   open the local `connections`
+   *   collection; default false
    * @returns {Promise<void>}
    */
-  async ensureUserCollections({ user }: { user: User }) {
+  async ensureUserCollections({
+    user,
+    localDirectory = false
+  }: {
+    user: User
+    localDirectory?: boolean
+  }) {
     const db = await createRxDatabase({
       name: `${this.dbPrefix}-wallet-db`,
       storage: this.#storage,
@@ -316,6 +337,15 @@ export class BrowserStore {
         id: string
         contactId: string
       }>
+    // The local `connections` directory, added alongside the standard
+    // collections but outside them for the same reason: it never syncs.
+    if (localDirectory) {
+      const directoryCollections = await db.addCollections({
+        connections: { schema: syncedDocSchema() }
+      })
+      this.#connections =
+        directoryCollections.connections as unknown as RxCollection<SyncedDoc>
+    }
     this.db = db
     this.#listenForTeardown()
     log.info('Initialized local wallet collections for user', {
@@ -376,6 +406,23 @@ export class BrowserStore {
       )
     }
     return collection
+  }
+
+  /**
+   * The live RxDB collection behind the local `connections` directory: the
+   * one store the directory's local adapter reads and writes, and that
+   * nothing replicates.
+   *
+   * @returns {RxCollection<SyncedDoc>}
+   */
+  connectionsCollection(): RxCollection<SyncedDoc> {
+    if (!this.#connections) {
+      throw new Error(
+        'The local connections directory is not initialized. ' +
+          'Call ensureUserCollections() first.'
+      )
+    }
+    return this.#connections
   }
 
   /**
@@ -1153,12 +1200,14 @@ export class BrowserStore {
    * resource replica is the credential's EDV envelope under a content-derived
    * envelope-hash id and idempotence is by the credential's content cid
    * (encryption is nondeterministic, so the resource id cannot carry it).
-   * Returns whether a resource replica was actually inserted.
+   * Returns whether a resource replica was actually inserted, and the id of
+   * the resource replica that holds the credential: the new one, or the one
+   * already holding it.
    *
    * @param options {object}
    * @param options.cid {string}
    * @param options.credential {IVerifiableCredential}
-   * @returns {Promise<boolean>}
+   * @returns {Promise<{ inserted: boolean; resourceId: string }>}
    */
   async addAppKey({
     cid,
@@ -1166,10 +1215,11 @@ export class BrowserStore {
   }: {
     cid: string
     credential: IVerifiableCredential
-  }): Promise<boolean> {
+  }): Promise<{ inserted: boolean; resourceId: string }> {
     const { entries } = await this.#appKeyEntries()
-    if (entries.some(entry => entry.cid === cid)) {
-      return false
+    const held = entries.find(entry => entry.cid === cid)
+    if (held) {
+      return { inserted: false, resourceId: held.resourceId }
     }
     const { resourceId } = await this.#insertEncrypted({
       logicalKey: 'appConnections',
@@ -1181,16 +1231,16 @@ export class BrowserStore {
       credential as unknown as Json
     )
     this.#appKeyCidByResource.set(resourceId, cid)
-    return true
+    return { inserted: true, resourceId }
   }
 
   /**
    * Lists the stored app-key credentials, oldest first, collapsing duplicate
    * resource replicas carrying the same credential to their oldest copy.
    *
-   * @returns {Promise<Array<StoredCredential>>}
+   * @returns {Promise<Array<StoredAppKey>>}
    */
-  async listAppKeys(): Promise<Array<StoredCredential>> {
+  async listAppKeys(): Promise<Array<StoredAppKey>> {
     const {
       entries,
       undecryptableResourceIds,
@@ -1203,13 +1253,13 @@ export class BrowserStore {
     this.#undecryptableAppKeys = undecryptableResourceIds.length
     this.#integrityAppKeys = integrityResourceIds.length
     const seen = new Set<string>()
-    const appKeys: StoredCredential[] = []
-    for (const { cid, vc } of entries) {
+    const appKeys: StoredAppKey[] = []
+    for (const { cid, vc, resourceId } of entries) {
       if (seen.has(cid)) {
         continue
       }
       seen.add(cid)
-      appKeys.push({ cid, vc })
+      appKeys.push({ cid, vc, resourceId })
     }
     return appKeys
   }
@@ -2108,6 +2158,7 @@ export class BrowserStore {
       this.db = undefined
       this.#collections = undefined
       this.#contactsHistoryIndex = undefined
+      this.#connections = undefined
     }
     // Guarded: absent under the memory storage used in unit tests.
     if (typeof indexedDB !== 'undefined') {
@@ -2215,6 +2266,7 @@ export class BrowserStore {
       this.db = undefined
       this.#collections = undefined
       this.#contactsHistoryIndex = undefined
+      this.#connections = undefined
     }
   }
 }

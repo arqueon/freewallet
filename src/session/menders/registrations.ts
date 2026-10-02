@@ -17,9 +17,9 @@
  * nothing can run them out of their own order. The encounter sites that keep
  * their own call are data too.
  *
- * Two encounter registrations run mid-visit, after the chain has settled,
+ * Three encounter registrations run mid-visit, after the chain has settled,
  * through the encounter runner (`encounter.ts`): the stranded-collection
- * mend and the registry stale-seal mend.
+ * mend, the registry stale-seal mend, and the `connections` writer sweep.
  */
 import {
   errorNameOf,
@@ -87,6 +87,7 @@ import {
 import { sweepStrandedAppKeys } from '@/session/appKeySweep'
 import { sweepClientAnnexGenerations } from '@/session/clientAnnexGc'
 import { refreshTransientManageCapability } from '@/session/unlockMethods'
+import { sweepHeldConnectionWriters } from '@/session/connectionWriters'
 import { wasServiceDescription } from '@/lib/wasService'
 
 /**
@@ -1155,6 +1156,51 @@ export const REGISTRY_SEAL_ENCOUNTER: Registration<
 }
 
 /**
+ * The `connections` writer sweep: the two-phase expiry of every directory
+ * entry's `writers`, run over the listing a page just read, so it costs no
+ * second read. The listing read's binding (`encounterSites.ts`) holds the
+ * listing and runs this; a run with no listing held is a `noop`. Both
+ * session kinds read the directory, so both reach it, and a transient
+ * listing may write. Every write is conditional on the ETag the listing
+ * carries. A lost race is skipped, and any other failed write grades the
+ * run `partial`, or `failed` when nothing landed, which spends the session's
+ * budget.
+ */
+export const CONNECTION_WRITERS_SWEEP_ENCOUNTER: Registration<
+  { session: Session },
+  CeremonyId
+> = {
+  trigger: 'encounter',
+  reports: ['no-registered-writer-outlives-its-expiry'],
+  reachedBy: ['remembered', 'transient'],
+  async converge({ session }) {
+    const invariant = 'no-registered-writer-outlives-its-expiry' as const
+    const graded = (outcome: MendOutcome) => [{ invariant, ...outcome }]
+    if (isSessionDisposed({ session })) {
+      return graded({ outcome: 'noop', detail: { reason: 'session-disposed' } })
+    }
+    const swept = await sweepHeldConnectionWriters({ session })
+    if (swept === undefined) {
+      return graded({ outcome: 'noop', detail: { reason: 'no-listing' } })
+    }
+    const detail = {
+      markedInactive: swept.markedInactive.length,
+      dropped: swept.dropped.length,
+      failed: swept.failed.length
+    }
+    const landed = detail.markedInactive + detail.dropped
+    if (detail.failed > 0) {
+      return graded({
+        outcome: landed > 0 ? 'partial' : 'failed',
+        detail,
+        errorName: errorNameOf(swept.failed[0]?.err)
+      })
+    }
+    return graded({ outcome: landed > 0 ? 'clean' : 'noop', detail })
+  }
+}
+
+/**
  * The remembered block's registry-writing registrations, in execution order.
  * `session.registryReady` settles when the last of these has reported, which
  * is the meaning its awaiters have always had.
@@ -1308,7 +1354,7 @@ const REPORTING_SITES: ReadonlyArray<RegistrationSite> = [
 
 /**
  * Every registration site the registry indexes: both blocks in execution
- * order (the seed first), the two encounter registrations the encounter
+ * order (the seed first), the three encounter registrations the encounter
  * runner runs, then the sites that report from their own call sites. The
  * audit's derived sets read this list.
  */
@@ -1318,5 +1364,6 @@ export const MENDER_SITES: ReadonlyArray<RegistrationSite> = [
   ...TRANSIENT_REGISTRATIONS,
   STRANDED_COLLECTION_ENCOUNTER,
   REGISTRY_SEAL_ENCOUNTER,
+  CONNECTION_WRITERS_SWEEP_ENCOUNTER,
   ...REPORTING_SITES
 ]

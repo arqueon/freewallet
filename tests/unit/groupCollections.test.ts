@@ -65,6 +65,27 @@ describe('groupCollections', () => {
     expect(app.map(({ id }) => id)).toEqual(['alpha-app-data', 'zulu-app-data'])
   })
 
+  it('groups the connections directory with the system collections, by its roster name', () => {
+    const { app, system } = groupCollections({
+      t,
+      collections: [
+        collection('connections', 'Some stored name'),
+        collection('key-map', 'Key Map'),
+        collection('alpha-app-data')
+      ]
+    })
+    // Not an application collection, so no "Created by" caption and no
+    // creator lookup.
+    expect(app.map(({ id }) => id)).toEqual(['alpha-app-data'])
+    expect(system.map(({ id }) => id)).toEqual(['connections', 'key-map'])
+    expect(
+      getCollectionDisplayName({
+        collection: collection('connections', 'Some stored name'),
+        t
+      })
+    ).toEqual('Connections')
+  })
+
   it('prefers the canonical name for wallet collections over the stored one', () => {
     // A pre-rename space still stores the old provisioning-time name.
     expect(

@@ -497,8 +497,7 @@ export function WalletGetPage() {
           void attributeGrants({
             resolution,
             grants: resolveGrants(resolution),
-            storage: loggedIn.storage,
-            appKeys: listedAppKeys
+            storage: loggedIn.storage
           })
         }
         setSession(loggedIn)

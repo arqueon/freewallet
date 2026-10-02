@@ -73,6 +73,8 @@ import {
   canSelfEnroll,
   selfEnrollStandingClient
 } from '@/session/standingUnlock'
+import { recordOwnWalletClientEntry } from '@/session/clients'
+import { registerOwnConnectionWriter } from '@/session/connectionWriters'
 import {
   isPendingKeyringHit,
   PendingEnrollmentError,
@@ -1432,6 +1434,32 @@ async function sessionFromKeyringHit({
     mends.settle()
     openEncounterGate({ session })
     return { session, userExists }
+  }
+  if (enrolled) {
+    // A client this login enrolled (or whose torn enrollment it resumed)
+    // names itself on its `connections` entry, now that its document entry
+    // has landed past the pending record's pivot. Behind provisioning, which
+    // the entry needs, and best-effort: the write logs its own failure.
+    void session.storageReady.then(
+      () => recordOwnWalletClientEntry({ session }),
+      () => undefined
+    )
+  }
+  if (!popup) {
+    // This client's writer registers on its own `connections` entry once it
+    // is seen in a second session, then touches its member at most once per
+    // interval. A remembered session alone declares a `writerId` on the wire,
+    // and the popup declares none. Behind provisioning, and best-effort: the
+    // call logs its own failure. The forget ceremony awaits the settled
+    // promise before it retires this client's entry, which the registration
+    // may un-retire.
+    const sessionStartedAt = new Date()
+    session.writerRegistration = session.storageReady
+      .then(() => registerOwnConnectionWriter({ session, sessionStartedAt }))
+      .then(
+        () => undefined,
+        () => undefined
+      )
   }
   const { context, refreshContext } = blockCeremonyContext({ session })
   startLoginMenderBlock({

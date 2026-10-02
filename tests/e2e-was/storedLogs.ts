@@ -78,6 +78,41 @@ export async function readStoredResource({
 }
 
 /**
+ * The resource ids one collection holds on disk, read off the stored file
+ * names (`r.<resource id with dots percent-encoded>.<content type>.<ext>`).
+ * Only resource bodies count: the collection's own `.collection`,
+ * `.collectionlog`, and per-resource `.meta` files are skipped, and a `.meta`
+ * file can outlive its deleted resource. An absent collection reads as none.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {Promise<string[]>}
+ */
+export async function listStoredResourceIds({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): Promise<string[]> {
+  let fileNames: string[]
+  try {
+    fileNames = await fs.readdir(
+      path.join(storedSpacesDir(), spaceId, collectionId)
+    )
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return []
+    }
+    throw err
+  }
+  return fileNames
+    .filter(fileName => fileName.startsWith('r.'))
+    .map(fileName => decodeURIComponent(fileName.slice(2).split('.')[0]!))
+}
+
+/**
  * A stored JSONL log's entries, oldest first. An absent resource reads as an
  * empty log.
  *
@@ -445,14 +480,16 @@ export async function readCollectionLogHeadAnchor({
 }
 
 /**
- * The encrypted standard collections every signup provisions.
+ * The encrypted collections every signup provisions: the synced ones and the
+ * `connections` directory.
  */
 export const ENCRYPTED_STANDARD_COLLECTIONS = [
   'private-credentials',
   'wallet-activity',
   'contacts',
   'contacts-history',
-  'app-connections'
+  'app-connections',
+  'connections'
 ]
 
 /**

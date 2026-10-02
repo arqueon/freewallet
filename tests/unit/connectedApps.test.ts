@@ -1,680 +1,150 @@
+// @vitest-environment node
 /**
- * Tests for the connected-applications model: `listConnectedApps` joins the
- * app-key credentials of the dedicated `app-connections` collection with the
- * latest matching App Connect Grant activity (name, grants, last-connected
- * timestamp), skipping Resources that do not carry the `AppKeyCredential`
- * marker; `deriveGrantsState` reads the recorded delegation signers against the
- * account's current key set (the current-key-set rule), deriving a client-annex
- * signer as unknown rather than orphaned (the revocation-time reading of one
- * grant, `grantRevocationSkip`, is wallet-core's and tested there);
- * `revokeAppAccess` deletes the app key from that collection and records the
- * revocation only once every POST has landed.
+ * Tests for the connected-parties revocations over the `connections`
+ * directory, and the row grant-state reading.
+ *
+ * - `deriveGrantsState` reads the recorded delegation signers against the
+ *   account's current key set (the current-key-set rule), deriving a
+ *   client-annex signer as unknown rather than orphaned.
+ * - `revokeAppAccess` runs the rotation, the grant POSTs, the app-key delete
+ *   by the entry's `appKey`, the retirement, then the Revoke row; a stage
+ *   that does not land throws before the retirement, so the row stays
+ *   listed. A consent merged between the read and the retirement aborts the
+ *   retirement, and a retry revokes both grants.
+ * - `revokeAgentAccess` runs the same sequence with no app-key delete.
+ * - `retireConnectionParty`, the wallet-client disconnect's and the forget's
+ *   retirement, POSTs and rotates off any grants an entry carries first.
+ * - `revokeAppAuthority` on a key with no entry revokes no grant.
+ *
+ * Every grant comes from the entry, so no history row is read on any path.
+ * The entries are written through wallet-core's own upsert helpers over an
+ * in-memory store; the server-side stages are spies.
  */
-import { describe, expect, it, vi } from 'vitest'
-import type { StorageManager } from '@/stores/storageManager'
-import type { StoredCredential } from '@/types/credential'
-import type { User } from '@/types/auth'
+import { beforeEach, describe, expect, it } from 'vitest'
+import type { ConnectionGrant } from '@interop/wallet-core/connections'
 import {
   deriveGrantsState,
+  listConnectedAgents,
   listConnectedApps,
-  lookupCollectionCreators,
+  retireConnectionParty,
+  revokeAgentAccess,
   revokeAppAccess,
+  revokeAppAuthority,
   type AppGrant,
+  type ConnectedAgent,
   type ConnectedApp
 } from '@/lib/connectedApps'
+import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
+import type { User } from '@/types/auth'
+import {
+  AGENT_DID,
+  APP_DID,
+  CLIENT_DID,
+  SPACE_URL,
+  asStorageManager,
+  directoryStorage,
+  entryOf,
+  fixtureDirectory,
+  grantZcap,
+  listedConnections,
+  recordConsent,
+  type FixtureDirectory
+} from './connectionFixtures'
 
-const APP_DID = 'did:key:zApp'
+const APP_ORIGIN = 'https://app.example'
 const APP_URL = 'https://app.example/editor'
+const user: User = { id: 'did:key:zUser', email: 'user@example.com' }
 
-/**
- * A self-issued app-key StoredCredential carrying the `AppKeyCredential`
- * marker type, bound to an origin and to an `appUrl` within it. Omitting the
- * `appUrl` produces a credential the listing cannot attribute to an app.
- */
-function appKeyCredential({
-  cid,
-  did = APP_DID,
-  origin,
-  appUrl,
-  name = 'Example app key',
-  issuanceDate = '2026-07-01T00:00:00Z'
-}: {
-  cid: string
-  did?: string
-  origin: string
-  appUrl?: string
-  name?: string
-  issuanceDate?: string
-}): StoredCredential {
-  return {
-    cid,
-    vc: {
-      '@context': ['https://www.w3.org/2018/credentials/v1'],
-      type: ['VerifiableCredential', 'AppKeyCredential'],
-      name,
-      issuer: did,
-      issuanceDate,
-      credentialSubject: {
-        id: did,
-        origin,
-        ...(appUrl !== undefined && { appUrl }),
-        seed: 'c2VlZA'
-      }
-    } as unknown as StoredCredential['vc']
-  }
-}
+let directory: FixtureDirectory
 
-/**
- * A Resource in the collection that carries no `AppKeyCredential` marker --
- * what an opaque resource planted server-side (through a space import, say)
- * looks like to the listing. It must be ignored: the page can neither render
- * nor revoke it.
- */
-function unmarkedCredential(cid: string): StoredCredential {
-  return {
-    cid,
-    vc: {
-      '@context': ['https://www.w3.org/2018/credentials/v1'],
-      type: ['VerifiableCredential'],
-      issuer: 'did:key:zIssuer',
-      credentialSubject: {
-        id: 'did:key:zSubject',
-        origin: 'https://app.example'
-      }
-    } as unknown as StoredCredential['vc']
-  }
-}
-
-/**
- * An App Connect Grant activity. Omitting `appUrl` produces an activity the
- * listing cannot join to any app key.
- */
-function grantActivity({
-  origin,
-  appUrl,
-  name,
-  created,
-  grants = []
-}: {
-  origin: string
-  appUrl?: string
-  name: string
-  created: string
-  grants?: Array<{
-    id: string
-    target: string
-    allowedActions: string[]
-    expires: string
-    zcap?: unknown
-  }>
-}) {
-  return {
-    id: `grant-${created}-${name}`,
-    doc: {
-      type: ['Grant'],
-      summary: `Connected ${name} (${origin}) to wallet.`,
-      object: {
-        origin,
-        zcaps: grants,
-        appConnect: {
-          name,
-          firstRun: false,
-          ...(appUrl !== undefined && { appUrl })
-        }
-      },
-      created
-    }
-  }
-}
-
-/**
- * A storage stub over the two collections the listing joins: the app keys of
- * `app-connections` and the wallet activity log. `listCredentials` is
- * deliberately absent -- the connected-apps surface must never reach for the
- * user's own credentials.
- */
-function fakeStorage({
-  appKeys,
-  history
-}: {
-  appKeys: StoredCredential[]
-  history: Array<{ id: string; doc: unknown }>
-}) {
-  return {
-    listAppKeys: vi.fn(async () => ({
-      appKeys,
-      skipped: { unknownEpoch: 0, noEpochKey: 0, undecryptable: 0 }
-    })),
-    listHistoryItems: vi.fn(async () => ({ entries: history, unreadable: 0 })),
-    deleteAppKey: vi.fn(async () => {}),
-    addHistoryAppRevoke: vi.fn(async () => {}),
-    revokeAppCollectionRecipients: vi.fn(async () => ({
-      collections: 0,
-      rotated: 0,
-      failed: 0
-    })),
-    revokeAppGrants: vi.fn(async () => ({ revoked: 1, skipped: 0 }))
-  } as unknown as StorageManager
-}
-
-describe('listConnectedApps', () => {
-  it('joins an app-key credential with its latest Grant activity', async () => {
-    const origin = 'https://app.example'
-    const storage = fakeStorage({
-      appKeys: [
-        unmarkedCredential('c-plain'),
-        appKeyCredential({ cid: 'c-app', origin, appUrl: APP_URL })
-      ],
-      history: [
-        grantActivity({
-          origin,
-          appUrl: APP_URL,
-          name: 'Old Name',
-          created: '2026-07-01T00:00:00Z'
-        }),
-        grantActivity({
-          origin,
-          appUrl: APP_URL,
-          name: 'Example App',
-          created: '2026-07-05T00:00:00Z',
-          grants: [
-            {
-              id: 'urn:zcap:1',
-              target: 'https://was.example/space/x/private-credentials',
-              allowedActions: ['GET', 'PUT'],
-              expires: '2026-08-01T00:00:00Z'
-            }
-          ]
-        })
-      ]
-    })
-
-    const apps = await listConnectedApps({ storage })
-
-    expect(apps).toHaveLength(1)
-    const [app] = apps
-    expect(app.cid).toBe('c-app')
-    expect(app.origin).toBe(origin)
-    expect(app.subjectDid).toBe(APP_DID)
-    // The latest Grant supplies the display name and grants.
-    expect(app.name).toBe('Example App')
-    expect(app.lastConnectedAt).toBe('2026-07-05T00:00:00Z')
-    expect(app.connectedAt).toBe('2026-07-01T00:00:00Z')
-    expect(app.grants).toHaveLength(1)
-    expect(app.grants[0].allowedActions).toEqual(['GET', 'PUT'])
-  })
-
-  it('tells two apps sharing an origin apart by their appUrl', async () => {
-    const origin = 'https://app.example'
-    const editorUrl = 'https://app.example/editor'
-    const readerUrl = 'https://app.example/reader'
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({ cid: 'c-editor', origin, appUrl: editorUrl }),
-        appKeyCredential({
-          cid: 'c-reader',
-          did: 'did:key:zReader',
-          origin,
-          appUrl: readerUrl
-        })
-      ],
-      history: [
-        grantActivity({
-          origin,
-          appUrl: editorUrl,
-          name: 'Editor',
-          created: '2026-07-05T00:00:00Z',
-          grants: [
-            {
-              id: 'urn:zcap:editor',
-              target: 'https://was.example/space/x/editor-data',
-              allowedActions: ['GET'],
-              expires: '2027-08-01T00:00:00Z'
-            }
-          ]
-        }),
-        grantActivity({
-          origin,
-          appUrl: readerUrl,
-          name: 'Reader',
-          created: '2026-07-09T00:00:00Z',
-          grants: [
-            {
-              id: 'urn:zcap:reader',
-              target: 'https://was.example/space/x/reader-data',
-              allowedActions: ['GET'],
-              expires: '2027-08-01T00:00:00Z'
-            }
-          ]
-        })
-      ]
-    })
-
-    const apps = await listConnectedApps({ storage })
-
-    const editor = apps.find(app => app.cid === 'c-editor')
-    const reader = apps.find(app => app.cid === 'c-reader')
-    expect(editor).toMatchObject({
-      name: 'Editor',
-      appUrl: editorUrl,
-      lastConnectedAt: '2026-07-05T00:00:00Z'
-    })
-    expect(editor?.grants.map(grant => grant.id)).toEqual(['urn:zcap:editor'])
-    expect(reader).toMatchObject({
-      name: 'Reader',
-      appUrl: readerUrl,
-      lastConnectedAt: '2026-07-09T00:00:00Z'
-    })
-    expect(reader?.grants.map(grant => grant.id)).toEqual(['urn:zcap:reader'])
-  })
-
-  it('never joins a Grant activity that recorded no appUrl', async () => {
-    // The `appUrl` is the whole join. A Grant activity carrying none names no
-    // application, so it cannot lend its grants to a key that shares only the
-    // origin.
-    const origin = 'https://app.example'
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({
-          cid: 'c-app',
-          origin,
-          appUrl: APP_URL,
-          name: 'Example App app key'
-        })
-      ],
-      history: [
-        grantActivity({
-          origin,
-          name: 'Example App',
-          created: '2026-07-05T00:00:00Z',
-          grants: [
-            {
-              id: 'urn:zcap:unscoped',
-              target: 'https://was.example/space/x/private-credentials',
-              allowedActions: ['GET'],
-              expires: '2027-08-01T00:00:00Z'
-            }
-          ]
-        })
-      ]
-    })
-
-    const [app] = await listConnectedApps({ storage })
-
-    expect(app.name).toBe('Example App')
-    expect(app.grants).toEqual([])
-    expect(app.lastConnectedAt).toBeUndefined()
-  })
-
-  it("never lends another app's appUrl-scoped row to a sibling app", async () => {
-    const origin = 'https://app.example'
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({
-          cid: 'c-editor',
-          origin,
-          appUrl: 'https://app.example/editor',
-          name: 'Editor app key'
-        })
-      ],
-      history: [
-        grantActivity({
-          origin,
-          appUrl: 'https://app.example/reader',
-          name: 'Reader',
-          created: '2026-07-09T00:00:00Z',
-          grants: [
-            {
-              id: 'urn:zcap:reader',
-              target: 'https://was.example/space/x/reader-data',
-              allowedActions: ['GET'],
-              expires: '2027-08-01T00:00:00Z'
-            }
-          ]
-        })
-      ]
-    })
-
-    const [app] = await listConnectedApps({ storage })
-
-    expect(app.name).toBe('Editor')
-    expect(app.grants).toEqual([])
-    expect(app.lastConnectedAt).toBeUndefined()
-  })
-
-  it('does not join an App Connect object recorded as a Login', async () => {
-    const recorded = grantActivity({
-      origin: 'https://app.example',
-      appUrl: APP_URL,
-      name: 'Editor',
-      created: '2026-08-01T00:00:00.000Z'
-    })
-    recorded.doc.type = ['Login']
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({
-          cid: 'c-app',
-          origin: 'https://app.example',
-          appUrl: APP_URL,
-          name: 'Solo App app key'
-        })
-      ],
-      history: [recorded]
-    })
-
-    const apps = await listConnectedApps({ storage })
-
-    expect(apps).toHaveLength(1)
-    expect(apps[0].name).toBe('Solo App')
-    expect(apps[0].grants).toEqual([])
-    expect(apps[0].lastConnectedAt).toBeUndefined()
-  })
-
-  it('falls back to the stripped credential name when no Grant matches', async () => {
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({
-          cid: 'c-app',
-          origin: 'https://app.example',
-          appUrl: APP_URL,
-          name: 'Solo App app key'
-        })
-      ],
-      history: []
-    })
-
-    const apps = await listConnectedApps({ storage })
-
-    expect(apps).toHaveLength(1)
-    expect(apps[0].name).toBe('Solo App')
-    expect(apps[0].grants).toEqual([])
-    expect(apps[0].lastConnectedAt).toBeUndefined()
-  })
-
-  it('ignores rows without the marker, an origin, or an appUrl', async () => {
-    // The collection holds app keys only, so the check on each Resource is the
-    // marker type plus the three members the listing reads (subject DID,
-    // origin, appUrl).
-    const originless = appKeyCredential({
-      cid: 'c-originless',
-      origin: 'https://app.example',
-      appUrl: APP_URL
-    })
-    delete (originless.vc.credentialSubject as { origin?: unknown }).origin
-    const urlless = appKeyCredential({
-      cid: 'c-urlless',
-      origin: 'https://app.example'
-    })
-    const storage = fakeStorage({
-      appKeys: [unmarkedCredential('c-plain'), originless, urlless],
-      history: []
-    })
-
-    expect(await listConnectedApps({ storage })).toEqual([])
-  })
-
-  it('extracts the delegation signer from a recorded full zcap', async () => {
-    const origin = 'https://app.example'
-    const storage = fakeStorage({
-      appKeys: [appKeyCredential({ cid: 'c-app', origin, appUrl: APP_URL })],
-      history: [
-        grantActivity({
-          origin,
-          appUrl: APP_URL,
-          name: 'Example App',
-          created: '2026-07-05T00:00:00Z',
-          grants: [
-            {
-              id: 'urn:zcap:1',
-              target: 'https://was.example/space/x/app-data',
-              allowedActions: ['GET'],
-              expires: '2027-08-01T00:00:00Z',
-              zcap: {
-                id: 'urn:zcap:1',
-                parentCapability: 'urn:zcap:root:x',
-                proof: {
-                  proofPurpose: 'capabilityDelegation',
-                  verificationMethod: 'did:webvh:s:h:x#zClientKey'
-                }
-              }
-            },
-            {
-              id: 'urn:zcap:legacy',
-              target: 'https://was.example/space/x/other',
-              allowedActions: ['GET'],
-              expires: '2027-08-01T00:00:00Z'
-            }
-          ]
-        })
-      ]
-    })
-
-    const [app] = await listConnectedApps({ storage })
-
-    expect(app.grants[0].signerKeyId).toBe('did:webvh:s:h:x#zClientKey')
-    expect(app.grants[1].signerKeyId).toBeUndefined()
-  })
+beforeEach(() => {
+  directory = fixtureDirectory()
 })
 
-describe('lookupCollectionCreators', () => {
-  const OTHER_DID = 'did:key:zOtherApp'
-  const OTHER_URL = 'https://app.example/notes'
+/**
+ * The capability ids a revocation stage was handed.
+ *
+ * @param grants {ConnectionGrant[]}
+ * @returns {string[]}
+ */
+function zcapIdsOf(grants: ConnectionGrant[]): string[] {
+  return grants.map(grant => grant.zcapId).sort()
+}
 
-  /**
-   * A recorded grant delegated to a controller, as the App Connect approval
-   * writes one onto the Grant activity's `object.zcaps`.
-   */
-  function grantTo(controller: string) {
-    return {
-      id: `urn:zcap:${controller}`,
-      target: 'https://was.example/space/s/docs/',
-      allowedActions: ['read'],
-      expires: '2099-01-01T00:00:00Z',
-      zcap: { id: `urn:zcap:${controller}`, controller }
-    }
-  }
-
-  it('answers a connected app from its app key and latest Grant', async () => {
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({
-          cid: 'k1',
-          origin: 'https://app.example',
-          appUrl: APP_URL
-        })
-      ],
-      history: [
-        grantActivity({
-          origin: 'https://app.example',
-          appUrl: APP_URL,
-          name: 'Editor',
-          created: '2026-07-02T00:00:00Z'
-        })
-      ]
-    })
-
-    const creators = await lookupCollectionCreators({
-      storage,
-      generators: [{ id: APP_DID, origin: 'https://app.example' }]
-    })
-
-    expect(creators.get(APP_DID)).toEqual({
-      name: 'Editor',
-      appUrl: APP_URL,
-      cid: 'k1'
-    })
+/**
+ * Records an App Connect consent for the fixture app.
+ *
+ * @param options {object}
+ * @param [options.grantIds] {string[]}   one grant per id, on `notes`
+ * @param [options.appKey] {string}
+ * @param [options.at] {string}
+ * @returns {Promise<void>}
+ */
+async function connectApp({
+  grantIds = ['urn:zcap:one'],
+  appKey,
+  at
+}: {
+  grantIds?: string[]
+  appKey?: string
+  at?: string
+} = {}): Promise<void> {
+  await recordConsent({
+    directory,
+    did: APP_DID,
+    kind: 'app',
+    grants: grantIds.map(id => grantZcap({ id, controller: APP_DID })),
+    ...(appKey !== undefined && { appKey }),
+    name: 'Notes',
+    origin: APP_ORIGIN,
+    url: APP_URL,
+    ...(at !== undefined && { at })
   })
+}
 
-  it('takes the newest connect when several app keys share a subject DID', async () => {
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({
-          cid: 'k-old',
-          origin: 'https://app.example',
-          appUrl: APP_URL,
-          issuanceDate: '2026-07-01T00:00:00Z'
-        }),
-        appKeyCredential({
-          cid: 'k-new',
-          origin: 'https://app.example',
-          appUrl: APP_URL,
-          issuanceDate: '2026-07-05T00:00:00Z'
-        })
-      ],
-      history: []
-    })
-
-    const creators = await lookupCollectionCreators({
-      storage,
-      generators: [{ id: APP_DID, origin: 'https://app.example' }]
-    })
-
-    expect(creators.get(APP_DID)?.cid).toBe('k-new')
+/**
+ * The app's row, as the Applications page lists it.
+ *
+ * @returns {Promise<ConnectedApp>}
+ */
+async function listedApp(): Promise<ConnectedApp> {
+  const [app] = listConnectedApps({
+    connections: await listedConnections(directory),
+    spaceUrl: SPACE_URL
   })
+  return app
+}
 
-  it('reads a caller-supplied app-key listing and history rather than listing them again', async () => {
-    // The CHAPI get popup has just listed `app-connections` for its app-key
-    // match; the attribution pass reuses that listing.
-    const storage = fakeStorage({ appKeys: [], history: [] })
-    const appKeys = {
-      appKeys: [
-        appKeyCredential({
-          cid: 'k1',
-          origin: 'https://app.example',
-          appUrl: APP_URL
-        })
-      ],
-      skipped: {
-        unknownEpoch: 0,
-        noEpochKey: 0,
-        undecryptable: 0,
-        integrity: 0
-      }
-    }
-    const items = {
-      entries: [
-        grantActivity({
-          origin: 'https://app.example',
-          appUrl: APP_URL,
-          name: 'Editor',
-          created: '2026-07-02T00:00:00Z'
-        })
-      ],
-      unreadable: 0
-    } as Awaited<ReturnType<StorageManager['listHistoryItems']>>
-
-    const creators = await lookupCollectionCreators({
-      storage,
-      generators: [{ id: APP_DID, origin: 'https://app.example' }],
-      appKeys,
-      items
-    })
-
-    expect(creators.get(APP_DID)?.name).toBe('Editor')
-    expect(storage.listAppKeys).not.toHaveBeenCalled()
-    expect(storage.listHistoryItems).not.toHaveBeenCalled()
+/**
+ * The agent's row, as the Applications page lists it.
+ *
+ * @returns {Promise<ConnectedAgent>}
+ */
+async function listedAgent(): Promise<ConnectedAgent> {
+  const [agent] = await listConnectedAgents({
+    storage: asStorageManager(directoryStorage({ directory })),
+    connections: await listedConnections(directory),
+    spaceUrl: SPACE_URL
   })
-
-  it('answers a disconnected app from the Grant that recorded grants to its DID', async () => {
-    // The disconnect deleted the app key, so only the activity history
-    // still names the app: the grants it recorded were delegated to the
-    // creator DID, and the record carries the appUrl and the display name.
-    const storage = fakeStorage({
-      appKeys: [],
-      history: [
-        grantActivity({
-          origin: 'https://app.example',
-          appUrl: OTHER_URL,
-          name: 'Notes (old)',
-          created: '2026-07-01T00:00:00Z',
-          grants: [grantTo(OTHER_DID)]
-        }),
-        grantActivity({
-          origin: 'https://app.example',
-          appUrl: OTHER_URL,
-          name: 'Notes',
-          created: '2026-07-03T00:00:00Z',
-          grants: [grantTo(OTHER_DID)]
-        })
-      ]
-    })
-
-    const creators = await lookupCollectionCreators({
-      storage,
-      generators: [{ id: OTHER_DID, origin: 'https://app.example' }]
-    })
-
-    expect(creators.get(OTHER_DID)).toEqual({
-      name: 'Notes',
-      appUrl: OTHER_URL
-    })
-  })
-
-  it('leaves a creator neither source knows absent', async () => {
-    const storage = fakeStorage({
-      appKeys: [
-        appKeyCredential({
-          cid: 'k1',
-          origin: 'https://app.example',
-          appUrl: APP_URL
-        })
-      ],
-      history: [
-        grantActivity({
-          origin: 'https://app.example',
-          appUrl: APP_URL,
-          name: 'Editor',
-          created: '2026-07-02T00:00:00Z',
-          grants: [grantTo(APP_DID)]
-        })
-      ]
-    })
-
-    const creators = await lookupCollectionCreators({
-      storage,
-      generators: [{ id: 'did:key:zNobody', origin: 'https://app.example' }]
-    })
-
-    expect(creators.size).toBe(0)
-  })
-
-  it('reads nothing for an agent stamp or an unstamped collection', async () => {
-    const storage = fakeStorage({ appKeys: [], history: [] })
-
-    // An agent's stamp carries no origin and names itself, even when the DID
-    // is one a record could answer.
-    const creators = await lookupCollectionCreators({
-      storage,
-      generators: [{ id: APP_DID, name: 'Agent' }, undefined]
-    })
-
-    expect(creators.size).toBe(0)
-    expect(storage.listAppKeys).not.toHaveBeenCalled()
-    expect(storage.listHistoryItems).not.toHaveBeenCalled()
-  })
-
-  it('reads nothing when no collection is attributed', async () => {
-    const storage = fakeStorage({ appKeys: [], history: [] })
-
-    const creators = await lookupCollectionCreators({
-      storage,
-      generators: []
-    })
-
-    expect(creators.size).toBe(0)
-    expect(storage.listAppKeys).not.toHaveBeenCalled()
-    expect(storage.listHistoryItems).not.toHaveBeenCalled()
-  })
-})
+  return agent
+}
 
 describe('deriveGrantsState', () => {
+  /**
+   * Grants signed by the given verification methods.
+   *
+   * @param signers {Array<string | undefined>}
+   * @returns {AppGrant[]}
+   */
   function grantsSignedBy(signers: Array<string | undefined>): AppGrant[] {
     return signers.map((signerKeyId, index) => ({
       id: `urn:zcap:${index}`,
       target: 'https://was.example/space/x/app-data',
       allowedActions: ['GET'],
       expires: '2027-08-01T00:00:00Z',
-      signerKeyId
+      signerKeyId,
+      grantKind: 'grant',
+      grantedAt: '2026-08-01T00:00:00Z'
     }))
   }
 
@@ -692,7 +162,7 @@ describe('deriveGrantsState', () => {
     ).toBe('unknown')
   })
 
-  it('is unknown when no grant recorded a signer (legacy records)', () => {
+  it('is unknown when no grant recorded a signer', () => {
     expect(
       deriveGrantsState({
         grants: grantsSignedBy([undefined]),
@@ -742,89 +212,548 @@ describe('deriveGrantsState', () => {
 })
 
 describe('revokeAppAccess', () => {
-  const user: User = { id: 'did:key:zUser', email: 'user@example.com' }
-  const app: ConnectedApp = {
-    cid: 'c-app',
-    name: 'Example App',
-    origin: 'https://app.example',
-    appUrl: 'https://app.example/editor',
-    subjectDid: APP_DID,
-    grants: []
-  }
+  it('rotates, revokes, deletes the app key, retires, then records the revoke', async () => {
+    await connectApp({ appKey: 'r-app-key' })
+    const storage = directoryStorage({ directory })
 
-  it('revokes grants, deletes the app key, and records the revocation', async () => {
-    const storage = fakeStorage({ appKeys: [], history: [] })
-
-    const outcome = await revokeAppAccess({ storage, user, app })
-
-    expect(outcome).toEqual({ revoked: 1, skipped: 0, rotated: 0 })
-    // The epoch rotation runs first, so a revoked app cannot decrypt future
-    // writes before its grants are even withdrawn.
-    expect(storage.revokeAppCollectionRecipients).toHaveBeenCalledWith({
-      origin: 'https://app.example',
-      subjectDid: APP_DID,
-      items: { entries: [], unreadable: 0 }
+    const outcome = await revokeAppAccess({
+      storage: asStorageManager(storage),
+      user,
+      app: await listedApp()
     })
-    expect(storage.revokeAppGrants).toHaveBeenCalledWith({
-      origin: 'https://app.example',
-      subjectDid: APP_DID,
-      items: { entries: [], unreadable: 0 }
+
+    expect(outcome).toEqual({
+      revoked: 1,
+      withdrawn: 1,
+      skipped: 0,
+      rotated: 1
     })
-    expect(storage.deleteAppKey).toHaveBeenCalledWith({ cid: 'c-app' })
+    expect(storage.calls).toEqual([
+      'readConnectionsListing',
+      'revokeCollectionRecipients',
+      'revokeConnectionGrants',
+      'deleteAppKeyResource',
+      'retireConnectionEntry',
+      'addHistoryAppRevoke'
+    ])
+    const [rotation] = storage.revokeCollectionRecipients.mock.calls[0]
+    expect(rotation.did).toBe(APP_DID)
+    expect(zcapIdsOf(rotation.grants)).toEqual(['urn:zcap:one'])
+    expect(storage.revokeConnectionGrants).toHaveBeenCalledWith(
+      expect.objectContaining({ revokedByRotation: [] })
+    )
+    expect(storage.deleteAppKeyResource).toHaveBeenCalledWith({
+      appKey: 'r-app-key',
+      did: APP_DID
+    })
+    expect(storage.retireConnectionEntry).toHaveBeenCalledWith({
+      did: APP_DID,
+      handledZcapIds: ['urn:zcap:one']
+    })
     expect(storage.addHistoryAppRevoke).toHaveBeenCalledWith({
       user,
-      origin: 'https://app.example',
-      name: 'Example App',
-      cid: 'c-app',
+      origin: APP_ORIGIN,
+      name: 'Notes',
       revoked: 1,
       skipped: 0
     })
+    // Retired: off the listing, its names kept, its key and grants gone.
+    const entry = await entryOf({ directory, did: APP_DID })
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry).toMatchObject({ name: 'Notes', origin: APP_ORIGIN })
+    expect(entry?.appKey).toBeUndefined()
+    expect(entry?.grants).toEqual([])
+    expect(
+      listConnectedApps({
+        connections: await listedConnections(directory),
+        spaceUrl: SPACE_URL
+      })
+    ).toEqual([])
   })
 
-  it('leaves the skips to the grant revocation', async () => {
-    const storage = fakeStorage({ appKeys: [], history: [] })
+  it('deletes the key the entry names now, not the one the row listed', async () => {
+    await connectApp({ appKey: 'r-old-key' })
+    const app = await listedApp()
+    // A reconnect since the listing re-pointed the entry at a new key.
+    await connectApp({ appKey: 'r-new-key' })
+    const storage = directoryStorage({ directory })
 
-    const outcome = await revokeAppAccess({ storage, user, app })
+    await revokeAppAccess({ storage: asStorageManager(storage), user, app })
 
-    // The app key's marker gates nothing here: which recorded grants are POSTed
-    // and which are dead already is `revokeAppGrants`'s reading of the
-    // verified document it holds its own resolver for.
-    expect(outcome).toEqual({ revoked: 1, skipped: 0, rotated: 0 })
-    expect(storage.revokeAppGrants).toHaveBeenCalledWith({
-      origin: 'https://app.example',
-      subjectDid: APP_DID,
-      items: { entries: [], unreadable: 0 }
+    expect(storage.deleteAppKeyResource).toHaveBeenCalledWith({
+      appKey: 'r-new-key',
+      did: APP_DID
     })
-    expect(storage.deleteAppKey).toHaveBeenCalledWith({ cid: 'c-app' })
   })
 
-  it('does not delete the credential when grant revocation fails', async () => {
-    const storage = fakeStorage({ appKeys: [], history: [] })
-    ;(storage.revokeAppGrants as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error('network down')
-    )
+  it('still retires when the app key the entry names is already gone', async () => {
+    await connectApp({ appKey: 'r-dangling' })
+    const storage = directoryStorage({ directory })
+    storage.deleteAppKeyResource.mockResolvedValueOnce('absent')
 
-    await expect(revokeAppAccess({ storage, user, app })).rejects.toThrow(
-      'network down'
+    await revokeAppAccess({
+      storage: asStorageManager(storage),
+      user,
+      app: await listedApp()
+    })
+
+    const entry = await entryOf({ directory, did: APP_DID })
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry?.appKey).toBeUndefined()
+    expect(storage.addHistoryAppRevoke).toHaveBeenCalledTimes(1)
+  })
+
+  it('deletes no key for an entry that names none', async () => {
+    await connectApp()
+    const storage = directoryStorage({ directory })
+
+    await revokeAppAccess({
+      storage: asStorageManager(storage),
+      user,
+      app: await listedApp()
+    })
+
+    expect(storage.deleteAppKeyResource).not.toHaveBeenCalled()
+    expect((await entryOf({ directory, did: APP_DID }))?.retired).toEqual(
+      expect.any(String)
     )
-    expect(storage.deleteAppKey).not.toHaveBeenCalled()
+  })
+
+  it('POSTs every grant and rotates with no history row to read', async () => {
+    // Two consents, and no history at all: the double has no history
+    // method, so a path that reached for one would throw.
+    await connectApp({ grantIds: ['urn:zcap:one'], at: '2026-07-01T00:00:00Z' })
+    await connectApp({ grantIds: ['urn:zcap:two'], appKey: 'r-app-key' })
+    const storage = directoryStorage({ directory })
+    expect('listHistoryItems' in storage).toBe(false)
+
+    await revokeAppAccess({
+      storage: asStorageManager(storage),
+      user,
+      app: await listedApp()
+    })
+
+    const [rotation] = storage.revokeCollectionRecipients.mock.calls[0]
+    expect(zcapIdsOf(rotation.grants)).toEqual(['urn:zcap:one', 'urn:zcap:two'])
+    const [posted] = storage.revokeConnectionGrants.mock.calls[0]
+    expect(zcapIdsOf(posted.grants)).toEqual(['urn:zcap:one', 'urn:zcap:two'])
+  })
+
+  it('retires nothing and records nothing, after the POSTs, when a rotation fails', async () => {
+    await connectApp({ appKey: 'r-app-key' })
+    const storage = directoryStorage({ directory })
+    storage.revokeCollectionRecipients.mockResolvedValueOnce({
+      collections: 2,
+      rotated: 1,
+      failed: 1,
+      revokedIds: []
+    })
+
+    await expect(
+      revokeAppAccess({
+        storage: asStorageManager(storage),
+        user,
+        app: await listedApp()
+      })
+    ).rejects.toThrow('Could not rotate every collection')
+
+    // Every grant that can be revoked is revoked now.
+    expect(storage.revokeConnectionGrants).toHaveBeenCalledTimes(1)
+    expect(storage.deleteAppKeyResource).not.toHaveBeenCalled()
+    expect(storage.retireConnectionEntry).not.toHaveBeenCalled()
     expect(storage.addHistoryAppRevoke).not.toHaveBeenCalled()
+    expect((await listedApp()).subjectDid).toBe(APP_DID)
   })
 
-  it('does not delete the credential when the server refuses a revocation', async () => {
+  it('retires nothing when the server refuses a revocation', async () => {
     // A plain ValidationError is a refusal, not a no-op: a read-replica lag
-    // on a live grant answers the same way, so recording the Revoke here
-    // would list the app as revoked while it keeps access.
-    const storage = fakeStorage({ appKeys: [], history: [] })
+    // on a live grant answers the same way, so retiring here would take the
+    // row off the listing while the app keeps access.
+    await connectApp({ appKey: 'r-app-key' })
+    const storage = directoryStorage({ directory })
     const refused = Object.assign(new Error('chain does not verify'), {
       name: 'ValidationError'
     })
-    ;(storage.revokeAppGrants as ReturnType<typeof vi.fn>).mockRejectedValue(
-      refused
+    storage.revokeConnectionGrants.mockRejectedValueOnce(refused)
+
+    await expect(
+      revokeAppAccess({
+        storage: asStorageManager(storage),
+        user,
+        app: await listedApp()
+      })
+    ).rejects.toBe(refused)
+    expect(storage.deleteAppKeyResource).not.toHaveBeenCalled()
+    expect(storage.retireConnectionEntry).not.toHaveBeenCalled()
+    expect(storage.addHistoryAppRevoke).not.toHaveBeenCalled()
+  })
+
+  it('retires nothing when the app key cannot be read', async () => {
+    await connectApp({ appKey: 'r-app-key' })
+    const storage = directoryStorage({ directory })
+    storage.deleteAppKeyResource.mockRejectedValueOnce(
+      new Error('The app key this connection names could not be read')
     )
 
-    await expect(revokeAppAccess({ storage, user, app })).rejects.toBe(refused)
-    expect(storage.deleteAppKey).not.toHaveBeenCalled()
+    await expect(
+      revokeAppAccess({
+        storage: asStorageManager(storage),
+        user,
+        app: await listedApp()
+      })
+    ).rejects.toThrow('could not be read')
+    expect(storage.retireConnectionEntry).not.toHaveBeenCalled()
+    expect((await entryOf({ directory, did: APP_DID }))?.appKey).toBe(
+      'r-app-key'
+    )
+  })
+
+  it('aborts the retirement when a consent merges a grant, and a retry revokes both', async () => {
+    await connectApp({ appKey: 'r-app-key' })
+    const storage = directoryStorage({ directory })
+    // The consent lands between the revocation's read and its retirement.
+    storage.revokeConnectionGrants.mockImplementationOnce(
+      async ({ grants }) => {
+        await connectApp({ grantIds: ['urn:zcap:merged'] })
+        return {
+          revoked: grants.length,
+          withdrawn: grants.length,
+          skipped: 0,
+          revokedIds: grants.map(grant => grant.zcapId)
+        }
+      }
+    )
+
+    await expect(
+      revokeAppAccess({
+        storage: asStorageManager(storage),
+        user,
+        app: await listedApp()
+      })
+    ).rejects.toThrow('did not handle')
     expect(storage.addHistoryAppRevoke).not.toHaveBeenCalled()
+    // The row stays listed, carrying both grants.
+    const app = await listedApp()
+    expect(app.grants.map(grant => grant.id).sort()).toEqual([
+      'urn:zcap:merged',
+      'urn:zcap:one'
+    ])
+
+    await revokeAppAccess({ storage: asStorageManager(storage), user, app })
+
+    const [posted] = storage.revokeConnectionGrants.mock.calls[1]
+    expect(zcapIdsOf(posted.grants)).toEqual([
+      'urn:zcap:merged',
+      'urn:zcap:one'
+    ])
+    expect((await entryOf({ directory, did: APP_DID }))?.retired).toEqual(
+      expect.any(String)
+    )
+    expect(storage.addHistoryAppRevoke).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('revokeAgentAccess', () => {
+  /**
+   * Records an interaction-URL consent for the fixture agent.
+   *
+   * @param options {object}
+   * @param [options.grants] {Array<object>}
+   * @param [options.appKey] {string}
+   * @returns {Promise<void>}
+   */
+  async function grantAgent({
+    grants = [grantZcap({ id: 'urn:zcap:one', controller: AGENT_DID })],
+    appKey
+  }: {
+    grants?: Array<Record<string, unknown>>
+    appKey?: string
+  } = {}): Promise<void> {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants,
+      name: 'Deploy bot',
+      ...(appKey !== undefined && { appKey })
+    })
+  }
+
+  it('rotates and revokes before retiring and recording, with no key delete', async () => {
+    await grantAgent()
+    const storage = directoryStorage({ directory })
+
+    const outcome = await revokeAgentAccess({
+      storage: asStorageManager(storage),
+      user,
+      agent: await listedAgent()
+    })
+
+    expect(outcome).toEqual({
+      revoked: 1,
+      withdrawn: 1,
+      skipped: 0,
+      rotated: 1
+    })
+    expect(storage.calls).toEqual([
+      'readConnectionsListing',
+      'revokeCollectionRecipients',
+      'revokeConnectionGrants',
+      'retireConnectionEntry',
+      'addHistoryAgentRevoke'
+    ])
+    expect(storage.deleteAppKeyResource).not.toHaveBeenCalled()
+    expect(storage.addHistoryAgentRevoke).toHaveBeenCalledWith({
+      user,
+      origin: EXTERNAL_REQUEST_ORIGIN,
+      controller: AGENT_DID,
+      zcaps: [{ id: 'urn:zcap:one' }],
+      actor: { name: 'Deploy bot' },
+      revoked: 1,
+      skipped: 0
+    })
+    expect((await entryOf({ directory, did: AGENT_DID }))?.retired).toEqual(
+      expect.any(String)
+    )
+  })
+
+  it('POSTs every grant and rotates with no history row to read', async () => {
+    // A collection the agent created and one it was only admitted to.
+    await grantAgent({
+      grants: [
+        grantZcap({ id: 'urn:zcap:own', controller: AGENT_DID }),
+        grantZcap({
+          id: 'urn:zcap:admitted',
+          controller: AGENT_DID,
+          collection: 'private-credentials'
+        })
+      ]
+    })
+    const storage = directoryStorage({ directory })
+    expect('listHistoryItems' in storage).toBe(false)
+
+    await revokeAgentAccess({
+      storage: asStorageManager(storage),
+      user,
+      agent: await listedAgent()
+    })
+
+    const [rotation] = storage.revokeCollectionRecipients.mock.calls[0]
+    expect(rotation.grants.map(grant => grant.target).sort()).toEqual([
+      `${SPACE_URL}notes/`,
+      `${SPACE_URL}private-credentials/`
+    ])
+    const [posted] = storage.revokeConnectionGrants.mock.calls[0]
+    expect(zcapIdsOf(posted.grants)).toEqual([
+      'urn:zcap:admitted',
+      'urn:zcap:own'
+    ])
+  })
+
+  it('still retires an entry naming a dangling app key', async () => {
+    await grantAgent({ appKey: 'r-dangling' })
+    const storage = directoryStorage({ directory })
+
+    await revokeAgentAccess({
+      storage: asStorageManager(storage),
+      user,
+      agent: await listedAgent()
+    })
+
+    const entry = await entryOf({ directory, did: AGENT_DID })
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry?.appKey).toBeUndefined()
+  })
+
+  it('retires nothing and records nothing when a rotation fails', async () => {
+    await grantAgent()
+    const storage = directoryStorage({ directory })
+    storage.revokeCollectionRecipients.mockResolvedValueOnce({
+      collections: 1,
+      rotated: 0,
+      failed: 1,
+      revokedIds: []
+    })
+
+    await expect(
+      revokeAgentAccess({
+        storage: asStorageManager(storage),
+        user,
+        agent: await listedAgent()
+      })
+    ).rejects.toThrow('Could not rotate every collection')
+    expect(storage.revokeConnectionGrants).toHaveBeenCalledTimes(1)
+    expect(storage.retireConnectionEntry).not.toHaveBeenCalled()
+    expect(storage.addHistoryAgentRevoke).not.toHaveBeenCalled()
+    expect((await listedAgent()).controller).toBe(AGENT_DID)
+  })
+
+  it('retires nothing when the server revocation throws', async () => {
+    await grantAgent()
+    const storage = directoryStorage({ directory })
+    storage.revokeConnectionGrants.mockRejectedValueOnce(
+      new Error('server unreachable')
+    )
+
+    await expect(
+      revokeAgentAccess({
+        storage: asStorageManager(storage),
+        user,
+        agent: await listedAgent()
+      })
+    ).rejects.toThrow('server unreachable')
+    expect(storage.retireConnectionEntry).not.toHaveBeenCalled()
+    expect(storage.addHistoryAgentRevoke).not.toHaveBeenCalled()
+  })
+})
+
+describe('retireConnectionParty', () => {
+  it('retires a wallet-client entry holding no grant without a server stage', async () => {
+    await recordConsent({
+      directory,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      name: 'Freewallet'
+    })
+    const storage = directoryStorage({ directory })
+
+    await retireConnectionParty({
+      storage: asStorageManager(storage),
+      did: CLIENT_DID
+    })
+
+    expect(storage.calls).toEqual([
+      'readConnectionsListing',
+      'retireConnectionEntry'
+    ])
+    const entry = await entryOf({ directory, did: CLIENT_DID })
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry?.name).toBe('Freewallet')
+  })
+
+  it('POSTs and rotates off the grants a wallet-client entry carries before retiring', async () => {
+    await recordConsent({
+      directory,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      grants: [grantZcap({ id: 'urn:zcap:client', controller: CLIENT_DID })]
+    })
+    const storage = directoryStorage({ directory })
+
+    await retireConnectionParty({
+      storage: asStorageManager(storage),
+      did: CLIENT_DID
+    })
+
+    expect(storage.calls).toEqual([
+      'readConnectionsListing',
+      'revokeCollectionRecipients',
+      'revokeConnectionGrants',
+      'retireConnectionEntry'
+    ])
+    const [rotation] = storage.revokeCollectionRecipients.mock.calls[0]
+    expect(rotation.did).toBe(CLIENT_DID)
+    expect(zcapIdsOf(rotation.grants)).toEqual(['urn:zcap:client'])
+    expect(storage.retireConnectionEntry).toHaveBeenCalledWith({
+      did: CLIENT_DID,
+      handledZcapIds: ['urn:zcap:client']
+    })
+    const entry = await entryOf({ directory, did: CLIENT_DID })
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry?.grants).toEqual([])
+  })
+
+  it('leaves the entry unretired when the rotation fails', async () => {
+    await recordConsent({
+      directory,
+      did: CLIENT_DID,
+      kind: 'wallet-client',
+      grants: [grantZcap({ id: 'urn:zcap:client', controller: CLIENT_DID })]
+    })
+    const storage = directoryStorage({ directory })
+    storage.revokeCollectionRecipients.mockResolvedValueOnce({
+      collections: 1,
+      rotated: 0,
+      failed: 1,
+      revokedIds: []
+    })
+
+    await expect(
+      retireConnectionParty({
+        storage: asStorageManager(storage),
+        did: CLIENT_DID
+      })
+    ).rejects.toThrow('Could not rotate every collection')
+    expect(storage.retireConnectionEntry).not.toHaveBeenCalled()
+    expect(
+      (await entryOf({ directory, did: CLIENT_DID }))?.retired
+    ).toBeUndefined()
+  })
+
+  it('still retires an entry naming a dangling app key', async () => {
+    await connectApp({ appKey: 'r-dangling' })
+    const storage = directoryStorage({ directory })
+
+    await retireConnectionParty({
+      storage: asStorageManager(storage),
+      did: APP_DID
+    })
+
+    const entry = await entryOf({ directory, did: APP_DID })
+    expect(entry?.retired).toEqual(expect.any(String))
+    expect(entry?.appKey).toBeUndefined()
+  })
+
+  it('writes nothing for a party with no entry', async () => {
+    const storage = directoryStorage({ directory })
+
+    await retireConnectionParty({
+      storage: asStorageManager(storage),
+      did: CLIENT_DID
+    })
+
+    expect(storage.revokeConnectionGrants).not.toHaveBeenCalled()
+    expect(directory.writes).toEqual([])
+  })
+})
+
+describe('revokeAppAuthority', () => {
+  it('revokes no grant for a key with no entry, and rotates its stamped collections', async () => {
+    const storage = directoryStorage({ directory })
+
+    const result = await revokeAppAuthority({
+      storage: asStorageManager(storage),
+      subjectDid: APP_DID
+    })
+
+    expect(result.entry).toBeUndefined()
+    expect(result.handledZcapIds).toEqual([])
+    expect(storage.revokeCollectionRecipients).toHaveBeenCalledWith(
+      expect.objectContaining({ did: APP_DID, grants: [] })
+    )
+    expect(storage.revokeConnectionGrants).toHaveBeenCalledWith({
+      grants: [],
+      revokedByRotation: []
+    })
+  })
+
+  it('reads no listing when the caller hands one in', async () => {
+    await connectApp()
+    const storage = directoryStorage({ directory })
+    const directoryRead = await storage.readConnectionsListing()
+    storage.readConnectionsListing.mockClear()
+
+    const result = await revokeAppAuthority({
+      storage: asStorageManager(storage),
+      subjectDid: APP_DID,
+      directory: directoryRead,
+      collections: []
+    })
+
+    expect(storage.readConnectionsListing).not.toHaveBeenCalled()
+    expect(result.handledZcapIds).toEqual(['urn:zcap:one'])
+    expect(storage.revokeCollectionRecipients).toHaveBeenCalledWith(
+      expect.objectContaining({ directory: directoryRead, collections: [] })
+    )
   })
 })

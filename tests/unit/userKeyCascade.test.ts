@@ -1,9 +1,10 @@
 // @vitest-environment node
 /**
  * Unit tests for the collection fan-out of the user key cascade
- * (`src/session/userKeyCascade.ts`): the enumeration (encrypted standard
- * collections plus every remotely listed collection, deduplicated,
- * degrading to the standard set when the remote listing fails) and the
+ * (`src/session/userKeyCascade.ts`): the enumeration (the provision
+ * roster's encrypted collections, the `connections` directory among them,
+ * plus every remotely listed collection, deduplicated, degrading to the
+ * roster set when the remote listing fails) and the
  * `isEncrypted` probe handed to the `@interop/wallet-core/keys` driver
  * (over each collection's own governing log), plus the caller's
  * per-collection descriptor-store lookup, which the fan-out now takes rather
@@ -19,7 +20,7 @@ vi.mock('@interop/wallet-core/keys', async importOriginal => ({
 }))
 
 import { cascadeCollectionsToUserKey as driveCascade } from '@interop/wallet-core/keys'
-import { WALLET_STANDARD_COLLECTIONS } from '@/app.config'
+import { ENCRYPTED_WALLET_COLLECTION_IDS } from '@/app.config'
 import { cascadeCollectionsToUserKey } from '@/session/userKeyCascade'
 import type { WASRemoteStore } from '@/stores/wasRemoteStore'
 import type { CollectionEncryption } from '@interop/was-client'
@@ -57,9 +58,7 @@ function recordingStoreFor({
   return { storeFor, asked }
 }
 
-const STANDARD_ENCRYPTED_IDS = WALLET_STANDARD_COLLECTIONS.filter(
-  spec => spec.encryption
-).map(spec => spec.id)
+const ROSTER_ENCRYPTED_IDS = [...ENCRYPTED_WALLET_COLLECTION_IDS]
 
 /**
  * A remote-store stub: the lean `listCollectionPublicStates` yields the given
@@ -98,12 +97,12 @@ beforeEach(() => {
 })
 
 describe('cascadeCollectionsToUserKey', () => {
-  it('names the encrypted standard collections plus every remotely listed one, deduplicated', async () => {
+  it('names the roster encrypted collections plus every remotely listed one, deduplicated', async () => {
     const remoteStore = makeFakeRemoteStore({
       remoteItems: [
-        // A duplicate of a standard collection, an app-provisioned one, and
+        // A duplicate of a roster collection, an app-provisioned one, and
         // a plaintext one, which the log-governed probe drops later.
-        { id: STANDARD_ENCRYPTED_IDS[0], isEncrypted: true },
+        { id: ROSTER_ENCRYPTED_IDS[0], isEncrypted: true },
         { id: 'app-notes', isEncrypted: true },
         { id: 'public-credentials', isEncrypted: false }
       ]
@@ -118,14 +117,14 @@ describe('cascadeCollectionsToUserKey', () => {
 
     const args = driverArgs()
     expect([...args.collectionIds].sort()).toEqual(
-      [...STANDARD_ENCRYPTED_IDS, 'app-notes', 'public-credentials'].sort()
+      [...ROSTER_ENCRYPTED_IDS, 'app-notes', 'public-credentials'].sort()
     )
     expect(args.rosterDescriptor).toBe(ROSTER_DESCRIPTOR)
     expect(args.clientKeyAgreementKey).toBe(CLIENT_KAK)
     expect(args.userKey).toBe(USER_KEY)
   })
 
-  it('degrades to the standard set when the remote listing fails', async () => {
+  it('degrades to the roster set when the remote listing fails', async () => {
     const remoteStore = makeFakeRemoteStore({ listFails: true })
     await cascadeCollectionsToUserKey({
       remoteStore,
@@ -135,8 +134,27 @@ describe('cascadeCollectionsToUserKey', () => {
       userKey: USER_KEY
     })
     expect([...driverArgs().collectionIds].sort()).toEqual(
-      [...STANDARD_ENCRYPTED_IDS].sort()
+      [...ROSTER_ENCRYPTED_IDS].sort()
     )
+  })
+
+  it('re-keys the connections directory when the Space listing omits it', async () => {
+    // The host lists every other collection but withholds the directory: the
+    // roster base set still names it, so the host cannot keep it out of a
+    // rotation.
+    const remoteStore = makeFakeRemoteStore({
+      remoteItems: ROSTER_ENCRYPTED_IDS.filter(id => id !== 'connections').map(
+        id => ({ id, isEncrypted: true })
+      )
+    })
+    await cascadeCollectionsToUserKey({
+      remoteStore,
+      storeFor: recordingStoreFor().storeFor,
+      rosterDescriptor: ROSTER_DESCRIPTOR,
+      clientKeyAgreementKey: CLIENT_KAK,
+      userKey: USER_KEY
+    })
+    expect(driverArgs().collectionIds).toContain('connections')
   })
 
   it("passes the caller's descriptor-store lookup straight to the driver", async () => {

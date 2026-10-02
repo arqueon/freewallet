@@ -60,8 +60,8 @@ import {
   addRecipient,
   DescriptorRefreshPolicy,
   removeRecipient,
+  resolveHmacKey,
   trustRosterDidKeys,
-  x25519RecipientFromDidKey,
   type EncryptionDescriptorCache,
   type EncryptionDescriptorSource,
   type EncryptionDescriptorStore,
@@ -86,17 +86,40 @@ import { classifyDecryptFailure } from '@/lib/decryptFailure'
 import { refreshingCollectionCipher } from '@/stores/refreshingCollectionCipher'
 import {
   ENCRYPTED_STANDARD_COLLECTIONS,
+  ENCRYPTED_WALLET_COLLECTION_IDS,
   RP_ZCAP_TTL_MS,
   isProtectedCollection,
   WALLET_STANDARD_COLLECTIONS,
   WAS_SERVER_URL
 } from '@/app.config'
 import {
+  connectionGrants,
+  connectionRecipientKid,
+  grantRecipientKid,
+  isWritableConnectionEntry,
+  readConnections,
+  removeGrants,
+  retireConnection,
+  wasConnectionsStore,
+  type ConnectionEntry,
+  type ConnectionGrant,
+  type ConnectionIdKey,
+  type ConnectionsListing,
+  type ConnectionsStore
+} from '@interop/wallet-core/connections'
+import {
+  localConnectionsStore,
+  resolvingConnectionsStore,
+  type ConnectionsDirectory
+} from '@/stores/connectionsStore'
+import {
+  appKeySeedBindsSubject,
   assertMintedAppKey,
   assertStorableAppKey,
   presentsAsAppKey
 } from '@interop/wallet-request'
 import { credentialTitle } from '@/lib/viewMappers/credentialTitle'
+import { subjectId } from '@/lib/vcShape'
 import { SEED_CONTACT_NAMES } from '@/fixtures/defaultContacts'
 import { WALK_STOPPING_ERROR_NAME } from '@interop/wallet-backup'
 import type {
@@ -124,7 +147,6 @@ import {
 import { delegationExpired } from '@interop/wallet-core/webvh'
 import { promoteKeystoreController, rebindKeystoreAgent } from '@/lib/kms'
 import { accountRosterStore } from '@/session/rosterStore'
-import { mintRecordEncryption } from '@interop/wallet-core/keyring'
 import {
   loadAccountDidForSpace,
   saveAccountDidForSpace
@@ -147,7 +169,7 @@ import type { StorageCollection, StorageResource } from '@/lib/storage'
 import type { Json, SyncedDoc } from '@interop/was-sync'
 import type { SpaceQuotaReport } from '@/types/storageQuota'
 import type { FetchedCollectionResource } from '@/lib/storageResource'
-import type { StoredCredential } from '@/types/credential'
+import type { StoredAppKey, StoredCredential } from '@/types/credential'
 import type { StoredContact } from '@/types/contact'
 import { BrowserStore } from '@/stores/browserStore'
 import { WASRemoteStore } from '@/stores/wasRemoteStore'
@@ -155,7 +177,6 @@ import {
   RemoteDirectStore,
   type SyncedCollectionStore
 } from '@/stores/remoteDirectStore'
-import { isAgentActivityObject } from '@/lib/walletRequest/externalRequest'
 import type { SpaceLocation } from '@/lib/walletRequest/processZcaps'
 import type { CredentialActivityVerb } from '@/lib/historyActivity'
 import { uuidv7 } from 'uuidv7'
@@ -167,7 +188,6 @@ import {
   addHistoryCredentialShared as buildHistoryCredentialShared,
   addHistoryCredentialUnshared as buildHistoryCredentialUnshared,
   addHistoryLogin as buildHistoryLogin,
-  ACTIVITY_TYPE,
   addHistoryGrant as buildHistoryGrant,
   addHistoryWalletLogin as buildHistoryWalletLogin,
   addHistoryAppRevoke as buildHistoryAppRevoke,
@@ -176,6 +196,8 @@ import {
   addHistoryGenerationCollected as buildHistoryGenerationCollected,
   addHistoryCollectionShared as buildHistoryCollectionShared,
   addHistoryCollectionUnshared as buildHistoryCollectionUnshared,
+  APP_CONNECTIONS_COLLECTION,
+  CONNECTIONS_COLLECTION,
   type WalletActivity
 } from '@interop/wallet-core/space'
 import { createLogger, stageTimer } from '@/lib/log'
@@ -472,18 +494,67 @@ const CREDENTIAL_ACTIVITY_BUILDERS: Record<
   unshared: buildHistoryCredentialUnshared
 }
 
-// The WAS collection ids of the encrypted standard collections -- the set
-// whose descriptors are acquired at session start and refreshed on an
-// unknown-epoch read.
-const ENCRYPTED_COLLECTION_IDS = ENCRYPTED_STANDARD_COLLECTIONS.map(
-  ({ id }) => id
-)
+// The WAS collection ids of the provision roster's encrypted collections --
+// the set whose descriptors are acquired at session start and refreshed on an
+// unknown-epoch read: the synced ones, and the `connections` directory.
+const ENCRYPTED_COLLECTION_IDS = [...ENCRYPTED_WALLET_COLLECTION_IDS]
+
+/**
+ * Why the `connections` directory cannot be trusted as the directory, or
+ * `undefined` when it can. Every directory operation fails closed on a
+ * refusal.
+ *
+ * - `absent` -- no epoch-bearing descriptor (an account created before the
+ *   directory existed, or an offline session with nothing cached).
+ * - `stranded` -- no key epoch names this session's vault KAK.
+ * - `no-blinded-index-key` -- the descriptor declares no blinded-index key,
+ *   so no resource id can be derived.
+ * - `foreign-recipient` -- the current epoch lists a kid outside the
+ *   account's user key generations.
+ * - `generator` -- the Collection Metadata object carries a `generator`: a
+ *   requester was provisioned with a collection of this name.
+ */
+type DirectoryRefusal =
+  | 'absent'
+  | 'stranded'
+  | 'no-blinded-index-key'
+  | 'foreign-recipient'
+  | 'generator'
+
+/**
+ * The directory refusals the descriptor alone decides, with no read: an
+ * absent descriptor, a stranded one, and one with no blinded-index key.
+ *
+ * @param options {object}
+ * @param [options.descriptor] {CollectionEncryption}
+ * @param options.keyAgreementKey {IKeyAgreementKey}   the vault KAK
+ * @returns {DirectoryRefusal | undefined}
+ */
+function directoryDescriptorRefusal({
+  descriptor,
+  keyAgreementKey
+}: {
+  descriptor?: CollectionEncryption
+  keyAgreementKey: IKeyAgreementKey
+}): DirectoryRefusal | undefined {
+  if (!descriptor?.epochs?.length) {
+    return 'absent'
+  }
+  if (strandsReader({ descriptor, keyAgreementKey })) {
+    return 'stranded'
+  }
+  if (!(descriptor as { hmac?: unknown }).hmac) {
+    return 'no-blinded-index-key'
+  }
+  return undefined
+}
 
 /**
  * Descriptors for a session with no remote store (a guest, or no WAS server
  * configured). Every encrypted collection still carries a key-epoch roster from
- * birth, so each collection gets a local one-epoch descriptor wrapped to the
- * session's vault KAK alone -- minted on first use and persisted in the
+ * birth, so each collection gets a local one-epoch descriptor, with its
+ * blinded-index key, wrapped to the session's vault KAK alone (see
+ * {@link mintLocalDescriptor}) -- minted on first use and persisted in the
  * session's descriptor cache, scoped by the user's DID in place of a Space id,
  * so a returning local login rebuilds the same epoch and keeps decrypting its
  * own resource replicas. A guest's identity is random per session and its data
@@ -511,12 +582,48 @@ async function localOnlyDescriptors({
       if (cached?.epochs?.length) {
         return [collectionId, cached] as const
       }
-      const minted = await mintRecordEncryption({ keyAgreementKey })
+      const minted = await mintLocalDescriptor({ keyAgreementKey })
       await cache.writeDescriptor({ collectionId, descriptor: minted })
       return [collectionId, minted] as const
     })
   )
   return Object.fromEntries(entries)
+}
+
+/**
+ * Mints one local collection's descriptor with the blinded-index mint the
+ * remote path runs (`ensureIndexedFirstEpoch`): epoch[0] and the
+ * blinded-index key, both wrapped to the vault KAK alone. The descriptor
+ * store is in memory, since the descriptor lives only in the session's
+ * cache. The shape is the one the remote path writes, so the `connections`
+ * directory derives its resource ids the same way on every session kind.
+ *
+ * @param options {object}
+ * @param options.keyAgreementKey {IKeyAgreementKey}   the vault KAK
+ * @returns {Promise<CollectionEncryption>}
+ */
+async function mintLocalDescriptor({
+  keyAgreementKey
+}: {
+  keyAgreementKey: IKeyAgreementKey
+}): Promise<CollectionEncryption> {
+  let stored: CollectionEncryption | null = null
+  const store: EncryptionDescriptorStore = {
+    async read() {
+      return stored ? { descriptor: stored } : null
+    },
+    async replace(next) {
+      stored = next
+    },
+    async create(next) {
+      stored = next
+    }
+  }
+  const { descriptor } = await ensureIndexedFirstEpoch({
+    store,
+    recipients: [ownerRecipient({ keyAgreementKey })]
+  })
+  return descriptor
 }
 
 /**
@@ -853,6 +960,26 @@ export class StorageManager {
   // pair come from it, so their storage tier is the strategy's rather than a
   // flag here.
   #persistence: SessionPersistence
+  // The session's `connections` directory store: one per session, resolving
+  // its adapter at every call (see `#directoryAdapter`), so a caller holding
+  // it across a descriptor refresh still writes under the current epoch.
+  #connectionsStore: ConnectionsStore
+  // The directory's cipher and blinded-index key, built from one descriptor
+  // under one vault KAK. Rebuilt when either changes, so a descriptor
+  // refresh or an adopted user key reaches the next directory call.
+  #directoryKeys?: {
+    descriptor: CollectionEncryption
+    keyAgreementKey: IKeyAgreementKey
+    built: Promise<{ cipher: EdvDocCipher; hmacKey: ConnectionIdKey }>
+  }
+  // The directory binding checks that need a read (the current epoch's
+  // recipients against the user key generations, the `generator` stamp),
+  // decided once per descriptor. An `absent` verdict and a check that throws
+  // are dropped, so the next directory call runs it again.
+  #directoryBinding?: {
+    descriptor: CollectionEncryption
+    verdict: Promise<DirectoryRefusal | undefined>
+  }
 
   constructor({
     localStore,
@@ -924,6 +1051,7 @@ export class StorageManager {
           ciphers: ciphers ?? {}
         })
       : localStore!
+    this.#connectionsStore = this.#refreshingDirectoryStore()
   }
 
   /**
@@ -943,6 +1071,10 @@ export class StorageManager {
    * because no key epoch names the current user key: collections a torn user
    * key rotation left on a retired generation. The login's collection fan-out
    * reads it to decide whether the ciphers need a rebuild once it has run.
+   * The `connections` directory is listed here too when its descriptor is
+   * stranded. Its other refusals (no blinded-index key, a foreign
+   * recipient, a `generator` stamp) are not listed, since no cascade
+   * converges them (see {@link connectionsDirectory}).
    *
    * @returns {string[]}
    */
@@ -1232,10 +1364,64 @@ export class StorageManager {
       ciphers: Object.fromEntries(
         built.map(({ key, cipher }) => [key, cipher])
       ),
-      strandedCollectionIds: ENCRYPTED_STANDARD_COLLECTIONS.filter(
-        (_collection, index) => built[index].stranded
-      ).map(({ id }) => id)
+      strandedCollectionIds: [
+        ...ENCRYPTED_STANDARD_COLLECTIONS.filter(
+          (_collection, index) => built[index].stranded
+        ).map(({ id }) => id),
+        ...(StorageManager.#directoryStranded({
+          descriptor: descriptors?.[CONNECTIONS_COLLECTION],
+          keyAgreementKey,
+          refuseStranded
+        })
+          ? [CONNECTIONS_COLLECTION]
+          : [])
+      ]
     }
+  }
+
+  /**
+   * Whether the `connections` directory joins the stranded report at a cipher
+   * (re)build. The directory has no entry in the synced cipher map: its
+   * cipher is resolved per call from the same descriptors. Only a stranded
+   * descriptor joins, since the user key cascade the report triggers can
+   * converge it. A descriptor declaring no blinded-index key is logged and
+   * left out: the key is installed at provisioning or never, so no cascade
+   * supplies one, and every directory operation refuses it anyway. An absent
+   * one is not stranded, as a synced collection's missing descriptor is not.
+   * With
+   * `refuseStranded` false (the post-rotation adoption) a stranded directory
+   * throws `KeyUnwrapError` instead, as a synced collection the fan-out did
+   * not reach does, so the caller learns the adoption did not land.
+   *
+   * @param options {object}
+   * @param [options.descriptor] {CollectionEncryption}
+   * @param options.keyAgreementKey {IKeyAgreementKey}
+   * @param options.refuseStranded {boolean}
+   * @returns {boolean}
+   */
+  static #directoryStranded({
+    descriptor,
+    keyAgreementKey,
+    refuseStranded
+  }: {
+    descriptor?: CollectionEncryption
+    keyAgreementKey: IKeyAgreementKey
+    refuseStranded: boolean
+  }): boolean {
+    const refusal = directoryDescriptorRefusal({ descriptor, keyAgreementKey })
+    if (refusal === 'stranded' && !refuseStranded) {
+      throw new KeyUnwrapError(
+        `Collection "${CONNECTIONS_COLLECTION}" has no key epoch naming the ` +
+          'adopted user key; the collection fan-out has not reached it.'
+      )
+    }
+    if (refusal === 'stranded' || refusal === 'no-blinded-index-key') {
+      log.warn('Refusing the connections directory until it is repaired', {
+        collectionId: CONNECTIONS_COLLECTION,
+        refusal
+      })
+    }
+    return refusal === 'stranded'
   }
 
   /**
@@ -1491,8 +1677,9 @@ export class StorageManager {
    * descriptor and swaps the refreshed map into the backend -- what a share
    * or an unshare needs, each of which rotates a single collection. The
    * whole-map rebuild above stays the descriptor-refresh path's, which moves
-   * every collection at once. A collection id that is not a standard
-   * encrypted collection (an app-provisioned one, whose cipher is built
+   * every collection at once. The `connections` directory's cipher is
+   * resolved per call, so for it only the stranded state is restated. Any
+   * other collection id (an app-provisioned one, whose cipher is built
    * lazily per read) is a no-op.
    *
    * @param options {object}
@@ -1504,6 +1691,24 @@ export class StorageManager {
   }: {
     collectionId: string
   }): Promise<void> {
+    if (collectionId === CONNECTIONS_COLLECTION) {
+      // The directory's cipher is resolved per call from the descriptors, so
+      // the fresh descriptor already reaches it; only its stranded state is
+      // restated here.
+      const stranded = StorageManager.#directoryStranded({
+        descriptor: this.#descriptors[collectionId],
+        keyAgreementKey: this.#vaultKeys.keyAgreementKey,
+        refuseStranded: true
+      })
+      this.#strandedCollectionIds = [
+        ...this.#strandedCollectionIds.filter(id => id !== collectionId),
+        ...(stranded ? [collectionId] : [])
+      ]
+      if (stranded) {
+        this.#reportStranded()
+      }
+      return
+    }
     const collection = ENCRYPTED_STANDARD_COLLECTIONS.find(
       ({ id }) => id === collectionId
     )
@@ -1665,6 +1870,315 @@ export class StorageManager {
       await this.#rebuildCiphers({ refuseStranded })
     }
     this.#refreshPolicy.reset()
+  }
+
+  /**
+   * The session's `connections` directory: its store, the collection's
+   * blinded-index key every resource id derives under, and, with a remote
+   * Space, the Space's container URL the grant checks read. On a session
+   * with a remote Space the store reads and writes the account Space's
+   * collection remote-direct, invoking under the session's bound capability
+   * (the generation delegation of a transient session) and the root
+   * capability otherwise. On a guest or a no-WAS session it reads and writes
+   * the local copy. The store resolves its adapter at every call, so the
+   * cipher and the handle follow a descriptor refresh.
+   *
+   * Throws when the directory binding refuses the collection: no
+   * epoch-bearing descriptor, no key epoch naming this session's vault KAK,
+   * no blinded-index key, a current epoch listing a kid outside the
+   * account's user key generations, or a `generator` on its Collection
+   * Metadata object. Every operation through the store refuses the same way.
+   *
+   * @returns {Promise<ConnectionsDirectory>}
+   */
+  async connectionsDirectory(): Promise<ConnectionsDirectory> {
+    const { hmacKey } = await this.#directoryAccess()
+    return {
+      store: this.#connectionsStore,
+      hmacKey,
+      ...(this.#remoteStore ? { spaceUrl: this.#remoteStore.spaceUrl } : {})
+    }
+  }
+
+  /**
+   * The session's directory store: it resolves its adapter at every call,
+   * and a read that meets an envelope sealed under an epoch the cached
+   * descriptor does not list (another client rotated the user key) refreshes
+   * the descriptors once and reads again, through the same once-per-session
+   * guard every other encrypted collection's reads share. A `get` still
+   * unreadable after that throws, so a writer never takes an unreadable
+   * entry for an absent one.
+   *
+   * @returns {ConnectionsStore}
+   */
+  #refreshingDirectoryStore(): ConnectionsStore {
+    const store = resolvingConnectionsStore({
+      resolve: () => this.#directoryAdapter()
+    })
+    const isUnknownEpoch = (err: unknown): boolean =>
+      classifyDecryptFailure(err) === 'unknown-epoch'
+    return {
+      ...store,
+      list: () =>
+        this.#readWithEpochRefresh({
+          collectionId: CONNECTIONS_COLLECTION,
+          read: async () => {
+            const listed = await store.list()
+            return {
+              value: listed,
+              unknownEpoch: (listed ?? []).some(
+                item =>
+                  item.readError !== undefined && isUnknownEpoch(item.readError)
+              )
+            }
+          }
+        }),
+      get: async options => {
+        let failure: unknown
+        const value = await this.#readWithEpochRefresh({
+          collectionId: CONNECTIONS_COLLECTION,
+          read: async () => {
+            failure = undefined
+            try {
+              return { value: await store.get(options), unknownEpoch: false }
+            } catch (err) {
+              if (!isUnknownEpoch(err)) {
+                throw err
+              }
+              failure = err
+              return { value: undefined, unknownEpoch: true }
+            }
+          }
+        })
+        if (failure !== undefined) {
+          throw failure
+        }
+        return value
+      }
+    }
+  }
+
+  /**
+   * The directory's current descriptor with its cipher and blinded-index
+   * key, once every binding check passes; throws the refusal otherwise.
+   *
+   * @returns {Promise<object>}   `{ descriptor, cipher, hmacKey }`
+   */
+  async #directoryAccess(): Promise<{
+    descriptor: CollectionEncryption
+    cipher: EdvDocCipher
+    hmacKey: ConnectionIdKey
+  }> {
+    const descriptor = this.#descriptors[CONNECTIONS_COLLECTION]
+    const { keyAgreementKey } = this.#vaultKeys
+    const refusal =
+      directoryDescriptorRefusal({ descriptor, keyAgreementKey }) ??
+      (await this.#directoryBindingVerdict({ descriptor: descriptor! }))
+    if (refusal !== undefined) {
+      throw new Error(
+        `The "${CONNECTIONS_COLLECTION}" collection cannot be used as the ` +
+          `connections directory (${refusal}); every directory operation is ` +
+          'refused until it is repaired.'
+      )
+    }
+    const { cipher, hmacKey } = await this.#directoryKeysFor({
+      descriptor: descriptor!
+    })
+    return { descriptor: descriptor!, cipher, hmacKey }
+  }
+
+  /**
+   * The directory store's adapter for one call: wallet-core's WAS adapter
+   * over the `connections` Collection handle, built from the current
+   * descriptor, on a session with a remote Space, and the local adapter
+   * otherwise.
+   *
+   * @returns {Promise<ConnectionsStore>}
+   */
+  async #directoryAdapter(): Promise<ConnectionsStore> {
+    const { descriptor, cipher } = await this.#directoryAccess()
+    const remote = this.#remoteStore
+    if (remote) {
+      const { keyAgreementKey, keyResolver } = this.#vaultKeys
+      return wasConnectionsStore({
+        collection: remote.keyedCollectionHandle({
+          collectionId: CONNECTIONS_COLLECTION,
+          encryption: descriptor,
+          keyAgreementKey,
+          keyResolver
+        }),
+        cipher
+      })
+    }
+    if (!this.#localStore) {
+      throw new Error('The connections directory has no store to read.')
+    }
+    return localConnectionsStore({
+      collection: this.#localStore.connectionsCollection(),
+      cipher
+    })
+  }
+
+  /**
+   * The directory's cipher and blinded-index key for one descriptor under
+   * the held vault KAK, built once and kept while both stay the same.
+   *
+   * @param options {object}
+   * @param options.descriptor {CollectionEncryption}
+   * @returns {Promise<{ cipher: EdvDocCipher, hmacKey: ConnectionIdKey }>}
+   */
+  async #directoryKeysFor({
+    descriptor
+  }: {
+    descriptor: CollectionEncryption
+  }): Promise<{ cipher: EdvDocCipher; hmacKey: ConnectionIdKey }> {
+    const { keyAgreementKey, keyResolver } = this.#vaultKeys
+    const held = this.#directoryKeys
+    if (
+      held?.descriptor === descriptor &&
+      held.keyAgreementKey === keyAgreementKey
+    ) {
+      return held.built
+    }
+    const built = (async () => {
+      const [cipher, hmacKey] = await Promise.all([
+        createEdvDocCipher({
+          keyAgreementKey,
+          keyResolver,
+          collectionId: CONNECTIONS_COLLECTION,
+          idDerivation: 'random',
+          encryption: descriptor
+        }),
+        resolveHmacKey({
+          encryption: descriptor,
+          keyAgreementKey,
+          required: true
+        })
+      ])
+      if (!hmacKey) {
+        throw new Error(
+          `The "${CONNECTIONS_COLLECTION}" descriptor declares no ` +
+            'blinded-index key.'
+        )
+      }
+      return { cipher, hmacKey }
+    })()
+    this.#directoryKeys = { descriptor, keyAgreementKey, built }
+    built.catch(() => {
+      if (this.#directoryKeys?.built === built) {
+        this.#directoryKeys = undefined
+      }
+    })
+    return built
+  }
+
+  /**
+   * The binding checks that need a read, decided once per descriptor: the
+   * current epoch must list only the account's user key generations (the
+   * held vault KAK among them), and the Collection Metadata object must
+   * carry no `generator`. Either refusal marks a collection a requester was
+   * provisioned with before this build, which would otherwise be adopted as
+   * the directory. Neither refusal joins the stranded report: no key epoch
+   * fails to name the user key, so the user key cascade the report triggers
+   * cannot converge it. The refusal surfaces as the warning logged here and
+   * the error every directory operation throws.
+   *
+   * Only a pass and the two structural refusals (`foreign-recipient`,
+   * `generator`) are kept, since they are properties of the descriptor. An
+   * `absent` verdict is dropped once it settles. WAS masks an unauthorized
+   * read as a 404, so a missing Collection Metadata object may be transient:
+   * a generation delegation mid-renewal, or a server error. Keeping it would
+   * fail every consent closed until an unrelated descriptor refresh. The
+   * cost is one metadata read per directory operation on an account with no
+   * directory, whose consents fail closed anyway. A check that throws (the
+   * roster or the metadata could not be read) is not kept either. Concurrent
+   * callers share the one in-flight check.
+   *
+   * @param options {object}
+   * @param options.descriptor {CollectionEncryption}
+   * @returns {Promise<DirectoryRefusal | undefined>}
+   */
+  async #directoryBindingVerdict({
+    descriptor
+  }: {
+    descriptor: CollectionEncryption
+  }): Promise<DirectoryRefusal | undefined> {
+    const held = this.#directoryBinding
+    if (held?.descriptor === descriptor) {
+      return held.verdict
+    }
+    const verdict = this.#checkDirectoryBinding({ descriptor })
+    this.#directoryBinding = { descriptor, verdict }
+    verdict.then(
+      refusal => {
+        if (refusal === 'foreign-recipient' || refusal === 'generator') {
+          log.warn('Refusing the connections directory', {
+            collectionId: CONNECTIONS_COLLECTION,
+            refusal
+          })
+        }
+        if (refusal === 'absent') {
+          this.#dropDirectoryBinding({ verdict })
+        }
+      },
+      () => this.#dropDirectoryBinding({ verdict })
+    )
+    return verdict
+  }
+
+  /**
+   * Drops the held binding verdict, unless a later check has replaced it.
+   *
+   * @param options {object}
+   * @param options.verdict {Promise<DirectoryRefusal | undefined>}
+   */
+  #dropDirectoryBinding({
+    verdict
+  }: {
+    verdict: Promise<DirectoryRefusal | undefined>
+  }): void {
+    if (this.#directoryBinding?.verdict === verdict) {
+      this.#directoryBinding = undefined
+    }
+  }
+
+  /**
+   * Runs the read-backed binding checks once. See
+   * {@link StorageManager.#directoryBindingVerdict}.
+   *
+   * @param options {object}
+   * @param options.descriptor {CollectionEncryption}
+   * @returns {Promise<DirectoryRefusal | undefined>}
+   */
+  async #checkDirectoryBinding({
+    descriptor
+  }: {
+    descriptor: CollectionEncryption
+  }): Promise<DirectoryRefusal | undefined> {
+    const remote = this.#remoteStore
+    const generations = remote ? await this.#userKeyGenerationKids() : []
+    const admitted = new Set([
+      this.#vaultKeys.keyAgreementKey.id,
+      ...generations
+    ])
+    const foreign = currentEpochRecipientKids({ descriptor }).filter(
+      kid => !admitted.has(kid)
+    )
+    if (foreign.length > 0) {
+      return 'foreign-recipient'
+    }
+    if (remote) {
+      const metadata = await remote.collectionMetadata({
+        collectionId: CONNECTIONS_COLLECTION
+      })
+      if (metadata === undefined) {
+        return 'absent'
+      }
+      if (metadata.generator !== undefined) {
+        return 'generator'
+      }
+    }
+    return undefined
   }
 
   /**
@@ -1960,17 +2474,26 @@ export class StorageManager {
    *
    * The app key lands in the dedicated `app-connections` collection, never in
    * `private-credentials`, and no credential-created activity is written: the
-   * App Connect Grant activity is the record of the connection, and an app key
+   * app's `connections` entry is the record of the connection, and an app key
    * is not a credential the user acquired.
+   *
+   * Returns the id of the `app-connections` Resource holding the key (the
+   * one already holding it when the store skipped a duplicate), which the
+   * app's `connections` entry records as `appKey`.
    *
    * @param options {object}
    * @param options.credential {IVerifiableCredential}
-   * @returns {Promise<void>}
+   * @returns {Promise<{ resourceId: string }>}
    */
-  async addMintedAppKey({ credential }: { credential: IVerifiableCredential }) {
+  async addMintedAppKey({
+    credential
+  }: {
+    credential: IVerifiableCredential
+  }): Promise<{ resourceId: string }> {
     await assertMintedAppKey(credential)
     const cid = await cidFrom({ doc: credential })
-    await this.#store.addAppKey({ cid, credential })
+    const { resourceId } = await this.#store.addAppKey({ cid, credential })
+    return { resourceId }
   }
 
   /**
@@ -1988,12 +2511,12 @@ export class StorageManager {
    * `skipped.unknownEpoch` counts what is still unreadable AFTER the one
    * refresh below, which is why it is reported rather than assumed resolved.
    *
-   * @returns {Promise<{ appKeys: StoredCredential[]; skipped: {
+   * @returns {Promise<{ appKeys: StoredAppKey[]; skipped: {
    *   unknownEpoch: number; noEpochKey: number; undecryptable: number;
    *   integrity: number } }>}
    */
   async listAppKeys(): Promise<{
-    appKeys: StoredCredential[]
+    appKeys: StoredAppKey[]
     skipped: {
       unknownEpoch: number
       noEpochKey: number
@@ -2025,15 +2548,212 @@ export class StorageManager {
   }
 
   /**
-   * Deletes one app-key credential by content cid (app revocation, and the
-   * login-time sweep of app keys stranded in `private-credentials`).
+   * Deletes the app key an app's `connections` entry names, as a disconnect's
+   * confirmed delete: the Resource `appKey` names is read, and deleted only
+   * when its credential binds the entry's DID (its subject is that DID, and
+   * its own seed derives it, `appKeySeedBindsSubject`). Every other Resource
+   * of `app-connections` whose credential binds the DID goes with it, since
+   * a key can sit there more than once. The named Resource is deleted last,
+   * so a retry after a torn run still reaches the copies left.
+   *
+   * On a session with a remote Space the read and the deletes go to the
+   * server, whatever the session's storage tier: a remembered session's
+   * replica delete is a soft delete that a missing replica row turns into a
+   * silent no-op, so a disconnect before the pull would leave the key on the
+   * server for a reconnect to match. A remembered session's replica copies
+   * are removed after the server's, and their pushed deletes find nothing
+   * left. A guest or no-WAS session deletes from its local copy, the only
+   * one.
+   *
+   * Outcomes: `deleted` when some Resource binding the DID was deleted;
+   * `absent` when none binds it and none is at `appKey` (a dangling
+   * `appKey`), which reads as already deleted; `foreign` when the Resource
+   * at `appKey` does not bind the DID and nothing else does, which is left
+   * untouched, since it is some other app's seed. Throws when the Resource at `appKey` cannot be
+   * read, so a disconnect does not retire an entry whose key it could not
+   * see.
    *
    * @param options {object}
-   * @param options.cid {string}
-   * @returns {Promise<void>}
+   * @param options.appKey {string}   the app-key Resource id the entry names
+   * @param options.did {string}   the entry's `id`, the app key's subject
+   * @returns {Promise<'deleted' | 'absent' | 'foreign'>}
    */
-  async deleteAppKey({ cid }: { cid: string }): Promise<void> {
-    await this.#store.deleteAppKey({ cid })
+  async deleteAppKeyResource({
+    appKey,
+    did
+  }: {
+    appKey: string
+    did: string
+  }): Promise<'deleted' | 'absent' | 'foreign'> {
+    const remote = this.#remoteStore
+    const held = remote
+      ? await this.#scanRemoteAppKeys({ remote })
+      : await this.#scanLocalAppKeys({ appKey })
+    const named = held.entries.find(entry => entry.resourceId === appKey)
+    if (!named && held.unreadable.includes(appKey)) {
+      throw new Error(
+        'The app key this connection names could not be read; it was not ' +
+          'deleted.'
+      )
+    }
+    // The credentials to delete: every one whose subject is the DID and
+    // whose own seed derives it. Matching on the DID as well as on `appKey`
+    // finds a copy an earlier, torn run left after it deleted the one
+    // `appKey` names.
+    const bound = new Set<string>()
+    for (const entry of held.entries) {
+      if (
+        !bound.has(entry.cid) &&
+        subjectId(entry.vc) === did &&
+        (await appKeySeedBindsSubject(entry.vc))
+      ) {
+        bound.add(entry.cid)
+      }
+    }
+    if (named && !bound.has(named.cid)) {
+      log.warn(
+        "Not deleting an app key that does not bind its connection's DID",
+        { appKey }
+      )
+    }
+    if (bound.size === 0) {
+      return named ? 'foreign' : 'absent'
+    }
+    if (remote) {
+      // The Resource `appKey` names goes last, so a run torn partway still
+      // finds the rest by it on a retry.
+      const doomed = held.entries
+        .filter(entry => bound.has(entry.cid))
+        .sort(
+          (first, second) =>
+            Number(first.resourceId === appKey) -
+            Number(second.resourceId === appKey)
+        )
+      for (const entry of doomed) {
+        await remote.deleteSyncedResource({
+          logicalKey: 'appConnections',
+          resourceId: entry.resourceId
+        })
+      }
+      // A replica copy goes too, so the listing stops showing the key before
+      // the pull; its pushed delete finds the Resource already gone.
+      if (this.#store !== this.#localStore) {
+        return 'deleted'
+      }
+    }
+    for (const cid of bound) {
+      await this.#store.deleteAppKey({ cid })
+    }
+    return 'deleted'
+  }
+
+  /**
+   * The local `app-connections` listing, for a session with no remote Space,
+   * with the Resource `appKey` names marked unreadable when the local replica
+   * holds it and it would not open. The listing reports a skipped replica by
+   * count alone, so the replica at `appKey` is opened here. One that opens is
+   * a copy the listing collapsed into an older one holding the same
+   * credential, and is added to the entries under its own id.
+   *
+   * @param options {object}
+   * @param options.appKey {string}   the app-key Resource id an entry names
+   * @returns {Promise<{ entries: StoredAppKey[]; unreadable: string[] }>}
+   */
+  async #scanLocalAppKeys({ appKey }: { appKey: string }): Promise<{
+    entries: StoredAppKey[]
+    unreadable: string[]
+  }> {
+    const entries = (await this.listAppKeys()).appKeys
+    const local = this.#localStore
+    if (!local || entries.some(entry => entry.resourceId === appKey)) {
+      return { entries, unreadable: [] }
+    }
+    const doc = await local
+      .rxCollection('appConnections')
+      .findOne(appKey)
+      .exec()
+    if (!doc) {
+      return { entries, unreadable: [] }
+    }
+    const cipher = await this.#rosterCipher({
+      collectionId: APP_CONNECTIONS_COLLECTION
+    })
+    const data = doc.toJSON().data as Json
+    if (cipher && isEncryptedEnvelope(data)) {
+      try {
+        const vc = (await cipher.decrypt({
+          id: appKey,
+          envelope: data
+        })) as unknown as IVerifiableCredential
+        return {
+          entries: [
+            ...entries,
+            { resourceId: appKey, cid: await cidFrom({ doc: vc }), vc }
+          ],
+          unreadable: []
+        }
+      } catch (err) {
+        log.warn('Cannot open the app key a connection names', {
+          appKey,
+          err
+        })
+      }
+    }
+    return { entries, unreadable: [appKey] }
+  }
+
+  /**
+   * Every Resource of the remote `app-connections` collection, opened, with
+   * the ids of those that would not open. One documents-feed read; an
+   * unknown-epoch Resource refreshes the descriptors once and reads again,
+   * as every other encrypted read does.
+   *
+   * @param options {object}
+   * @param options.remote {WASRemoteStore}
+   * @returns {Promise<{ entries: StoredAppKey[]; unreadable: string[] }>}
+   */
+  async #scanRemoteAppKeys({ remote }: { remote: WASRemoteStore }): Promise<{
+    entries: StoredAppKey[]
+    unreadable: string[]
+  }> {
+    return this.#readWithEpochRefresh({
+      collectionId: APP_CONNECTIONS_COLLECTION,
+      read: async () => {
+        const cipher = await this.#rosterCipher({
+          collectionId: APP_CONNECTIONS_COLLECTION
+        })
+        if (!cipher) {
+          throw new Error('The app-connections collection has no cipher.')
+        }
+        const documents = await remote.listSyncedDocuments({
+          logicalKey: 'appConnections'
+        })
+        const entries: StoredAppKey[] = []
+        const unreadable: string[] = []
+        let unknownEpoch = false
+        for (const { id, data } of documents) {
+          if (!isEncryptedEnvelope(data)) {
+            unreadable.push(id)
+            continue
+          }
+          try {
+            const vc = (await cipher.decrypt({
+              id,
+              envelope: data
+            })) as unknown as IVerifiableCredential
+            entries.push({
+              resourceId: id,
+              cid: await cidFrom({ doc: vc }),
+              vc
+            })
+          } catch (err) {
+            unknownEpoch ||= classifyDecryptFailure(err) === 'unknown-epoch'
+            unreadable.push(id)
+          }
+        }
+        return { value: { entries, unreadable }, unknownEpoch }
+      }
+    })
   }
 
   /**
@@ -2584,10 +3304,11 @@ export class StorageManager {
 
   /**
    * Best-effort decryption of a fetched storage-browser resource body: when
-   * the body is an EDV envelope from one of the encrypted standard
-   * collections and this session holds that collection's cipher (unlocked
-   * vault), returns the decrypted document. Returns undefined otherwise --
-   * plaintext bodies, non-standard collections, a locked vault, or an
+   * the body is an EDV envelope from one of the provision roster's encrypted
+   * collections (the `connections` directory among them) and this session
+   * holds that collection's cipher (unlocked vault), returns the decrypted
+   * document. An envelope from any other collection takes the app-collection
+   * path. Returns undefined otherwise -- plaintext bodies, a locked vault, or an
    * envelope that fails to decrypt (logged, not thrown), letting callers fall
    * back to showing the raw envelope. An `UnknownEpochError` (a rekey on
    * another client the cached descriptor has not caught up to) drives the same
@@ -2614,13 +3335,11 @@ export class StorageManager {
     if (!isEncryptedEnvelope(data)) {
       return undefined
     }
-    const entry = WALLET_STANDARD_COLLECTIONS.find(
-      collection => collection.id === collectionId && collection.encryption
-    )
-    if (!entry) {
-      // A non-standard collection: an App Connect app-provisioned collection the
-      // wallet decrypts as an ordinary recipient (vault KAK = recipient zero),
-      // descriptor-driven from the fetched Collection Description.
+    if (!ENCRYPTED_COLLECTION_IDS.includes(collectionId)) {
+      // Outside the provision roster: an App Connect app-provisioned
+      // collection the wallet decrypts as an ordinary recipient (vault KAK =
+      // recipient zero), descriptor-driven from the fetched Collection
+      // Description.
       return this.#decryptAppCollectionResource({
         collectionId,
         resourceId,
@@ -2631,7 +3350,7 @@ export class StorageManager {
       collectionId,
       read: async () => {
         // Re-fetch the cipher inside the read: a descriptor refresh rebuilds it.
-        const cipher = this.#ciphers?.[entry.key]
+        const cipher = await this.#rosterCipher({ collectionId })
         if (!cipher) {
           return { value: undefined, unknownEpoch: false }
         }
@@ -2643,6 +3362,35 @@ export class StorageManager {
         })
       }
     })
+  }
+
+  /**
+   * The current cipher of one encrypted collection of the provision roster:
+   * a synced collection's entry in the cipher map, or the `connections`
+   * directory's cipher, built from its current descriptor. `undefined` when
+   * there is none to read with (no cipher built, or the directory refused).
+   *
+   * @param options {object}
+   * @param options.collectionId {string}
+   * @returns {Promise<DocCipher | undefined>}
+   */
+  async #rosterCipher({
+    collectionId
+  }: {
+    collectionId: string
+  }): Promise<DocCipher | undefined> {
+    if (collectionId === CONNECTIONS_COLLECTION) {
+      try {
+        return (await this.#directoryAccess()).cipher
+      } catch (err) {
+        log.warn('Cannot open a connections directory resource', { err })
+        return undefined
+      }
+    }
+    const entry = WALLET_STANDARD_COLLECTIONS.find(
+      collection => collection.id === collectionId
+    )
+    return entry ? this.#ciphers?.[entry.key] : undefined
   }
 
   /**
@@ -2834,16 +3582,24 @@ export class StorageManager {
    *   which ends at the first epoch
    * @param [options.generator] {CollectionGenerator}   the application this
    *   collection is provisioned for, stamped as the collection's attribution
+   * @param [options.onEscrowLanded] {Function}   called once the grantee is a
+   *   recipient of the current epoch (its escrow landed, or it already was),
+   *   before the session's descriptor bookkeeping, so a caller rolling back a
+   *   later failure knows the grantee holds the decryption material. It also
+   *   fires when the escrow's response failed and a re-read finds the
+   *   grantee listed, before that failure is thrown
    * @returns {Promise<CollectionEncryption>}   the current descriptor
    */
   async provisionEncryptedCollection({
     collectionId,
     recipient,
-    generator
+    generator,
+    onEscrowLanded
   }: {
     collectionId: string
     recipient?: RecipientPublicKey
     generator?: CollectionGenerator
+    onEscrowLanded?: () => void
   }): Promise<CollectionEncryption> {
     const remote = this.#requireRemote('Provisioning an encrypted collection')
     await this.#refuseStandingPlaintextCollection({ remote, collectionId })
@@ -2853,7 +3609,11 @@ export class StorageManager {
       id: collectionId,
       generator
     })
-    return await this.#installFirstEpoch({ collectionId, recipient })
+    return await this.#installFirstEpoch({
+      collectionId,
+      recipient,
+      onEscrowLanded
+    })
   }
 
   /**
@@ -2867,14 +3627,18 @@ export class StorageManager {
    * @param options.collectionId {string}
    * @param [options.recipient] {RecipientPublicKey}   the grantee's identity
    *   public key-agreement key; omitted for an owner-only provision
+   * @param [options.onEscrowLanded] {Function}   see
+   *   {@link provisionEncryptedCollection}
    * @returns {Promise<CollectionEncryption>}   the current descriptor
    */
   async #installFirstEpoch({
     collectionId,
-    recipient
+    recipient,
+    onEscrowLanded
   }: {
     collectionId: string
     recipient?: RecipientPublicKey
+    onEscrowLanded?: () => void
   }): Promise<CollectionEncryption> {
     const { keyAgreementKey } = this.#vaultKeys
     const store = await this.#collectionStore({
@@ -2892,14 +3656,19 @@ export class StorageManager {
     ) {
       // No grantee (an owner-only provision), or the grantee already reads the
       // current epoch: nothing to do.
+      if (recipient !== undefined) {
+        onEscrowLanded?.()
+      }
       return current
     }
     // First grant, or a re-grant after a revoke rotated the epoch off the
     // grantee: escrow it into every epoch (adds are cheap -- no rotation).
-    const descriptor = await addRecipient({
+    const descriptor = await this.#addRecipientReporting({
+      collectionId,
       store,
       recipient,
-      owner: { keyAgreementKey }
+      owner: { keyAgreementKey },
+      onEscrowLanded
     })
 
     // Update the descriptor cache and the in-memory app-collection state, then drop
@@ -3146,7 +3915,13 @@ export class StorageManager {
           'session must not provision.'
       )
     }
-    await localStore.ensureUserCollections({ user })
+    // The local `connections` directory is opened only where it is the
+    // directory: a session with no remote Space. A session with one reads
+    // and writes the remote collection directly.
+    await localStore.ensureUserCollections({
+      user,
+      localDirectory: !this.#remoteStore
+    })
     if (this.#remoteStore) {
       // A pointer-promoted session signs with the did:webvh keyId from the
       // start; confirm the server agrees before any signed upsert runs, and
@@ -3724,9 +4499,9 @@ export class StorageManager {
   /**
    * Records (in the `wallet-activity` collection) a Revoke activity for an
    * agent grant: the user revoked the storage grants answered from an
-   * interaction-URL request. The recorded controller is the grantee did:key
-   * the Applications listing joins its agent rows on, so writing this
-   * activity is what takes the agent out of the listing.
+   * interaction-URL request. The recorded controller is the grantee did:key.
+   * The row is audit trail: the agent's `connections` entry, retired by the
+   * revocation, is what takes the agent out of the listing.
    *
    * @param options {object}
    * @param options.user {User}
@@ -3736,9 +4511,6 @@ export class StorageManager {
    * @param [options.actor] {{ name: string }}   the agent's self-declared name
    * @param [options.revoked] {number}   how many grants were revoked
    * @param [options.skipped] {number}   how many grants needed no revocation
-   * @param [options.created] {string}   the `created` stamp, when the caller
-   *   needs a specific one (the agent revocation floors it past the Grant it
-   *   retires, so a clock behind the granting client still hides the row)
    * @returns {Promise<void>}
    */
   async addHistoryAgentRevoke({
@@ -3748,8 +4520,7 @@ export class StorageManager {
     zcaps,
     actor,
     revoked,
-    skipped,
-    created
+    skipped
   }: {
     user: User
     origin: string
@@ -3758,7 +4529,6 @@ export class StorageManager {
     actor?: { name: string }
     revoked?: number
     skipped?: number
-    created?: string
   }) {
     await this.#recordActivity(id =>
       buildHistoryAgentRevoke({
@@ -3769,8 +4539,7 @@ export class StorageManager {
         actor,
         revoked,
         skipped,
-        id,
-        created
+        id
       })
     )
   }
@@ -3816,72 +4585,67 @@ export class StorageManager {
   }
 
   /**
-   * Revokes the storage grants a connected app received through App Connect.
-   * Scans the `Grant` activities for App Connect records matching the app's
-   * `origin`, collects the full delegated capabilities recorded on them that
-   * were delegated to the app's `subjectDid`, and revokes each one via the
-   * Space's root capability (the Space controller can revoke anything it
-   * delegated). The app never receives decryption key material, so unlike a
-   * collection un-share this rotates no epoch and touches no recipient roster.
+   * Revokes the storage grants a party's `connections` entry records: the
+   * capabilities wallet-core's `connectionGrants` read off the entry, so a
+   * grant delegated to another controller or targeting another Space is
+   * already gone. Each is revoked via the Space's root capability (the Space
+   * controller can revoke anything it delegated). There is no app key or
+   * roster to touch here; the epoch rotation off the party's recipient key is
+   * the separate {@link revokeCollectionRecipients} stage.
    *
-   * Per capability, `#revokeZcaps`'s contract: only a grant already past
-   * its own `expires` by more than the revocation clock-skew margin is
-   * skipped without a POST. Every other unexpired grant is POSTed. The
-   * server's `AlreadyRevokedError` counts as revoked. A plain refusal --
-   * a `ValidationError`, or the server's masked `NotFoundError` on a grant
+   * Per capability, `#revokeZcaps`'s contract: a grant already past its own
+   * `expires` by more than the revocation clock-skew margin is skipped
+   * without a POST. Every other grant is POSTed. The server's
+   * `AlreadyRevokedError` counts as revoked. A plain refusal -- a
+   * `ValidationError`, or the server's masked `NotFoundError` on a grant
    * whose chain no longer verifies -- counts as skipped when the verified
    * account document explains it (expired, orphaned, or chained under a
    * parent delegation that has rotted); any other failure is thrown after
-   * every POST settles, so the caller keeps the credential and retries rather
-   * than recording a revocation the server never accepted. Legacy records
-   * that stored only a display summary (no full zcap) are nothing to revoke
-   * -- expiry is their backstop -- and count as skipped. A capability the
-   * rotation stage already revoked (`revokedByRotation`) is counted as
-   * revoked without a second POST. `withdrawn` counts only the POSTs that
-   * landed on this call:
-   * a grant answered `AlreadyRevokedError`, or revoked by the rotation
-   * stage, counts in `revoked` and not in `withdrawn`. A no-op returning
-   * zero counts when no remote store is configured.
+   * every POST settles, so the caller keeps the entry and retries rather than
+   * retiring a party the server never revoked. A capability the rotation
+   * stage already revoked (`revokedByRotation`) is counted as revoked without
+   * a second POST. `withdrawn` counts only the POSTs that landed on this
+   * call. A no-op returning zero counts when no remote store is configured.
    *
    * @param options {object}
-   * @param options.origin {string}   the connected app's origin
-   * @param options.subjectDid {string}   the app-key credential's subject DID,
-   *   the controller the grants were delegated to
-   * @param [options.items] {HistoryItems}   a
-   *   pre-fetched history scan, when the caller already holds one
+   * @param options.grants {ConnectionGrant[]}   the party's grants, as
+   *   `connectionGrants` read them off its entry
    * @param [options.revokedByRotation] {string[]}   the capability ids the
    *   rotation stage already revoked on its pull axis: counted as revoked
    *   and not POSTed again
-   * @returns {Promise<{ revoked: number; withdrawn: number; skipped: number }>}
+   * @returns {Promise<{ revoked: number; withdrawn: number; skipped: number;
+   *   revokedIds: string[] }>}
    */
-  async revokeAppGrants({
-    origin,
-    subjectDid,
-    items,
+  async revokeConnectionGrants({
+    grants,
     revokedByRotation
   }: {
-    origin: string
-    subjectDid: string
-    items?: HistoryItems
+    grants: ConnectionGrant[]
     revokedByRotation?: readonly string[]
-  }): Promise<{ revoked: number; withdrawn: number; skipped: number }> {
-    const remote = this.#remoteStore
-    if (!remote) {
-      return { revoked: 0, withdrawn: 0, skipped: 0 }
+  }): Promise<{
+    revoked: number
+    withdrawn: number
+    skipped: number
+    revokedIds: string[]
+  }> {
+    if (!this.#remoteStore) {
+      return { revoked: 0, withdrawn: 0, skipped: 0, revokedIds: [] }
     }
-    // Scan the history once and pass it through, so the grant lookup does not
-    // re-await and re-scan it. A caller that already holds the history (the
-    // revoke orchestration, which drives several of these) passes it in.
-    const { zcaps, skipped: nonRevocable } = this.#recordedGrantZcaps({
-      matches: object => object.origin === origin && !!object.appConnect,
-      controller: subjectDid,
-      items: items ?? (await this.listHistoryItems())
+    // The one expiry reading every revocation path shares: the zcap's own
+    // `expires`, and an absent or unparseable one is NOT expired.
+    const now = Date.now()
+    const live = grants.filter(
+      grant => !delegationExpired({ zcap: grant.zcap as unknown as IZcap, now })
+    )
+    const outcome = await this.#revokeZcaps({
+      zcaps: live.map(grant => grant.zcap as unknown as IDelegatedZcap),
+      revokedByRotation
     })
-    const outcome = await this.#revokeZcaps({ zcaps, revokedByRotation })
     return {
       revoked: outcome.revoked,
       withdrawn: outcome.withdrawn,
-      skipped: outcome.skipped + nonRevocable
+      skipped: outcome.skipped + (grants.length - live.length),
+      revokedIds: outcome.revokedIds
     }
   }
 
@@ -4053,99 +4817,29 @@ export class StorageManager {
   }
 
   /**
-   * Revokes the storage grants recorded for a connected agent: the
-   * capabilities delegated to `controller` on the interaction-URL request
-   * page's Grant activities. There is no app key to delete; the epoch
-   * rotation off the agent's recipient key is the separate
-   * {@link revokeAgentCollectionRecipients} stage. Per capability this is `#revokeZcaps`'s
-   * contract: a grant the verified document reads as dead is skipped without
-   * a POST, `AlreadyRevokedError` counts as revoked, and any other failure is
-   * thrown after every POST settles, so the caller records no Revoke and the
-   * row stays listed for a retry. A capability the rotation stage already
-   * revoked (`revokedByRotation`) is counted as revoked and named in
-   * `revokedIds` without a second POST. `withdrawn` counts only the POSTs
-   * that landed on this call.
-   *
-   * @param options {object}
-   * @param options.controller {string}   the grantee did:key
-   * @param [options.items] {HistoryItems}   a
-   *   pre-fetched history scan, when the caller already holds one
-   * @param [options.revokedByRotation] {string[]}   the capability ids the
-   *   rotation stage already revoked on its pull axis: counted as revoked
-   *   and not POSTed again
-   * @returns {Promise<{ revoked: number; withdrawn: number; skipped: number;
-   *   unrevocable: number; revokedIds: string[] }>}   `unrevocable` counts
-   *   the grantee's recorded grants with no capability to POST, which end
-   *   only at their own expiry
-   */
-  async revokeAgentGrants({
-    controller,
-    items,
-    revokedByRotation
-  }: {
-    controller: string
-    items?: HistoryItems
-    revokedByRotation?: readonly string[]
-  }): Promise<{
-    revoked: number
-    withdrawn: number
-    skipped: number
-    unrevocable: number
-    revokedIds: string[]
-  }> {
-    if (!this.#remoteStore) {
-      return {
-        revoked: 0,
-        withdrawn: 0,
-        skipped: 0,
-        unrevocable: 0,
-        revokedIds: []
-      }
-    }
-    const {
-      zcaps,
-      skipped: nonRevocable,
-      unrevocable
-    } = this.#recordedGrantZcaps({
-      matches: isAgentActivityObject,
-      controller,
-      items: items ?? (await this.listHistoryItems())
-    })
-    const outcome = await this.#revokeZcaps({ zcaps, revokedByRotation })
-    return {
-      revoked: outcome.revoked,
-      withdrawn: outcome.withdrawn,
-      skipped: outcome.skipped + nonRevocable,
-      unrevocable,
-      revokedIds: outcome.revokedIds
-    }
-  }
-
-  /**
-   * The key-rotation half of revoking a connected app's access: for each
-   * app-provisioned encrypted collection the app was granted, removes the
-   * app's own recipient entry from the current epoch in ONE was-client
-   * `removeRecipient` call (which rotates the epoch FIRST, then runs the pull
-   * axis -- indivisible), so a revoked app cannot decrypt future writes. The
-   * collection gains one epoch and its pull-axis zcaps are revoked once. The
-   * owner (the vault KAK) stays recipient zero, and so does any other grantee
-   * co-admitted to the same collection: the retiring kid is derived from this
-   * app's subject DID (`x25519RecipientFromDidKey`), the same derivation
-   * provisioning writes the roster entry with. An app-key subject is always a
-   * seed-derived did:key, so a subject the derivation refuses is a malformed
-   * caller, and it throws rather than reporting an empty rotation. Removal
-   * needs no seed (the roster kid is in the descriptor), so it works even for
-   * an orphaned state.
+   * The key-rotation half of revoking a party's access (an app, an agent, or
+   * a wallet client whose entry carries grants): for each encrypted
+   * collection the party may still be a recipient of, removes its recipient
+   * entry from the current epoch in ONE was-client `removeRecipient` call
+   * (which rotates the epoch FIRST, then runs the pull axis -- indivisible),
+   * so a revoked party cannot decrypt future writes. The collection gains one
+   * epoch and its pull-axis zcaps are revoked once. The owner (the vault KAK)
+   * stays recipient zero, and so does any other grantee the directory admits
+   * to the same collection: the retiring kid is derived from the party's
+   * did:key (`x25519RecipientFromDidKey`), the same derivation provisioning
+   * writes the roster entry with. A DID the derivation refuses was never
+   * escrowed, so it rotates nothing. Removal needs no seed (the roster kid is
+   * in the descriptor), so it works even for an orphaned state.
    *
    * The candidate collections are the union of two sources, because a grant
    * expires on its own while a recipient entry does not. The first is the
-   * Space's collection listing: every collection whose Collection Metadata
-   * names this app's subject DID as its `generator.id`, the attribution stamped
-   * at App Connect provisioning. The second is the recorded grant zcaps'
-   * `invocationTarget`s, expired grants included, which reaches a collection
-   * the app was admitted to but did not provision. Standard / protected
-   * collections are excluded from both, and so is a collection the listing
-   * reports public, which carries no key-epoch roster. The unexpired grants still supply the
+   * party's grants as its `connections` entry records them, expired grants
+   * included: every collection of this Space a grant targets, a protected one
+   * (a share's) included. The second is the Space's collection listing: every
+   * collection whose Collection Metadata names the party's DID as its
+   * `generator.id`, the attribution stamped at provisioning, protected
+   * collections excluded. A collection the listing reports public carries no
+   * key-epoch roster and is no candidate. The unexpired grants supply the
    * zcaps the rotation revokes on its pull axis; a candidate reached only
    * through the listing or through an expired grant rotates with nothing to
    * revoke.
@@ -4161,164 +4855,65 @@ export class StorageManager {
    * rotated, this session adopts the rotated descriptor, and the ids the
    * pull did confirm ride `revokedIds`.
    *
-   * Only candidates whose current-epoch roster still carries the app's own
-   * entry are rotated, and the collections rotate in parallel. Best-effort per
-   * collection: a failure is logged, counted in `failed`, and the rest
+   * Only candidates whose current-epoch roster still carries the party's own
+   * entry are rotated, and the collections rotate in parallel. Best-effort
+   * per collection: a failure is logged, counted in `failed`, and the rest
    * proceed, so one stuck collection does not strand the whole revocation. A
    * collection listing that cannot be read counts as one failure too, since
-   * the caller cannot then tell a rotated app from one still holding a
-   * recipient entry; a caller that supplies its own listing cannot hit that
-   * failure. A no-op (zero counts) without a remote store. The honest limitation stands: ciphertext the app already fetched
-   * stays readable to it.
+   * the caller cannot then tell a rotated party from one still holding a
+   * recipient entry. A directory the admitted-recipient resolver cannot trust
+   * fails every rotation before it wraps the fresh epoch
+   * ({@link #directoryAdmissions}). A no-op (zero counts) without a remote
+   * store. The honest limitation stands: ciphertext the party already
+   * fetched stays readable to it.
    *
    * @param options {object}
-   * @param options.origin {string}   the connected app's origin
-   * @param options.subjectDid {string}   the app-key credential's subject DID
-   * @param [options.items] {HistoryItems}   a pre-fetched history scan, when
-   *   the caller already holds one
+   * @param options.did {string}   the party's DID, its entry's `id`
+   * @param options.grants {ConnectionGrant[]}   the party's grants, as
+   *   `connectionGrants` read them off its entry
    * @param [options.collections] {Array<StorageCollection>}   a pre-fetched
    *   Space collection listing, when the caller already holds one
+   * @param [options.directory] {object}   the directory listing the caller
+   *   read the party's grants from, as {@link readConnectionsListing} returns
+   *   it; the resolver's admissions come from it, so they and the grants are
+   *   one read
    * @returns {Promise<RecipientRotationOutcome>}
    */
-  async revokeAppCollectionRecipients({
-    origin,
-    subjectDid,
-    items,
-    collections
+  async revokeCollectionRecipients({
+    did,
+    grants,
+    collections,
+    directory
   }: {
-    origin: string
-    subjectDid: string
-    items?: HistoryItems
-    collections?: Array<StorageCollection>
+    did: string
+    grants: ConnectionGrant[]
+    collections?: Array<
+      Pick<StorageCollection, 'id' | 'isPublic' | 'generator'>
+    >
+    directory?: { listing: ConnectionsListing; spaceUrl?: string }
   }): Promise<RecipientRotationOutcome> {
-    if (!this.#remoteStore) {
-      return { collections: 0, rotated: 0, failed: 0, revokedIds: [] }
-    }
-    return this.#rotateCollectionsOffGrantee({
-      matches: object => object.origin === origin && !!object.appConnect,
-      controller: subjectDid,
-      granteeKid: x25519RecipientFromDidKey({ did: subjectDid }).id,
-      items,
-      // The collections provisioned for this app, whatever its grants now
-      // say. This is the source that survives every grant expiring.
-      listing: {
-        read: async () => collections ?? (await this.listCollections()),
-        attributedTo: subjectDid
-      }
-    })
-  }
-
-  /**
-   * The key-rotation half of revoking a connected agent's access, with the
-   * same contract as {@link revokeAppCollectionRecipients}: each private
-   * collection the agent's recorded grants target, expired grants included,
-   * is rotated off the agent's recipient key in one `removeRecipient` call
-   * that also revokes the unexpired pull-axis grants. Every listed private
-   * collection whose `generator.id` is the agent's did:key is a candidate
-   * beside the recorded grants' targets, so a collection whose Grant activity
-   * is gone is still rotated. The retiring kid is derived from the agent's
-   * `did:key` controller, as provisioning derived it, so the revoke needs
-   * nothing the agent holds. A controller the derivation refuses was never
-   * escrowed, so it rotates nothing. The Space's collection listing is read
-   * once, for those stamps and to leave out the targets it reports public. A
-   * listing that cannot be read counts as one failure, as on the app path,
-   * so the revocation throws and the row stays for a retry.
-   *
-   * @param options {object}
-   * @param options.controller {string}   the grantee did:key
-   * @param [options.items] {HistoryItems}   a pre-fetched history scan, when
-   *   the caller already holds one
-   * @returns {Promise<RecipientRotationOutcome>}
-   */
-  async revokeAgentCollectionRecipients({
-    controller,
-    items
-  }: {
-    controller: string
-    items?: HistoryItems
-  }): Promise<RecipientRotationOutcome> {
-    const granteeKid = granteeRecipientId(controller)
+    const granteeKid = granteeRecipientId(did)
     if (!this.#remoteStore || !granteeKid) {
       return { collections: 0, rotated: 0, failed: 0, revokedIds: [] }
     }
-    return this.#rotateCollectionsOffGrantee({
-      matches: isAgentActivityObject,
-      controller,
-      granteeKid,
-      items,
-      // The collections provisioned for this agent, stamped with its did:key,
-      // whether or not a Grant activity still records the grant.
-      listing: { read: () => this.listCollections(), attributedTo: controller }
-    })
-  }
-
-  /**
-   * The shared body of the two recipient revocations: collects the candidate
-   * collections for one grantee, then rotates each whose current epoch still
-   * carries the grantee's roster kid (see
-   * {@link revokeAppCollectionRecipients} for the contract). `matches` picks
-   * the grantee's Grant activities. `listing.read` reads the Space's
-   * collection listing, read once only when there is a candidate to filter
-   * or `attributedTo` names a grantee. A collection the listing reports
-   * public is no candidate, since a public collection carries no key-epoch
-   * roster, and that saves a governed-log read per public target. With
-   * `attributedTo`, every listed collection whose `generator.id` is that DID is
-   * a further candidate. A listing that cannot be read is logged and counted
-   * as one failure, with or without `attributedTo`: the public targets can
-   * no longer be told apart, and a public target's governed-log read throws.
-   * The remaining candidates are still attempted, so the retry has less
-   * left to do.
-   *
-   * @param options {object}
-   * @param options.matches {Function}   the Grant-object predicate
-   * @param options.controller {string}   the grantee did:key
-   * @param options.granteeKid {string}   the grantee's roster kid
-   * @param [options.items] {HistoryItems}
-   * @param options.listing {object}
-   * @param options.listing.read {Function}   reads the collection listing
-   * @param [options.listing.attributedTo] {string}   the DID whose
-   *   `generator`-attributed collections are candidates too
-   * @returns {Promise<RecipientRotationOutcome>}
-   */
-  async #rotateCollectionsOffGrantee({
-    matches,
-    controller,
-    granteeKid,
-    items,
-    listing
-  }: {
-    matches: (object: {
-      origin?: string
-      appConnect?: unknown
-      zcaps?: unknown
-    }) => boolean
-    controller: string
-    granteeKid: string
-    items?: HistoryItems
-    listing: {
-      read: () => Promise<
-        Array<Pick<StorageCollection, 'id' | 'isPublic' | 'generator'>>
-      >
-      attributedTo?: string
-    }
-  }): Promise<RecipientRotationOutcome> {
-    const history = items ?? (await this.listHistoryItems())
-    const { zcaps, expired } = this.#recordedGrantZcaps({
-      matches,
-      controller,
-      items: history
-    })
 
     // Group the pull-axis zcaps by the collection they target. Only the
-    // unexpired ones are worth a revocation POST, so they alone land here.
+    // unexpired ones are worth a revocation POST, so they alone land in the
+    // groups; an expired grant still names a candidate, since the party may
+    // remain a recipient of its collection.
+    const now = Date.now()
     const byCollection = new Map<string, IDelegatedZcap[]>()
     const candidates = new Set<string>()
-    for (const zcap of zcaps) {
-      const collectionId = this.#rotatableCollectionOf(zcap.invocationTarget)
+    for (const grant of grants) {
+      const collectionId = this.#spaceCollectionOf(grant.target)
       if (!collectionId) {
         continue
       }
       candidates.add(collectionId)
+      if (delegationExpired({ zcap: grant.zcap as unknown as IZcap, now })) {
+        continue
+      }
+      const zcap = grant.zcap as unknown as IDelegatedZcap
       const existing = byCollection.get(collectionId)
       if (existing) {
         existing.push(zcap)
@@ -4326,56 +4921,45 @@ export class StorageManager {
         byCollection.set(collectionId, [zcap])
       }
     }
-    // An expired grant names a collection the grantee may still be a
-    // recipient of; it is a candidate to rotate, with no capability left to
-    // revoke.
-    for (const zcap of expired) {
-      const collectionId = this.#rotatableCollectionOf(zcap.invocationTarget)
-      if (collectionId) {
-        candidates.add(collectionId)
-      }
-    }
 
     let listingFailed = false
-    if (candidates.size > 0 || listing.attributedTo) {
-      try {
-        const listed = await listing.read()
-        for (const collection of listed) {
-          if (
-            listing.attributedTo &&
-            collection.generator?.id === listing.attributedTo &&
-            !isProtectedCollection(collection.id)
-          ) {
-            candidates.add(collection.id)
-          }
+    try {
+      const listed = collections ?? (await this.listCollections())
+      for (const collection of listed) {
+        if (
+          collection.generator?.id === did &&
+          !isProtectedCollection(collection.id)
+        ) {
+          candidates.add(collection.id)
         }
-        for (const collection of listed) {
-          if (collection.isPublic) {
-            candidates.delete(collection.id)
-          }
-        }
-      } catch (err) {
-        // Without the listing a public target cannot be told apart, and an
-        // app's attributed collections cannot be found, so the grantee may
-        // still hold a recipient entry somewhere: one failure either way.
-        listingFailed = true
-        log.warn(
-          'Could not list the collections of the grantee being revoked',
-          { controller, err }
-        )
       }
+      for (const collection of listed) {
+        if (collection.isPublic) {
+          candidates.delete(collection.id)
+        }
+      }
+    } catch (err) {
+      // Without the listing a public target cannot be told apart, and the
+      // party's attributed collections cannot be found, so it may still hold
+      // a recipient entry somewhere: one failure either way.
+      listingFailed = true
+      log.warn('Could not list the collections of the party being revoked', {
+        did,
+        err
+      })
     }
 
     // The verified document's reading, read once for every collection's pull
     // and only when some pull has a capability to POST.
     let signerCheck: Promise<AccountSignerCheck | undefined> | undefined
     const readSignerCheck = () => (signerCheck ??= this.#readSignerCheck())
-    // The account's user key generations, likewise read at most once.
+    // The account's user key generations and the directory's admissions,
+    // likewise read at most once.
     const readGenerations = this.#userKeyGenerationsReader()
+    const readAdmissions = this.#directoryAdmissionsReader({ directory })
 
     // Each collection's rotation is independent of the others, so they run
-    // together; the outcomes are summed below into the same counts a
-    // sequential pass produced.
+    // together; the outcomes are summed below.
     const outcomes = await Promise.all(
       [...candidates].map(async collectionId => {
         const revoke = byCollection.get(collectionId) ?? []
@@ -4392,22 +4976,19 @@ export class StorageManager {
             collectionId,
             recipientId: granteeKid,
             revoke,
-            items: history,
+            readAdmissions,
             readSignerCheck,
             readGenerations,
             action: 'Revoking a collection recipient'
           })
           // The rotation is durable whatever the pull did, so the session
           // adopts it before the pull's outcome is weighed.
-          await this.#descriptorCache?.writeDescriptor({
+          await this.#adoptRotatedDescriptor({
             collectionId,
             descriptor: rotation.descriptor
           })
-          this.#appDescriptors[collectionId] = rotation.descriptor
-          delete this.#appCiphers[collectionId]
-          this.#refreshPolicy.reset({ collectionId })
           if (rotation.failed.length > 0) {
-            // The rotation landed, so the grantee is off this roster. The
+            // The rotation landed, so the party is off this roster. The
             // capabilities the pull could not revoke are not in
             // `revokedIds`, so the grant stage POSTs them again and throws
             // if they still fail. The collection counts as rotated.
@@ -4425,10 +5006,7 @@ export class StorageManager {
         } catch (err) {
           log.warn(
             'Could not rotate the epoch for a granted collection during revocation',
-            {
-              collectionId,
-              err
-            }
+            { collectionId, err }
           )
           return { status: 'failed' as const, revokedIds: [] }
         }
@@ -4445,12 +5023,207 @@ export class StorageManager {
   }
 
   /**
+   * Adopts a collection descriptor a revocation's rotation just produced. A
+   * collection of the provision roster rebuilds its cipher the way a share
+   * does ({@link #adoptCollectionDescriptor}); any other collection (one
+   * provisioned for a requester) drops its lazily built cipher, so the next
+   * read builds it from the rotated descriptor.
+   *
+   * @param options {object}
+   * @param options.collectionId {string}
+   * @param options.descriptor {CollectionEncryption}
+   * @returns {Promise<void>}
+   */
+  async #adoptRotatedDescriptor({
+    collectionId,
+    descriptor
+  }: {
+    collectionId: string
+    descriptor: CollectionEncryption
+  }): Promise<void> {
+    if (ENCRYPTED_COLLECTION_IDS.includes(collectionId)) {
+      const { keyAgreementKey, keyResolver } = this.#vaultKeys
+      await this.#adoptCollectionDescriptor({
+        collectionId,
+        descriptor,
+        vaultKeys: { keyAgreementKey, keyResolver }
+      })
+      return
+    }
+    await this.#descriptorCache?.writeDescriptor({ collectionId, descriptor })
+    this.#appDescriptors[collectionId] = descriptor
+    delete this.#appCiphers[collectionId]
+    this.#refreshPolicy.reset({ collectionId })
+  }
+
+  /**
+   * The session's `connections` directory, read once: every entry at its
+   * own resource id, with what the read could not open or parse, and this
+   * Space's container URL the grant checks read (absent on a session with no
+   * remote Space). Throws when the directory is refused or absent, and when
+   * the listing comes back `null`: a caller deciding anything about a party
+   * must not read a missing directory as an empty one.
+   *
+   * @returns {Promise<{ listing: ConnectionsListing; spaceUrl?: string }>}
+   */
+  async readConnectionsListing(): Promise<{
+    listing: ConnectionsListing
+    spaceUrl?: string
+  }> {
+    const { store, hmacKey, spaceUrl } = await this.connectionsDirectory()
+    const listing = await readConnections({ store, hmacKey })
+    if (!listing) {
+      throw new Error(
+        `The "${CONNECTIONS_COLLECTION}" collection could not be listed.`
+      )
+    }
+    return { listing, ...(spaceUrl !== undefined ? { spaceUrl } : {}) }
+  }
+
+  /**
+   * Retires a party's `connections` entry once a revocation has handled its
+   * grants: wallet-core's `retireConnection`, which empties `grants`, drops
+   * `appKey`, and stamps `retired`, keeping the names so a departed party
+   * keeps resolving. Throws when the entry's re-read finds a grant outside
+   * `handledZcapIds` (a consent merged it since the revocation read the
+   * entry), so the caller's row stays listed and a retry re-runs the
+   * revocation. An absent entry writes nothing.
+   *
+   * On a session with no remote Space no grant is ever recorded (a consent
+   * there delegates nothing), so the grant check reads against a container
+   * URL no capability sits under, and the retirement empties whatever the
+   * entry holds.
+   *
+   * @param options {object}
+   * @param options.did {string}   the party's DID
+   * @param options.handledZcapIds {Iterable<string>}   the capability ids
+   *   the revocation handled
+   * @returns {Promise<void>}
+   */
+  async retireConnectionEntry({
+    did,
+    handledZcapIds
+  }: {
+    did: string
+    handledZcapIds: Iterable<string>
+  }): Promise<void> {
+    const { store, hmacKey, spaceUrl } = await this.connectionsDirectory()
+    await retireConnection({
+      store,
+      hmacKey,
+      did,
+      handledZcapIds,
+      ...(spaceUrl !== undefined && { spaceUrl })
+    })
+  }
+
+  /**
+   * A reader of the directory's admissions that reads the directory at most
+   * once, on its first call, so the rotations of one operation share one
+   * read. A read that throws is not kept, so each later call reads again.
+   * A caller already holding a listing hands it in, and no read is made.
+   *
+   * @param [options] {object}
+   * @param [options.directory] {object}   a listing the caller already read,
+   *   as {@link readConnectionsListing} returns it
+   * @returns {Function}   `() => Promise<Map<string, Set<string>>>`, see
+   *   {@link #directoryAdmissions}
+   */
+  #directoryAdmissionsReader({
+    directory
+  }: {
+    directory?: { listing: ConnectionsListing; spaceUrl?: string }
+  } = {}): () => Promise<Map<string, Set<string>>> {
+    let admissions: Promise<Map<string, Set<string>>> | undefined
+    return () => {
+      admissions ??= (async () =>
+        this.#directoryAdmissions(
+          directory ?? (await this.readConnectionsListing())
+        ))().catch((err: unknown) => {
+        admissions = undefined
+        throw err
+      })
+      return admissions
+    }
+  }
+
+  /**
+   * The recipient kids the `connections` directory admits, by collection
+   * id: for every unretired entry, the kid each of its grants' controllers
+   * derives, under the collection the grant targets, expired grants
+   * included, since a recipient entry outlives its grant. No
+   * protected-collection filter applies, so a share reader of
+   * `private-credentials` or `contacts` is admitted there. The grants are
+   * read through wallet-core's `connectionGrants`, so a grant delegated to
+   * another party than the entry's `id`, or targeting another Space, admits
+   * no one. A body that sits at another id than its own derives to is
+   * ignored, as by every reader.
+   *
+   * Fails closed, throwing, when the directory cannot vouch for every kid it
+   * may hold: a Resource it could not decrypt, a body at its own id it
+   * cannot parse, or an entry whose `version` is above this build's. Any of
+   * them may stand for a party this read cannot see. The read itself
+   * ({@link readConnectionsListing}) throws on a refused or absent directory
+   * and on a failed listing, since reading the directory as empty would evict
+   * every co-admitted party at the rotation.
+   *
+   * @param options {object}   the listing, as
+   *   {@link readConnectionsListing} returns it
+   * @param options.listing {ConnectionsListing}
+   * @param [options.spaceUrl] {string}
+   * @returns {Map<string, Set<string>>}
+   */
+  #directoryAdmissions({
+    listing,
+    spaceUrl
+  }: {
+    listing: ConnectionsListing
+    spaceUrl?: string
+  }): Map<string, Set<string>> {
+    if (spaceUrl === undefined) {
+      throw new Error('The connections directory has no Space to admit to.')
+    }
+    if (listing.unreadable.length > 0 || listing.unparseable.length > 0) {
+      throw new Error(
+        'The connections directory holds entries this session cannot read; ' +
+          'no recipient set is trusted until they read.'
+      )
+    }
+    const admitted = new Map<string, Set<string>>()
+    for (const { entry } of listing.entries) {
+      if (!isWritableConnectionEntry(entry)) {
+        throw new Error(
+          'The connections directory holds an entry from a newer build; no ' +
+            'recipient set is trusted until this build updates.'
+        )
+      }
+      if (entry.retired !== undefined) {
+        continue
+      }
+      for (const grant of connectionGrants({ entry, spaceUrl })) {
+        const collectionId = this.#spaceCollectionOf(grant.target)
+        const kid = grantRecipientKid({ grant })
+        if (!collectionId || kid === undefined) {
+          continue
+        }
+        const kids = admitted.get(collectionId)
+        if (kids) {
+          kids.add(kid)
+        } else {
+          admitted.set(collectionId, new Set([kid]))
+        }
+      }
+    }
+    return admitted
+  }
+
+  /**
    * Rotates one collection's current key epoch off a recipient through
    * was-client's `removeRecipient`, with the pull axis POSTing each recorded
    * capability under {@link #postRevocations}'s policy in place of
    * was-client's default revoke, which reads every `ValidationError` as
-   * already revoked. The shared step of an unshare and of the app and agent
-   * recipient revocations, so all three pull under one policy.
+   * already revoked. The shared step of an unshare and of a party's
+   * recipient revocation, so both pull under one policy.
    *
    * The pull reports rather than throws, so `removeRecipient` returns the
    * rotated descriptor whenever the rotation landed, and the caller adopts
@@ -4460,14 +5233,16 @@ export class StorageManager {
    *
    * The fresh epoch is wrapped only to the recipients
    * {@link #admittedRecipientResolver} vouches for, so a roster entry this
-   * wallet has no record of admitting is left out of it.
+   * wallet has no record of admitting is left out of it. The directory's
+   * admissions are read before the rotation starts, so a directory the
+   * resolver cannot trust throws here with nothing rotated.
    *
    * @param options {object}
    * @param options.collectionId {string}
    * @param options.recipientId {string}   the retiring recipient's kid
    * @param options.revoke {IDelegatedZcap[]}   the pull-axis capabilities
-   * @param options.items {HistoryItems}   the pre-fetched history, read for
-   *   the recipients this wallet admitted to the collection
+   * @param options.readAdmissions {Function}   reads the directory's
+   *   admissions, from {@link #directoryAdmissionsReader}
    * @param options.readGenerations {Function}   reads the account's user
    *   key generation kids, from {@link #userKeyGenerationsReader}
    * @param options.readSignerCheck {Function}   reads the verified
@@ -4481,7 +5256,7 @@ export class StorageManager {
     collectionId,
     recipientId,
     revoke,
-    items,
+    readAdmissions,
     readSignerCheck,
     readGenerations,
     action
@@ -4489,7 +5264,7 @@ export class StorageManager {
     collectionId: string
     recipientId: string
     revoke: IDelegatedZcap[]
-    items: HistoryItems
+    readAdmissions: () => Promise<Map<string, Set<string>>>
     readSignerCheck: () => Promise<AccountSignerCheck | undefined>
     readGenerations: () => Promise<Set<string>>
     action: string
@@ -4505,8 +5280,7 @@ export class StorageManager {
       failed: Array<{ id: string; err: unknown }>
     } = { revokedIds: [], skipped: [], failed: [] }
     const admission = this.#admittedRecipientResolver({
-      collectionId,
-      items,
+      admitted: (await readAdmissions()).get(collectionId) ?? new Set(),
       readGenerations
     })
     const descriptor = await removeRecipient({
@@ -4533,18 +5307,11 @@ export class StorageManager {
         }
       }
     })
-    // The admitted set came from a history read that skipped Resources, so a
-    // reader whose one admission sits in such a Resource was left out. The
-    // rotation still lands, since a revocation must not wait on history.
-    if (items.unreadable > 0) {
-      log.warn(
-        'Rotated a collection key from a history with unreadable resources; a reader admitted only there was left out',
-        {
-          collectionId,
-          unreadableHistory: items.unreadable,
-          dropped: [...admission.dropped]
-        }
-      )
+    if (admission.dropped.size > 0) {
+      log.info('Rotated a collection key without the kids no record admits', {
+        collectionId,
+        dropped: [...admission.dropped]
+      })
     }
     return { descriptor, ...posts }
   }
@@ -4569,13 +5336,13 @@ export class StorageManager {
    * was-client's `removeRecipient`. It vouches only for the recipients this
    * wallet admitted to the collection, and resolves `null` for any other kid
    * the roster lists, so a junk entry receives no wrap of the fresh epoch
-   * key. The admitted set is the owner (this session's vault KAK), every
-   * grantee a recorded Grant activity targeting the collection was delegated
-   * to, expired grants included since a recipient entry outlives its grant,
-   * and every reader a recorded `CollectionShare` names for it, unless a
-   * `CollectionUnshare` for the pair supersedes that share
-   * ({@link #shareReaders}). The history is sealed under the account's own key, so the host can withhold
-   * an admission from it but cannot add one.
+   * key. The admitted set is the owner (this session's vault KAK) and the
+   * kids the `connections` directory admits to the collection
+   * ({@link #directoryAdmissions}): every grantee of a grant on an unretired
+   * entry, expired grants included. The directory is sealed under the
+   * account's own key; a host that withholds or rolls back an entry can keep
+   * a kid out, and can keep one in only while the current epoch still lists
+   * it.
    *
    * The account's earlier user key generations are admitted too. A user key
    * rotation torn before this collection's re-epoch leaves a generation
@@ -4585,8 +5352,8 @@ export class StorageManager {
    * unadmitted.
    *
    * @param options {object}
-   * @param options.collectionId {string}
-   * @param options.items {HistoryItems}   the pre-fetched history
+   * @param options.admitted {Set<string>}   the kids the directory admits to
+   *   the collection
    * @param options.readGenerations {Function}   reads the account's user key
    *   generation kids, from {@link #userKeyGenerationsReader}
    * @returns {{ resolve: Function, dropped: Set<string> }}   `resolve` maps a
@@ -4594,12 +5361,10 @@ export class StorageManager {
    *   did not admit, and records that kid in `dropped`
    */
   #admittedRecipientResolver({
-    collectionId,
-    items,
+    admitted,
     readGenerations
   }: {
-    collectionId: string
-    items: HistoryItems
+    admitted: Set<string>
     readGenerations: () => Promise<Set<string>>
   }): {
     resolve: (kid: string) => Promise<RecipientPublicKey | null>
@@ -4608,34 +5373,6 @@ export class StorageManager {
     const owner = ownerRecipient({
       keyAgreementKey: this.#vaultKeys.keyAgreementKey
     })
-    const admitted = StorageManager.#shareReaders({ collectionId, items })
-    for (const { doc } of items.entries) {
-      if (!doc.type?.includes(ACTIVITY_TYPE.Grant)) {
-        continue
-      }
-      const zcaps = (doc.object as { zcaps?: unknown } | undefined)?.zcaps
-      if (!Array.isArray(zcaps)) {
-        continue
-      }
-      for (const entry of zcaps) {
-        const zcap = ((entry ?? {}) as { zcap?: IZcap }).zcap
-        if (
-          !zcap?.invocationTarget ||
-          this.#rotatableCollectionOf(zcap.invocationTarget) !== collectionId
-        ) {
-          continue
-        }
-        const controllers = Array.isArray(zcap.controller)
-          ? zcap.controller
-          : [zcap.controller]
-        for (const controller of controllers) {
-          const kid = controller && granteeRecipientId(controller)
-          if (kid) {
-            admitted.add(kid)
-          }
-        }
-      }
-    }
     const dropped = new Set<string>()
     return {
       dropped,
@@ -4776,19 +5513,31 @@ export class StorageManager {
    * @returns {string | undefined}
    */
   #rotatableCollectionOf(invocationTarget: string): string | undefined {
-    const remote = this.#remoteStore
-    if (!remote) {
-      return undefined
-    }
-    const collectionId = collectionIdFromTarget({
-      invocationTarget,
-      serverUrl: remote.storageServerUrl,
-      spaceId: remote.spaceId
-    })
+    const collectionId = this.#spaceCollectionOf(invocationTarget)
     if (!collectionId || isProtectedCollection(collectionId)) {
       return undefined
     }
     return collectionId
+  }
+
+  /**
+   * The collection of this Space a grant's invocation target names, a
+   * protected one included. Undefined for a target that names no collection
+   * of this Space, or a session with no remote store.
+   *
+   * @param invocationTarget {string}
+   * @returns {string | undefined}
+   */
+  #spaceCollectionOf(invocationTarget: string): string | undefined {
+    const remote = this.#remoteStore
+    if (!remote) {
+      return undefined
+    }
+    return collectionIdFromTarget({
+      invocationTarget,
+      serverUrl: remote.storageServerUrl,
+      spaceId: remote.spaceId
+    })
   }
 
   /**
@@ -4813,111 +5562,57 @@ export class StorageManager {
   }
 
   /**
-   * The full delegated zcaps recorded for one grantee, scanned from the
-   * `Grant` history activities `matches` accepts: those whose recorded `zcap`
-   * was delegated to `controller` and has not already expired by its own
-   * `expires` (wallet-core's `delegationExpired`, beyond the revocation
-   * clock-skew margin; an absent or unparseable
-   * value is not expired). Deduplicated by capability id. A capability
-   * delegated to another controller is another grantee's and is not counted
-   * at all. `skipped` counts this grantee's entries that carry no revocable
-   * capability: a legacy summary-only record, or an already-expired grant.
-   * `unrevocable` counts the legacy summary-only records alone, the one kind
-   * that may still be live: nothing can be POSTed for it, so it ends only at
-   * its own expiry. A summary-only record names no controller, so it is
-   * counted on a Grant whose full capabilities name this controller, or name
-   * none at all. `expired` carries the grants dropped for expiry alone:
-   * nothing to revoke, but they still name the collections the grantee may
-   * remain a key-epoch recipient of. The predicate is what tells the two
-   * grantee kinds apart: an App Connect app (an origin plus an `appConnect`
-   * member) and an agent (the interaction-URL origin marker and no
-   * `appConnect`).
+   * Escrows a grantee into a collection's key epochs (`addRecipient`) and
+   * reports the escrow through `onEscrowLanded` once it lands. The escrow is
+   * one append on the collection's governing log. That append can land with
+   * its response lost, and `addRecipient` then throws. So a failed call
+   * re-reads the collection's current epoch. When the epoch lists the
+   * grantee, the escrow landed, and `onEscrowLanded` fires before the
+   * original error is rethrown. A caller rolling back the failure then keeps
+   * the grant, whose grantee holds the decryption material. A failed re-read
+   * is logged, and the original error is rethrown.
    *
    * @param options {object}
-   * @param options.matches {Function}   the Grant-object predicate
-   * @param options.controller {string}   the grantee the grants were
-   *   delegated to
-   * @param options.items {HistoryItems}   the
-   *   pre-fetched history, so this need not re-scan it
-   * @returns {{ zcaps: IDelegatedZcap[]; skipped: number;
-   *   unrevocable: number; expired: IDelegatedZcap[] }}
+   * @param options.collectionId {string}
+   * @param options.store {EncryptionDescriptorStore}   the collection's
+   *   governing-log store
+   * @param options.recipient {RecipientPublicKey}   the grantee's
+   *   key-agreement key (its `id` is the recipient `kid`)
+   * @param options.owner {object}   `{ keyAgreementKey }`, the vault KAK
+   * @param [options.onEscrowLanded] {Function}
+   * @returns {Promise<CollectionEncryption>}   the new descriptor
    */
-  #recordedGrantZcaps({
-    matches,
-    controller,
-    items
-  }: {
-    matches: (object: {
-      origin?: string
-      appConnect?: unknown
-      zcaps?: unknown
-    }) => boolean
-    controller: string
-    items: HistoryItems
-  }): {
-    zcaps: IDelegatedZcap[]
-    skipped: number
-    unrevocable: number
-    expired: IDelegatedZcap[]
-  } {
-    const zcaps: IDelegatedZcap[] = []
-    const expired: IDelegatedZcap[] = []
-    const seen = new Set<string>()
-    const now = Date.now()
-    let skipped = 0
-    let unrevocable = 0
-    for (const { doc } of items.entries) {
-      if (!doc.type?.includes(ACTIVITY_TYPE.Grant)) {
-        continue
+  async #addRecipientReporting({
+    collectionId,
+    onEscrowLanded,
+    ...escrow
+  }: Parameters<typeof addRecipient>[0] & {
+    collectionId: string
+    onEscrowLanded?: () => void
+  }): Promise<CollectionEncryption> {
+    let descriptor: CollectionEncryption
+    try {
+      descriptor = await addRecipient(escrow)
+    } catch (err) {
+      let landed = false
+      try {
+        landed = await this.#currentEpochLists({
+          collectionId,
+          recipientId: escrow.recipient.id
+        })
+      } catch (readErr) {
+        log.warn('Could not re-read the key epoch after a failed escrow', {
+          collectionId,
+          err: readErr
+        })
       }
-      const object = doc.object as
-        { origin?: string; appConnect?: unknown; zcaps?: unknown } | undefined
-      if (!object || !matches(object)) {
-        continue
+      if (landed) {
+        onEscrowLanded?.()
       }
-      if (!Array.isArray(object.zcaps)) {
-        continue
-      }
-      let legacy = 0
-      let namesController = false
-      let namesOther = false
-      for (const entry of object.zcaps) {
-        const zcap = ((entry ?? {}) as { zcap?: IZcap }).zcap
-        // A legacy summary-only entry has no revocable capability; expiry is
-        // the backstop.
-        if (!zcap || !('parentCapability' in zcap)) {
-          legacy += 1
-          continue
-        }
-        // Only revoke capabilities delegated to this grantee's key.
-        const controllers = Array.isArray(zcap.controller)
-          ? zcap.controller
-          : [zcap.controller]
-        if (!controllers.includes(controller)) {
-          namesOther = true
-          continue
-        }
-        namesController = true
-        if (seen.has(zcap.id)) {
-          continue
-        }
-        seen.add(zcap.id)
-        // The one expiry reading every revocation path shares: the zcap's
-        // own `expires`, and an absent or unparseable one is NOT expired.
-        if (delegationExpired({ zcap, now })) {
-          skipped += 1
-          expired.push(zcap)
-          continue
-        }
-        zcaps.push(zcap)
-      }
-      // A Grant naming only other controllers is another grantee's.
-      if (namesController || !namesOther) {
-        skipped += legacy
-        unrevocable += legacy
-      }
+      throw err
     }
-    return { zcaps, skipped, unrevocable, expired }
+    onEscrowLanded?.()
+    return descriptor
   }
 
   /**
@@ -5061,10 +5756,11 @@ export class StorageManager {
    * key; the first-epoch mint runs only there), so a share escrows the reader
    * into every existing epoch (no rotation -- adds are cheap) and an
    * epoch-less descriptor is refused fail-closed rather than seeded here (it
-   * can only mean an unprovisioned or torn collection). The delegated zcap
-   * (the full document, needed later for revocation) is recorded in a
-   * `CollectionShare` history activity, and the refreshed descriptor is cached and
-   * swapped into the local ciphers.
+   * can only mean an unprovisioned or torn collection). The delegated zcap is
+   * recorded in a `CollectionShare` history activity as audit trail (the
+   * reader's `connections` entry, written before this call, is the
+   * revocation record), and the refreshed descriptor is cached and swapped
+   * into the local ciphers.
    *
    * @param options {object}
    * @param options.profile {ControllerProfile}   the passphrase session profile
@@ -5077,7 +5773,14 @@ export class StorageManager {
    *   `delegateShareGrant` signed for the grantee
    * @param [options.app] {{ name: string, origin: string }}   the connected app
    *   the share was granted to, when the grantee is one; recorded on the share
-   *   activity so the settings panel can name it instead of showing a bare DID
+   *   activity for the History page (the shares panel names a reader from its
+   *   `connections` entry)
+   * @param [options.onEscrowLanded] {Function}   called once the reader's
+   *   escrow lands, before the audit row and the session's descriptor
+   *   bookkeeping, so a caller rolling back a later failure knows the reader
+   *   holds the decryption material. It also fires when the escrow's response
+   *   failed and a re-read finds the reader listed, before that failure is
+   *   thrown
    * @returns {Promise<{ descriptor: CollectionEncryption }>}   the new
    *   descriptor
    */
@@ -5087,7 +5790,8 @@ export class StorageManager {
     collectionId,
     recipient,
     zcap,
-    app
+    app,
+    onEscrowLanded
   }: {
     profile: ControllerProfile
     user: User
@@ -5095,6 +5799,7 @@ export class StorageManager {
     recipient: RecipientPublicKey
     zcap: IDelegatedZcap
     app?: { name: string; origin: string }
+    onEscrowLanded?: () => void
   }): Promise<{ descriptor: CollectionEncryption }> {
     const remote = this.#requireRemote('Sharing a collection')
     const { keyAgreementKey, keyResolver } = profile
@@ -5122,17 +5827,20 @@ export class StorageManager {
     // Read axis: escrow the reader into the existing epochs (epoch[0] exists
     // from provisioning, wrapped to the owner -- recipient zero), one signed
     // append on the collection's governing log.
-    const descriptor = await addRecipient({
+    const descriptor = await this.#addRecipientReporting({
+      collectionId,
       store: await this.#collectionStore({
         collectionId,
         action: 'Sharing a collection'
       }),
       recipient,
-      owner: { keyAgreementKey }
+      owner: { keyAgreementKey },
+      onEscrowLanded
     })
 
-    // Record the share -- the full delegated zcap document is the revocation
-    // hook `unshareCollection` reads back.
+    // Record the share as audit trail. The reader's `connections` entry,
+    // written at consent before this escrow, is what `unshareCollection`
+    // reads back.
     await this.#recordActivity(id =>
       buildHistoryCollectionShared({
         user,
@@ -5163,27 +5871,30 @@ export class StorageManager {
    * pull axis; immediate). freewallet never exposes a rotate-only or
    * revoke-only path. Requires a passphrase session with a remote store.
    *
-   * Every zcap recorded for this `(collectionId, recipientId)` is looked up
-   * from the `CollectionShare` history activities and revoked on the pull
-   * axis under the recorded-grant policy ({@link #postRevocations}), the one
-   * the app and agent revocations use; an empty set is acceptable (e.g. all
-   * grants already expired) -- the rotation still happens. The rotated
-   * descriptor is cached and swapped into the local ciphers as soon as the
-   * rotation lands. A capability whose POST fails (a refusal the verified
-   * document cannot explain included) throws that first failure verbatim,
-   * `err.name` intact, once every POST settles, and no `CollectionUnshare` is
-   * recorded. Otherwise a `CollectionUnshare` activity is recorded (no zcap).
+   * The zcaps revoked are the share grants the reader's `connections` entry
+   * records on this collection: the grants carrying `grantKind: 'share'` on
+   * the entry whose DID derives the reader's kid, read through wallet-core's
+   * `connectionGrants`. They are revoked on the pull axis under the
+   * recorded-grant policy ({@link #postRevocations}), the one a party
+   * revocation uses. An empty set is acceptable (no entry, or every grant
+   * already expired): the rotation still happens. The rotated descriptor is
+   * cached and swapped into the local ciphers as soon as the rotation lands.
+   * A capability whose POST fails (a refusal the verified document cannot
+   * explain included) throws that first failure verbatim, `err.name` intact,
+   * once every POST settles. Otherwise the share grants are removed from the
+   * entry (`removeGrants`), which stays unretired since the party may hold
+   * other grants, and a `CollectionUnshare` activity is recorded (no zcap)
+   * as the audit trail.
    *
-   * A torn unshare stays retryable. The rotation has already dropped the
-   * reader from the current epoch, but {@link listCollectionShares} keeps
-   * listing a reader whose recorded share grant is unexpired and has no
-   * `CollectionUnshare` after it, so the panel still offers the removal. A
-   * retry finds the reader already off the current epoch, so
-   * `removeRecipient` appends no second epoch and runs the pull alone. A
-   * grant the server has already revoked counts as revoked there. A refusal
-   * the document cannot explain fails each retry until the grant expires.
-   * From then on the pull skips it and the panel stops listing the reader,
-   * since an expired grant is no authority left to revoke.
+   * A torn unshare stays retryable. Until `removeGrants` lands the entry
+   * still carries the share grant, so {@link listCollectionShares} keeps
+   * listing the reader and the panel still offers the removal. A retry finds
+   * the reader already off the current epoch, so `removeRecipient` appends no
+   * second epoch and runs the pull alone. A grant the server has already
+   * revoked counts as revoked there. A refusal the document cannot explain
+   * fails each retry until the grant expires. From then on the pull skips it
+   * and the panel stops listing the reader, since an expired grant is no
+   * authority left to revoke.
    *
    * @param options {object}
    * @param options.profile {ControllerProfile}   the passphrase session profile
@@ -5213,19 +5924,22 @@ export class StorageManager {
       throw new Error('Unsharing a collection requires a passphrase session.')
     }
 
-    // Gather every zcap recorded for this recipient, to revoke as the pull-axis
-    // half of the removal. Scan the history once and pass it through.
-    const items = await this.listHistoryItems()
-    const revoke = this.#recordedShareZcaps({
+    // One directory read: the reader's share grants on this collection, the
+    // pull-axis half of the removal, and the admissions the rotation's
+    // resolver vouches for.
+    const directory = await this.readConnectionsListing()
+    const shares = this.#shareGrantsOf({
+      ...directory,
       collectionId,
-      recipientId,
-      items
+      recipientId
     })
     const rotation = await this.#rotateOffRecipient({
       collectionId,
       recipientId,
-      revoke,
-      items,
+      revoke: shares.flatMap(({ grants }) =>
+        grants.map(grant => grant.zcap as unknown as IDelegatedZcap)
+      ),
+      readAdmissions: this.#directoryAdmissionsReader({ directory }),
       readSignerCheck: () => this.#readSignerCheck(),
       readGenerations: this.#userKeyGenerationsReader(),
       action: 'Unsharing a collection'
@@ -5250,10 +5964,70 @@ export class StorageManager {
       throw rotation.failed[0].err
     }
 
+    // The revoked share grants leave the reader's entry, which stays live:
+    // the party may hold other grants.
+    const { store, hmacKey } = await this.connectionsDirectory()
+    for (const { did, grants } of shares) {
+      await removeGrants({
+        store,
+        hmacKey,
+        did,
+        zcapIds: grants.map(grant => grant.zcapId)
+      })
+    }
+
     await this.#recordActivity(id =>
       buildHistoryCollectionUnshared({ user, collectionId, recipientId, id })
     )
     return rotation.descriptor
+  }
+
+  /**
+   * The share grants the directory records for one reader of one
+   * collection: per entry whose DID derives the reader's kid, the grants
+   * carrying `grantKind: 'share'` whose target is the collection, read
+   * through wallet-core's `connectionGrants`. An entry with none is left
+   * out.
+   *
+   * @param options {object}
+   * @param options.listing {ConnectionsListing}
+   * @param [options.spaceUrl] {string}   this Space's container URL
+   * @param options.collectionId {string}
+   * @param options.recipientId {string}   the reader's kid
+   * @returns {Array<{ did: string; grants: ConnectionGrant[] }>}
+   */
+  #shareGrantsOf({
+    listing,
+    spaceUrl,
+    collectionId,
+    recipientId
+  }: {
+    listing: ConnectionsListing
+    spaceUrl?: string
+    collectionId: string
+    recipientId: string
+  }): Array<{ did: string; grants: ConnectionGrant[] }> {
+    if (spaceUrl === undefined) {
+      return []
+    }
+    const shares: Array<{ did: string; grants: ConnectionGrant[] }> = []
+    for (const { entry } of listing.entries) {
+      if (
+        entry.id === undefined ||
+        connectionRecipientKid({ did: entry.id }) !== recipientId
+      ) {
+        continue
+      }
+      const grants = connectionGrants({ entry, spaceUrl }).filter(
+        grant =>
+          grant.grantKind === 'share' &&
+          this.#spaceCollectionOf(grant.target) === collectionId
+      )
+      if (grants.length > 0) {
+        shares.push({ did: entry.id, grants })
+      }
+    }
+    return shares
   }
 
   /**
@@ -5289,78 +6063,36 @@ export class StorageManager {
   }
 
   /**
-   * The delegated zcap documents recorded for a `(collectionId, recipientId)`
-   * pair, scanned from the `CollectionShare` history activities -- the pull-axis
-   * capabilities `unshareCollection` revokes.
-   *
-   * @param options {object}
-   * @param options.collectionId {string}
-   * @param options.recipientId {string}
-   * @param options.items {HistoryItems}   the
-   *   pre-fetched history, so this need not re-scan it
-   * @returns {IDelegatedZcap[]}
-   */
-  #recordedShareZcaps({
-    collectionId,
-    recipientId,
-    items
-  }: {
-    collectionId: string
-    recipientId: string
-    items: HistoryItems
-  }): IDelegatedZcap[] {
-    const zcaps: IDelegatedZcap[] = []
-    for (const { doc } of items.entries) {
-      if (!doc.type?.includes('CollectionShare')) {
-        continue
-      }
-      const object = doc.object as
-        | {
-            collectionId?: string
-            recipientId?: string
-            zcap?: IDelegatedZcap
-          }
-        | undefined
-      if (
-        object?.collectionId === collectionId &&
-        object?.recipientId === recipientId &&
-        object?.zcap
-      ) {
-        zcaps.push(object.zcap)
-      }
-    }
-    return zcaps
-  }
-
-  /**
    * Lists the readers a collection is currently shared with, derived from the
-   * descriptor's `currentEpoch` roster minus the owner's own key (the cryptographic
-   * truth), joined best-effort with the `CollectionShare` / `CollectionUnshare`
-   * history for each reader's controller DID, grant expiry, and -- when the
-   * reader is a connected app -- its name and origin. Backs the settings UI.
-   * Returns an empty list for a collection with no epochs (never shared) or
-   * when the descriptor cannot be resolved.
+   * descriptor's `currentEpoch` roster minus the owner's own key (the
+   * cryptographic truth), and named from the `connections` directory when the
+   * caller hands its entries in: each reader by the entry whose DID derives
+   * its kid, with that entry's DID as `controller`, its display name and
+   * origin, and the expiry of its latest share grant on this collection.
+   * Without `connections` the roster alone is read, unnamed, so a roster read
+   * never depends on the directory (the consent screen's attribution pass
+   * reads it that way). Returns an empty list for a collection with no
+   * epochs (never shared) or when the descriptor cannot be resolved.
    *
-   * A reader the current epoch no longer lists is still listed while it
-   * holds a live share grant: a `CollectionShare` whose recorded zcap has
-   * not expired, with no `CollectionUnshare` recorded for the pair since.
-   * That is the state an unshare leaves when its rotation landed and its
-   * pull failed, and listing it is what lets the user retry the unshare.
+   * A reader the current epoch no longer lists is still listed while its
+   * entry carries an unexpired share grant on this collection. That is the
+   * state an unshare leaves when its rotation landed and its pull failed,
+   * and listing it is what lets the user retry the unshare.
    *
    * @param options {object}
    * @param options.collectionId {string}
-   * @param [options.items] {HistoryItems}   a
-   *   pre-fetched history scan, when the caller already holds one (the
-   *   settings panel lists every encrypted collection off one read)
+   * @param [options.connections] {ConnectionEntry[]}   the directory's
+   *   entries, from one listing read (the shares panel names every encrypted
+   *   collection's readers off one read)
    * @returns {Promise<Array<{ recipientId: string; controller?: string;
    *   expires?: string; appName?: string; appOrigin?: string }>>}
    */
   async listCollectionShares({
     collectionId,
-    items
+    connections
   }: {
     collectionId: string
-    items?: HistoryItems
+    connections?: ConnectionEntry[]
   }): Promise<
     Array<{
       recipientId: string
@@ -5384,137 +6116,73 @@ export class StorageManager {
     if (!descriptor?.currentEpoch || !descriptor.epochs) {
       return []
     }
-    const history = items ?? (await this.listHistoryItems())
+    const spaceUrl = remote?.spaceUrl
+    // Each entry naming a reader, with its share grants on this collection.
+    const named = new Map<
+      string,
+      { entry: ConnectionEntry; shareGrants: ConnectionGrant[] }
+    >()
+    if (connections && spaceUrl !== undefined) {
+      for (const entry of connections) {
+        if (entry.id === undefined || entry.retired !== undefined) {
+          continue
+        }
+        const kid = connectionRecipientKid({ did: entry.id })
+        if (kid === undefined) {
+          continue
+        }
+        named.set(kid, {
+          entry,
+          shareGrants: connectionGrants({ entry, spaceUrl }).filter(
+            grant =>
+              grant.grantKind === 'share' &&
+              this.#spaceCollectionOf(grant.target) === collectionId
+          )
+        })
+      }
+    }
     // The owner's own key-agreement key is recipient zero on every epoch; drop
     // it so the list is only the other readers. A reader a torn unshare
-    // rotated off, whose grant is still live, joins them.
+    // rotated off, whose share grant is still live, joins them.
+    const now = Date.now()
+    const tornReaders = [...named].flatMap(([kid, { shareGrants }]) =>
+      shareGrants.some(
+        grant =>
+          !delegationExpired({ zcap: grant.zcap as unknown as IZcap, now })
+      )
+        ? [kid]
+        : []
+    )
     const recipientIds = [
       ...new Set([
         ...currentEpochRecipientKids({
           descriptor,
           ownerKid: this.#vaultKeys.keyAgreementKey.id
         }),
-        ...StorageManager.#shareReaders({
-          collectionId,
-          items: history,
-          live: true
-        })
+        ...tornReaders
       ])
     ]
-    if (recipientIds.length === 0) {
-      return []
-    }
-
-    // Best-effort labels from history: the latest CollectionShare per recipient
-    // for its controller / expiry.
-    const labels = new Map<
-      string,
-      {
-        controller?: string
-        expires?: string
-        appName?: string
-        appOrigin?: string
+    return recipientIds.map(recipientId => {
+      const reader = named.get(recipientId)
+      if (!reader) {
+        return { recipientId }
       }
-    >()
-    for (const { doc } of history.entries) {
-      if (!doc.type?.includes('CollectionShare')) {
-        continue
+      const { entry, shareGrants } = reader
+      // The latest share grant on this collection carries the expiry.
+      const latest = shareGrants.reduce<ConnectionGrant | undefined>(
+        (newest, grant) =>
+          !newest || newest.grantedAt < grant.grantedAt ? grant : newest,
+        undefined
+      )
+      const name = entry.label ?? entry.name
+      return {
+        recipientId,
+        controller: entry.id,
+        ...(latest?.expires !== undefined && { expires: latest.expires }),
+        ...(name !== undefined && { appName: name }),
+        ...(entry.origin !== undefined && { appOrigin: entry.origin })
       }
-      const object = doc.object as
-        | {
-            collectionId?: string
-            recipientId?: string
-            controller?: string
-            expires?: string
-            appName?: string
-            appOrigin?: string
-          }
-        | undefined
-      if (object?.collectionId === collectionId && object?.recipientId) {
-        labels.set(object.recipientId, {
-          controller: object.controller,
-          expires: object.expires,
-          appName: object.appName,
-          appOrigin: object.appOrigin
-        })
-      }
-    }
-    return recipientIds.map(recipientId => ({
-      recipientId,
-      ...labels.get(recipientId)
-    }))
-  }
-
-  /**
-   * The readers a recorded `CollectionShare` names for one collection, less
-   * those a `CollectionUnshare` for the same pair supersedes: one recorded
-   * at or after that share, or one whose stamp does not parse, which
-   * supersedes every share of the pair. With `live`, only a share recording
-   * a zcap that has not expired counts (wallet-core's `delegationExpired`,
-   * the reading the revocation's own expiry skip uses). An unshare is
-   * recorded only once its pull has succeeded, so a live reader has a grant
-   * no unshare has confirmed revoked.
-   *
-   * @param options {object}
-   * @param options.collectionId {string}
-   * @param options.items {HistoryItems}   the pre-fetched history
-   * @param [options.live] {boolean}   count only unexpired share grants
-   * @returns {Set<string>}   the readers' key-agreement kids
-   */
-  static #shareReaders({
-    collectionId,
-    items,
-    live = false
-  }: {
-    collectionId: string
-    items: HistoryItems
-    live?: boolean
-  }): Set<string> {
-    // The latest unshare stamp per reader; NaN when a stamp does not parse.
-    const unsharedAt = new Map<string, number>()
-    for (const { doc } of items.entries) {
-      if (!doc.type?.includes('CollectionUnshare')) {
-        continue
-      }
-      const object = doc.object as
-        { collectionId?: string; recipientId?: string } | undefined
-      if (object?.collectionId !== collectionId || !object.recipientId) {
-        continue
-      }
-      const stamp = Date.parse(doc.created ?? '')
-      const previous = unsharedAt.get(object.recipientId)
-      if (previous === undefined || Number.isNaN(stamp) || stamp > previous) {
-        unsharedAt.set(object.recipientId, stamp)
-      }
-    }
-    const now = Date.now()
-    const readers = new Set<string>()
-    for (const { doc } of items.entries) {
-      if (!doc.type?.includes('CollectionShare')) {
-        continue
-      }
-      const object = doc.object as
-        | { collectionId?: string; recipientId?: string; zcap?: IZcap }
-        | undefined
-      if (object?.collectionId !== collectionId || !object.recipientId) {
-        continue
-      }
-      if (
-        live &&
-        (!object.zcap || delegationExpired({ zcap: object.zcap, now }))
-      ) {
-        continue
-      }
-      const unshared = unsharedAt.get(object.recipientId)
-      if (unshared !== undefined) {
-        const shared = Date.parse(doc.created ?? '')
-        if (Number.isNaN(unshared) || !(shared > unshared)) {
-          continue
-        }
-      }
-      readers.add(object.recipientId)
-    }
-    return readers
+    })
   }
 
   /**

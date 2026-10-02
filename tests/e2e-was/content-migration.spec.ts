@@ -458,8 +458,9 @@ async function addContact({
 
 /**
  * Opens the Applications page and waits for a row to appear, remounting the
- * page (dashboard and back -- never `reload()`, which logs out) until
- * replication has pulled the popup-written Resources in.
+ * page (dashboard and back -- never `reload()`, which logs out) until the
+ * popup-written `connections` entry lists. The directory is read
+ * remote-direct, so a remount re-reads the server's state.
  *
  * @param options {object}
  * @param options.page {Page}
@@ -638,7 +639,7 @@ test.describe.serial('Content migration from a backup bundle', () => {
       await page.goto('/#/applications')
       await page.getByText(APP_B.name, { exact: true }).click()
       await expect(
-        page.getByRole('heading', { name: `App detail: ${APP_B.name}` })
+        page.getByRole('heading', { name: `Connection detail: ${APP_B.name}` })
       ).toBeVisible({ timeout: 30_000 })
       await page.getByRole('button', { name: 'Revoke App Access' }).click()
       await page

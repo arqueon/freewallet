@@ -286,7 +286,8 @@ session before anything is deleted. What it enumerates:
 - The client-keyed families (the unlock-methods cache, the passkey-safety
   notice, the replica-database prefix, the local-mode cache scope), derived
   from this browser's own client did:key rather than the account controller.
-- Each unlock method's unlock-local state, derived from the registry walked
+- Each unlock method's unlock-local state (its keyring cache, client-key
+  record, and writer first-seen record), derived from the registry walked
   across every method and always including the session's own login
   credential. A registry read lost to a transient server error narrows the
   enumeration to the other methods and is reported on the wipe outcome
@@ -329,7 +330,12 @@ client's row) it is the **forget ceremony**, wallet-core's
 ARCHITECTURE.md. The user key rotates off this client's roster wrap and
 every encrypted collection re-epochs, both under this client's
 still-standing authority, the self-forget inversion of the revocation's
-document-edit-first order (wallet-core decision 0008). Then ONE atomic
+document-edit-first order (wallet-core decision 0008). Before any of it,
+this client's own `connections` entry is retired, best-effort. That
+retirement first awaits this login's writer registration
+(`session.writerRegistration`), which un-retires the entry while the
+document still lists the client. So the registration cannot undo the
+retirement. Then ONE atomic
 ladder-signed removal entry through the login credential's bridge takes the
 client's whole document inventory out. Immediately before that entry
 publishes, the post-removal did:web projection is PUT through this client's

@@ -3,8 +3,8 @@
  * the enrolled wallet clients from the locally verified did:webvh log (a
  * recovery code's keyAgreement-only key never appears, and apps are never
  * enrolled -- they stay in the Applications surface), marks the client this
- * session runs in, renames clients (labels live in
- * `key-map/client-labels.json`; the document carries key material only),
+ * session runs in, renames clients (names live on each client's
+ * `connections` entry; the document carries key material only),
  * starts the connect-another-wallet ceremony (one card offering both the QR
  * invite and the pasted connect code), and disconnects a client by
  * driving the full revocation cascade.
@@ -155,6 +155,10 @@ export function EnrolledClientsSection({
     null
   )
   const [enrollLabel, setEnrollLabel] = useState('')
+  // The name the label field was prefilled with, which the new client's
+  // entry takes as its `name`; the field's text becomes its `label` only
+  // when the approver edited it.
+  const [enrollOfferedName, setEnrollOfferedName] = useState('')
   const [enrolling, setEnrolling] = useState(false)
   const [enrollDone, setEnrollDone] = useState(false)
   const [enrollError, setEnrollError] = useState(false)
@@ -215,7 +219,7 @@ export function EnrolledClientsSection({
 
   const handleSaveLabel = async (client: AccountClientView) => {
     const trimmed = labelDraft.trim()
-    if (!trimmed || trimmed === client.label) {
+    if (!trimmed || trimmed === (client.label ?? client.name)) {
       setEditingKey(null)
       return
     }
@@ -389,7 +393,8 @@ export function EnrolledClientsSection({
       await approveEnrollment({
         request: enrollRequest,
         session,
-        label: enrollLabel
+        name: enrollOfferedName,
+        ...(enrollLabel !== enrollOfferedName ? { label: enrollLabel } : {})
       })
       setEnrollDone(true)
       setConnectCardOpen(false)
@@ -429,7 +434,8 @@ export function EnrolledClientsSection({
         <Stack sx={{ gap: 1.5, mt: 1 }} data-testid="enrolled-clients-list">
           {clients.map(client => {
             const editing = editingKey === client.signingKeyMultibase
-            const displayName = client.label ?? t('settings.clients.unlabeled')
+            const displayName =
+              client.label ?? client.name ?? t('settings.clients.unlabeled')
             // The shared policy, not UI state: on the client branch self and
             // last-wallet hide the button entirely, an unattributed update
             // key disables it. The ladder branch keeps only the last of the
@@ -489,7 +495,7 @@ export function EnrolledClientsSection({
                           size="small"
                           aria-label={t('common.edit')}
                           onClick={() => {
-                            setLabelDraft(client.label ?? '')
+                            setLabelDraft(client.label ?? client.name ?? '')
                             setEditingKey(client.signingKeyMultibase)
                           }}
                           sx={{ p: 0.25 }}
@@ -616,11 +622,11 @@ export function EnrolledClientsSection({
               setEnrollCode('')
               setEnrollRequest(null)
               setEnrollCodeErrorKey(null)
-              setEnrollLabel(
-                t('settings.clients.defaultLabel', {
-                  number: (clients?.length ?? 1) + 1
-                })
-              )
+              const offeredName = t('settings.clients.defaultLabel', {
+                number: (clients?.length ?? 1) + 1
+              })
+              setEnrollOfferedName(offeredName)
+              setEnrollLabel(offeredName)
               setConnectCardOpen(true)
             }}
           >
@@ -730,7 +736,10 @@ export function EnrolledClientsSection({
       >
         <DialogTitle>
           {t('settings.clients.disconnectConfirmTitle', {
-            name: disconnectTarget?.label ?? t('settings.clients.unlabeled')
+            name:
+              disconnectTarget?.label ??
+              disconnectTarget?.name ??
+              t('settings.clients.unlabeled')
           })}
         </DialogTitle>
         <DialogContent>

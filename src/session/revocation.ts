@@ -79,6 +79,7 @@ import {
   invalidateVerifiedLog,
   reprimeVerifiedAccountLog
 } from '@/session/verifiedLog'
+import { retireConnectionParty } from '@/lib/connectedApps'
 import { createLogger } from '@/lib/log'
 import { wasServiceDescription } from '@/lib/wasService'
 
@@ -162,6 +163,58 @@ async function unlockRegistry({
       { err }
     )
     return null
+  }
+}
+
+/**
+ * A wallet client's did:key, from the signing-key multibase the account
+ * document lists for it. For an Ed25519 did:key the method-specific id is
+ * exactly that multibase, so this is the inverse of wallet-core's
+ * `signingKeyMultibaseOfDid`: the id a wallet client's `connections` entry
+ * is keyed by.
+ *
+ * @param options {object}
+ * @param options.signingKeyMultibase {string}
+ * @returns {string}
+ */
+export function walletClientDid({
+  signingKeyMultibase
+}: {
+  signingKeyMultibase: string
+}): string {
+  return `did:key:${signingKeyMultibase}`
+}
+
+/**
+ * Retires the revoked client's `connections` entry once the cascade has
+ * landed, best-effort as the cascade's tail stages are. The entry keeps its
+ * names, so the departed client's revisions keep resolving. A wallet-client
+ * entry normally carries no grants. One that does has them POSTed and its
+ * grantee rotated off their targets first (`retireConnectionParty`), so the
+ * retirement does not drop live grants silently.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param options.signingKeyMultibase {string}   the revoked client's signing
+ *   key
+ * @returns {Promise<void>}
+ */
+async function retireRevokedClientEntry({
+  session,
+  signingKeyMultibase
+}: {
+  session: Session
+  signingKeyMultibase: string
+}): Promise<void> {
+  try {
+    await retireConnectionParty({
+      storage: session.storage,
+      did: walletClientDid({ signingKeyMultibase })
+    })
+  } catch (err) {
+    log.warn("Could not retire the disconnected client's connections entry", {
+      err
+    })
   }
 }
 
@@ -410,6 +463,13 @@ async function revokeEnrolledClientHeld({
     // and the listing that reloads next would otherwise re-fetch anyway.
     await reprimeVerifiedAccountLog({ session, pointer })
   }
+
+  // The client's directory entry is retired ahead of the audit record, under
+  // the fresh epoch the adoption installed. Best-effort.
+  await retireRevokedClientEntry({
+    session,
+    signingKeyMultibase: client.signingKeyMultibase
+  })
 
   // The audit record, written after the adoption so it lands under the fresh
   // epoch. Best-effort.

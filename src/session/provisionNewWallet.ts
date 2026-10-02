@@ -24,13 +24,9 @@
  * accepted -- the next full login re-runs the idempotent `ensureUserCollections`
  * and the wallet remains usable.
  */
-import { setClientLabel } from '@interop/wallet-core/keys'
-import {
-  clientSigningKeyMultibase,
-  isWebvhDid
-} from '@interop/wallet-core/webvh'
+import { isWebvhDid } from '@interop/wallet-core/webvh'
 import { selfContact } from '@interop/social-core'
-import { DEFAULT_CLIENT_LABEL } from '@/app.config'
+import { recordOwnWalletClientEntry } from '@/session/clients'
 import { didWebFromSpace } from '@/lib/didWeb'
 import type { ControllerProfile, Session } from '@/types/auth'
 import { welcomeCredential } from '@/fixtures/welcomeCredential'
@@ -90,29 +86,14 @@ export async function provisionNewWallet({
   // Create the Space (remote) and open/init the collections (local always).
   await storage.ensureUserCollections({ user, profile })
 
-  // Label the first enrolled client. Every later client gets its label at
-  // enrollment approval; this one has no approving screen, so the wallet
-  // names itself in `key-map/client-labels.json` (the Connected wallets
-  // panel would otherwise show "Unnamed wallet"). Only a did:webvh account
-  // has that panel, and only a remote store has somewhere to write the
-  // label; best-effort either way.
-  if (
-    storage.remoteStore &&
-    !session.isGuest &&
-    profile.didWebvh &&
-    profile.keyAgent
-  ) {
-    try {
-      await setClientLabel({
-        store: storage.remoteStore.clientLabelsStore(),
-        signingKeyMultibase: clientSigningKeyMultibase({
-          keyAgent: profile.keyAgent
-        }),
-        label: DEFAULT_CLIENT_LABEL
-      })
-    } catch (err) {
-      log.warn("Could not label this first client's wallet", { err })
-    }
+  // Name the first enrolled client on its `connections` entry. Every later
+  // client is named at enrollment approval; this one has no approving
+  // screen, so the wallet names itself (the Connected wallets panel would
+  // otherwise show "Unnamed wallet"). Only a did:webvh account has that
+  // panel, and only a remote store has an account document to list the
+  // client in; best-effort either way.
+  if (storage.remoteStore && !session.isGuest && profile.didWebvh) {
+    await recordOwnWalletClientEntry({ session })
   }
 
   // Now that there is somewhere to write to, start the history. The two

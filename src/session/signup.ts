@@ -19,17 +19,9 @@ import {
   assertHostClaimsClientAnnexProfile,
   generateLadderSeed
 } from '@interop/wallet-core/clientAnnex'
-import { setClientLabel } from '@interop/wallet-core/keys'
-import {
-  clientSigningKeyMultibase,
-  type PublishedWebvhLog
-} from '@interop/wallet-core/webvh'
-import {
-  DATE_FMT,
-  DEFAULT_CLIENT_LABEL,
-  PASSKEY_KDF,
-  WAS_SERVER_URL
-} from '@/app.config'
+import type { PublishedWebvhLog } from '@interop/wallet-core/webvh'
+import { DATE_FMT, PASSKEY_KDF, WAS_SERVER_URL } from '@/app.config'
+import { recordOwnWalletClientEntry } from '@/session/clients'
 import {
   initSessionFromSeed,
   loginWithPassphrase,
@@ -276,14 +268,15 @@ async function enterEstablishedAccountTransiently({
 }
 
 /**
- * Best-effort tail of a remembered (passphrase or passkey) WAS signup: label
- * the first enrolled client in `key-map/client-labels.json` (every later
- * client gets its label at enrollment approval; this one has no approving
- * screen, so the wallet names itself -- the Connected wallets panel would
- * otherwise show "Unnamed wallet") and kick off the welcome-content seeding
- * un-awaited onto `session.welcomeSeedReady`. Waits for storage provisioning
- * first, since both writes need the collections; a provisioning failure is the
- * login page's to surface, so it is swallowed here and the writes are skipped.
+ * Best-effort tail of a remembered (passphrase or passkey) WAS signup: write
+ * the first enrolled client's `connections` entry, named by the default
+ * platform label (every later client is named at enrollment approval; this
+ * one has no approving screen, so the wallet names itself -- the Connected
+ * wallets panel would otherwise show "Unnamed wallet"), and kick off the
+ * welcome-content seeding un-awaited onto `session.welcomeSeedReady`. Waits
+ * for storage provisioning first, since both writes need the collections; a
+ * provisioning failure is the login page's to surface, so it is swallowed
+ * here and the writes are skipped.
  *
  * @param options {object}
  * @param options.session {Session}   the freshly self-enrolled remembered
@@ -300,20 +293,7 @@ async function finishRememberedSignup({
   } catch {
     return
   }
-  const { storage, profile } = session
-  if (storage.remoteStore && profile.keyAgent) {
-    try {
-      await setClientLabel({
-        store: storage.remoteStore.clientLabelsStore(),
-        signingKeyMultibase: clientSigningKeyMultibase({
-          keyAgent: profile.keyAgent
-        }),
-        label: DEFAULT_CLIENT_LABEL
-      })
-    } catch (err) {
-      log.warn("Could not label this first client's wallet", { err })
-    }
-  }
+  await recordOwnWalletClientEntry({ session })
   session.welcomeSeedReady = seedWelcomeContent({ session })
 }
 

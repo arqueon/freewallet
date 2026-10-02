@@ -37,13 +37,15 @@ import { readCollectionEpoch, readUserKeyRoster } from './storedLogs'
 // not inherit the config's `use.baseURL`, so pass it explicitly.
 const APP_URL = 'http://localhost:5274'
 
-// The encrypted standard collections every signup provisions.
+// The encrypted collections every signup provisions: the synced ones and the
+// `connections` directory.
 const ENCRYPTED_COLLECTIONS = [
   'private-credentials',
   'wallet-activity',
   'contacts',
   'contacts-history',
-  'app-connections'
+  'app-connections',
+  'connections'
 ]
 
 // The collections whose rotation the tear aborts. The others rotate, so the

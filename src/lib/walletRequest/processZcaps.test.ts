@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   APP_CONNECTIONS_COLLECTION,
+  CONNECTIONS_COLLECTION,
   KEY_MAP_COLLECTION,
   UNLOCK_METHODS_COLLECTION,
   WALLET_SPACE_PROVISION_ROSTER
@@ -286,7 +287,8 @@ describe('never-grantable system collections', () => {
   const NEVER = [
     KEY_MAP_COLLECTION.id,
     UNLOCK_METHODS_COLLECTION.id,
-    APP_CONNECTIONS_COLLECTION
+    APP_CONNECTIONS_COLLECTION,
+    CONNECTIONS_COLLECTION
   ]
   // Present in the snapshot, so a string target is refused for what it names
   // rather than for naming a missing collection.

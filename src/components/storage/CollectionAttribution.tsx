@@ -1,8 +1,8 @@
 /**
  * The "Created by ..." caption a collection carries in the storage browser:
  * the application it was provisioned for, by the name stamped on the
- * collection's `generator` or else the name the wallet's records hold for it
- * (linked while the app is still connected), the bare origin recorded at
+ * collection's `generator` or else the name its `connections` entry holds
+ * for it (linked while the app is still connected), the bare origin recorded at
  * provisioning when neither names the app, or the wallet itself for the
  * collections it provisions. The naming order is `collectionCreatorLabel`'s,
  * an interaction-URL agent's stamp included.
@@ -53,8 +53,8 @@ export function CollectionAttribution({
 
 /**
  * The stamped-creator half of the caption: the creator's label, linked to
- * its Applications row while the wallet's records still hold a connected
- * app for it and plain text otherwise; a collection with no stamp has no
+ * its application detail page while the Applications page lists the app,
+ * and plain text otherwise; a collection with no stamp has no
  * caption.
  */
 function creatorCaption({
@@ -74,10 +74,10 @@ function creatorCaption({
     return null
   }
   const nameComponent =
-    creator?.cid && linkToApp ? (
+    creator?.resourceId && linkToApp ? (
       <Link
         component={RouterLink}
-        to={`/applications/${creator.cid}`}
+        to={`/applications/${creator.resourceId}`}
         underline="hover"
       />
     ) : (

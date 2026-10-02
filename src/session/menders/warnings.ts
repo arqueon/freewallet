@@ -79,5 +79,7 @@ export const MENDER_WARNINGS: Readonly<Record<InvariantId, string>> = {
   'no-auxiliary-space-stands-unnamed':
     'Could not remove the unnamed auxiliary Space; no converger is built',
   'no-registered-writer-outlives-its-expiry':
-    'Could not sweep the expired registered writers; no converger is built'
+    'Could not sweep the expired connections writers; the next visit retries',
+  'every-party-with-authority-has-a-connection-entry':
+    'Could not write a missing connections entry; no converger is built'
 }

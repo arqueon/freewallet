@@ -22,7 +22,9 @@
  * clearing the browser profile removes those. Global UI prefs (theme, language)
  * are not account state and stay out; the global `writerId` is cleared only
  * when the consumer asks (the forget grade), since it is browser-global rather
- * than account-scoped.
+ * than account-scoped. The writer first-seen record that names it is
+ * unlock-local state, keyed by an unlock Space id, so it goes with each
+ * credential's unlock-local state on every grade, the forget grade included.
  */
 import { deriveSpaceId } from '@interop/was-client/sync'
 import { ceremonyEvents, type CeremonyEmitter } from '@interop/wallet-core'

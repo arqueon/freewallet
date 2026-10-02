@@ -96,6 +96,7 @@ import type { ResourceLogPinStore } from '@interop/vh-resource-log'
 import type { Session, User } from '@/types/auth'
 import { deriveSpaceId } from '@interop/was-client/sync'
 import type { VerifiedAccountLog } from '@interop/wallet-core/clients'
+import { retireConnectionParty } from '@/lib/connectedApps'
 import { SESSION_DB_NAME } from '@/lib/sessionKey'
 import { clearWriterId } from '@/lib/writerId'
 import { BrowserStore } from '@/stores/browserStore'
@@ -202,6 +203,44 @@ type ForgetCeremonyOutcome =
 export type ForgetOutcome = ForgetCeremonyOutcome & {
   wipeFailed: string[]
   wipeUnverified: string[]
+}
+
+/**
+ * Retires this client's own `connections` entry ahead of the forget
+ * ceremony, best-effort: a failure is logged and the ceremony proceeds. A
+ * wallet-client entry normally carries no grants. One that does has them
+ * POSTed and its grantee rotated off their targets first
+ * (`retireConnectionParty`), so the retirement does not drop live grants
+ * silently.
+ *
+ * It first waits out this login's writer registration
+ * (`session.writerRegistration`). That registration un-retires this
+ * client's entry while the verified document still lists the client, and
+ * it reads the document well before it writes. A retirement landing in
+ * that window would be undone, and the removal entry and the local wipe
+ * would then leave an unretired entry nothing converges. Awaiting the
+ * registration keeps the retirement ordered after it. The promise never
+ * rejects.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param options.keyAgent {object}   this client's key agent, whose id is its
+ *   did:key
+ * @returns {Promise<void>}
+ */
+async function retireOwnClientEntry({
+  session,
+  keyAgent
+}: {
+  session: Session
+  keyAgent: { id: string }
+}): Promise<void> {
+  await session.writerRegistration
+  try {
+    await retireConnectionParty({ storage: session.storage, did: keyAgent.id })
+  } catch (err) {
+    log.warn("Could not retire this client's connections entry", { err })
+  }
 }
 
 /**
@@ -420,6 +459,13 @@ async function forgetThisBrowserHeld({
       })
     })
   }
+
+  // This client's `connections` entry is retired before the ceremony, which
+  // holds the removal entry with no seam between its fan-out and the edit. A
+  // tear past here leaves a retired entry for a client the document still
+  // lists; it still names its row, and a re-run or this browser's next
+  // remembered login converges it. Best-effort.
+  await retireOwnClientEntry({ session, keyAgent })
 
   // The ceremony opens with reads and ends with a document edit; no session
   // surface may keep serving a pre-edit view.

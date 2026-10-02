@@ -4,11 +4,12 @@
  * wallet-storage decisions independently and is shared across tabs) holding
  * what ordinary login relies on -- the keyring cache (the offline / no-WAS
  * copy of the account-pointer record), this client's wrapped client-key
- * records, the Space-to-DID mapping, the unlock-methods registry cache, and
- * the passkey-safety notices. None of it is secret on its own: the keyring,
- * client-key, and unlock-methods records are ciphertext, inert without the
- * passphrase-derived key; the Space-to-DID mapping and the passkey-safety
- * notice are local integrity/UI state, not secrets.
+ * records, the writer first-seen records, the Space-to-DID mapping, the
+ * unlock-methods registry cache, and the passkey-safety notices. None of it
+ * is secret on its own: the keyring, client-key, and unlock-methods records
+ * are ciphertext, inert without the passphrase-derived key; the writer
+ * first-seen record, the Space-to-DID mapping, and the passkey-safety notice
+ * are local attribution, integrity, and UI state, not secrets.
  *
  * Two kinds of entries live here and must not be conflated: the keyring and
  * unlock-methods entries are CACHES of remote records (refreshed on a hit,
@@ -19,9 +20,9 @@
  * No continuity pin lives here. Continuity is checked within a session and
  * not across sessions (`decisions/0012-no-durable-continuity-pins.md`), so
  * every pin store a session builds is in-memory and dies with the tab. The
- * unlock-layer entries (keyring cache, client-key record) stay keyed by the
- * unlock Space id, and the unlock-methods cache and passkey-safety notice by
- * the data controller.
+ * unlock-layer entries (keyring cache, client-key record, writer first-seen
+ * record) stay keyed by the unlock Space id, and the unlock-methods cache
+ * and passkey-safety notice by the data controller.
  */
 
 /**
@@ -302,10 +303,48 @@ export const loadClientKeyRecord = clientKeyRecords.load
 export const deleteClientKeyRecord = clientKeyRecords.delete
 
 /**
+ * The writer first-seen record of a remembered session logged in with one
+ * unlock method: the account and `writerId` this client's writer first
+ * appeared under, and when it last registered or touched its member on the
+ * `connections` directory (wallet-core's `WriterFirstSeenRecord`, stored
+ * verbatim). Keyed by the unlock Space id, like the client-key record it
+ * rides beside. Only the browser-local persistence strategy reaches it, and
+ * that strategy's store writes nothing when no client-key record stands
+ * under the id. A late write cannot re-create it after
+ * {@link deleteUnlockLocalState} removed the rest of the method's state.
+ */
+const writerFirstSeen = sessionEntry({
+  prefix: 'writer-first-seen',
+  idKey: 'spaceId'
+})
+
+/**
+ * Saves the writer first-seen record under an unlock Space id.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}   the unlock Space id
+ * @param options.record {unknown}   the first-seen record
+ * @param [options.idb] {IDBFactory}
+ * @returns {Promise<void>}
+ */
+export const saveWriterFirstSeen = writerFirstSeen.save
+
+/**
+ * Loads the writer first-seen record by its unlock Space id, or `null` when
+ * none is stored.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}   the unlock Space id
+ * @param [options.idb] {IDBFactory}
+ * @returns {Promise<unknown | null>}
+ */
+export const loadWriterFirstSeen = writerFirstSeen.load
+
+/**
  * Deletes the whole of what one unlock method leaves on a browser: its
- * keyring cache and its wrapped client-key record. The one list of what an
- * unlock method owns locally, so a further per-credential artifact is added
- * here rather than at every retiring site.
+ * keyring cache, its wrapped client-key record, and its writer first-seen
+ * record. The one list of what an unlock method owns locally, so a further
+ * per-credential artifact is added here rather than at every retiring site.
  *
  * Create-nothing: a browser holding no session database has nothing of this
  * method to delete, and opening one to delete from it would leave a
@@ -332,6 +371,7 @@ export async function deleteUnlockLocalState({
   }
   await deleteKeyringCache({ spaceId, idb })
   await deleteClientKeyRecord({ spaceId, idb })
+  await writerFirstSeen.delete({ spaceId, idb })
 }
 
 /**
