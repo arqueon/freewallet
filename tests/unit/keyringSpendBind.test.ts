@@ -42,8 +42,11 @@ vi.mock('@interop/wallet-core/keyring', async importOriginal => ({
 
 import { KEYRING_KDF, wrapKeyringRecord } from '@interop/wallet-core/keyring'
 import { keyAgreementCommitment } from '@interop/wallet-core/webvh'
-import { unlockKeyVmId, wrapUnlockRecord } from '@interop/wallet-core/unlock'
-import { generateLadderSeed } from '@interop/wallet-core/clientAnnex'
+import {
+  generateLadderSeed,
+  unlockKeyVmId,
+  wrapUnlockRecord
+} from '@interop/wallet-core/unlock'
 import {
   bindPassphrase,
   deriveUnlockCredential,

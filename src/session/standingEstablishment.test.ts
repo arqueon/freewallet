@@ -114,7 +114,8 @@ vi.mock('@/session/userKeyAdoption', () => {
     rotationSpaceId: vi.fn(() => 'space-account')
   }
 })
-vi.mock('@interop/wallet-core/clientAnnex', () => ({
+vi.mock('@interop/wallet-core/webvh', async importOriginal => ({
+  ...(await importOriginal<object>()),
   ladderRung: vi.fn(async () => ({ keyMultibase: 'z6MkRung0' }))
 }))
 

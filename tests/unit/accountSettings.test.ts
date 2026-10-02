@@ -759,6 +759,7 @@ vi.mock('@interop/wallet-core/webvh', async importOriginal => ({
   ladderVmIds: vi.fn(() =>
     state.ladderVmAnchored ? [`${ACCOUNT_DID}#z6MkLadderVm`] : []
   ),
+  ladderVmKeyMultibase: vi.fn(async () => 'z6MkLadderVm'),
   relationIds: vi.fn(() => ['did:webvh:account#z6MkClientOne'])
 }))
 
@@ -817,7 +818,6 @@ vi.mock('@interop/wallet-core/clientAnnex', async importOriginal => ({
   >()),
   ladderVmZcapClient: vi.fn(async () => zcapStub('ladder-vm-client')),
   ladderVmAgent: vi.fn(async () => ({ id: LADDER_DID_KEY })),
-  ladderVmKeyMultibase: vi.fn(async () => 'z6MkLadderVm'),
   delegatedClientsSpaceHistory: vi.fn(() => state.annexHistory),
   mintSpaceVerbCapability: vi.fn(
     async ({

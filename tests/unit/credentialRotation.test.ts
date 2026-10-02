@@ -150,10 +150,9 @@ import {
   preflightUnlockCredentialRetirement,
   retireUnlockCredential
 } from '@interop/wallet-core/unlock'
-import { keyAgreementCommitment } from '@interop/wallet-core/webvh'
+import { keyAgreementCommitment, ladderRung } from '@interop/wallet-core/webvh'
 import {
   clientAnnexLogStore,
-  ladderRung,
   ladderVmAgent,
   retireClientAnnexRung,
   swapClientAnnexGeneration

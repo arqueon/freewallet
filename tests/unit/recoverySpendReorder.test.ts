@@ -273,9 +273,12 @@ import {
   wrapUnlockRecord
 } from '@interop/wallet-core/recovery'
 import { keyAgreementCommitment } from '@interop/wallet-core/webvh'
-import { publishUnlockKey, unlockKeyVmId } from '@interop/wallet-core/unlock'
+import {
+  generateLadderSeed,
+  publishUnlockKey,
+  unlockKeyVmId
+} from '@interop/wallet-core/unlock'
 import { readUserKeyRoster } from '@interop/wallet-core/keys'
-import { generateLadderSeed } from '@interop/wallet-core/clientAnnex'
 import { KEYRING_KDF } from '@interop/wallet-core/keyring'
 import {
   recoverAccountWithCode,

@@ -31,8 +31,9 @@ vi.mock('@interop/wallet-core/clientAnnex', async importOriginal => {
     ladderVmZcapClient: vi.fn()
   }
 })
-const { selfEnrollClientCore, ladderRung } =
+const { selfEnrollClientCore } =
   await import('@interop/wallet-core/clientAnnex')
+const { ladderRung } = await import('@interop/wallet-core/webvh')
 
 vi.mock('@interop/wallet-core/unlock', async importOriginal => ({
   ...(await importOriginal<object>()),

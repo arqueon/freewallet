@@ -15,7 +15,9 @@ import {
   clientKeyAgreementController,
   didKeyZcapClient,
   isWebvhDid,
+  ladderRung,
   ladderVmIds,
+  ladderVmKeyMultibase,
   relationIds,
   rotateWebvhUpdateKey
 } from '@interop/wallet-core/webvh'
@@ -24,14 +26,12 @@ import {
   delegatedClientsDelegationSpaceId,
   delegatedClientsSpaceHistory,
   deleteSpaceWithCapability,
-  generateLadderSeed,
-  ladderRung,
   ladderVmAgent,
-  ladderVmKeyMultibase,
   ladderVmZcapClient,
   mintSpaceRootVerbCapability,
   spaceVerbTarget
 } from '@interop/wallet-core/clientAnnex'
+import { generateLadderSeed } from '@interop/wallet-core/unlock'
 import { readUserKeyRoster } from '@interop/wallet-core/keys'
 import { KEYRING_KDF } from '@interop/wallet-core/keyring'
 import { ceremonyEvents } from '@interop/wallet-core'

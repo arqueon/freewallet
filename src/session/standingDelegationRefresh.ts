@@ -11,11 +11,11 @@ import type { IZcap } from '@interop/data-integrity-core'
 import type { AccountPointer } from '@interop/wallet-core/keyring'
 import type { VerifiedAccountLog } from '@interop/wallet-core/clients'
 import {
+  attributeLadderRung,
   delegationKeyInDocument,
   type PublishedKeyDocument
 } from '@interop/wallet-core/webvh'
 import {
-  attributeLadderRung,
   delegatedClientsDelegationSpaceId,
   mintDelegatedClientsDelegation
 } from '@interop/wallet-core/clientAnnex'

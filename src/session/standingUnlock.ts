@@ -62,6 +62,7 @@ import type { IZcap } from '@interop/data-integrity-core'
 import { equalBytes } from '@noble/ciphers/utils.js'
 import { WasClient, type ServiceDescription } from '@interop/was-client'
 import {
+  generateLadderSeed,
   publishUnlockKey,
   type UnlockLogStore
 } from '@interop/wallet-core/unlock'
@@ -70,6 +71,8 @@ import {
   delegatedWebvhLogStore,
   didKeyZcapClient,
   isWebvhDid,
+  keyAgreementCommitment,
+  ladderRung,
   type ClientWebvhUpdateKeys
 } from '@interop/wallet-core/webvh'
 import {
@@ -77,8 +80,6 @@ import {
   clientAnnexDidParts,
   delegatedClientsPointer,
   ensurePointedClientAnnexGeneration,
-  generateLadderSeed,
-  ladderRung,
   ladderVmZcapClient,
   mintDelegatedClientsDelegation,
   mintGenerationDelegation,
@@ -89,7 +90,6 @@ import {
   delegationProofKeyId
 } from '@interop/wallet-core/recovery'
 import { addUserKeyRosterRecipient } from '@interop/wallet-core/keys'
-import { keyAgreementCommitment } from '@interop/wallet-core/webvh'
 import type { AccountPointer, UnlockKdf } from '@interop/wallet-core/keyring'
 import type { ZcapClient } from '@interop/ezcap'
 import { ID_COLLECTION } from '@interop/wallet-core/space'

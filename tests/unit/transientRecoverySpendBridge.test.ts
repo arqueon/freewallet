@@ -104,9 +104,9 @@ vi.mock('@interop/wallet-core/recovery', async importOriginal => {
 })
 
 // The annex halves of the seam: the fresh generation, its delegation, and
-// the per-visit key's enrollment are remote work. The ladder derivations
-// (`ladderVmAgent`, `ladderVmZcapClient`, `ladderRung`) and the pin-slot key
-// stay real -- they are what the assertions rest on.
+// the per-visit key's enrollment are remote work. The ladder VM agents
+// (`ladderVmAgent`, `ladderVmZcapClient`) and the pin-slot key stay real --
+// they are what the assertions rest on.
 vi.mock('@interop/wallet-core/clientAnnex', async importOriginal => ({
   ...(await importOriginal<
     typeof import('@interop/wallet-core/clientAnnex')

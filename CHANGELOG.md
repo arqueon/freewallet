@@ -11,6 +11,13 @@
   app holds a share of, which the disconnect takes its key off. Each listed
   grant now carries the `collectionId` its target addresses.
 
+### Changed
+
+- The update-key ladder names (`ladderRung`, `ladderVmKeyMultibase`,
+  `attributeLadderRung`) are imported from `@interop/wallet-core/webvh`, and
+  `generateLadderSeed` from `@interop/wallet-core/unlock`, following their
+  move out of the client annex. No behavior change.
+
 ### Fixed
 
 - A consent rolled back after a failure re-retires the party's `connections`

@@ -887,8 +887,9 @@ cascades, and the permanent wire-level constants.
   the DCW mobile wallet, imported by subpath. The set this app uses:
   - the root entry (the ceremony-id vocabulary, and the stage-notifier and
     logger seams)
-  - `/webvh` (the did:webvh log, the document halves of the ceremonies)
-  - `/clientAnnex` (the ladder, the annex log and its GC, the
+  - `/webvh` (the did:webvh log, the update-key ladder's rung and ladder VM
+    derivation and attribution, the document halves of the ceremonies)
+  - `/clientAnnex` (signing as the ladder VM, the annex log and its GC, the
     ladder-anchored ceremonies: credential-anchored genesis, self-enrollment,
     transient recovery, and the recorded-grant revocation
     `revokeRecordedGrant` with its refusal reading). The verify-side halves
@@ -899,7 +900,7 @@ cascades, and the permanent wire-level constants.
     keyed resource id, the store seam and its WAS adapter, the upsert
     helpers, and the grant index)
   - `/keyring` (the unlock layer), `/unlock` (standing unlock credentials,
-    the credential rotation and retirement sequence)
+    the ladder seed mint, the credential rotation and retirement sequence)
   - `/genesis` (the account-genesis key mint and ceremony)
   - `/enrollment`, `/recovery`
   - `/clients` (listing, disconnect policy, the revocation cascade

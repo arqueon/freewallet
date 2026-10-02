@@ -26,7 +26,6 @@ import {
   delegatedClientsPointer,
   ensureGenerationDelegationCurrent,
   ladderSignedGenerationDelegationMinter,
-  ladderVmKeyMultibase,
   mintGenerationDelegation
 } from '@interop/wallet-core/clientAnnex'
 import type { IZcap } from '@interop/data-integrity-core'
@@ -38,6 +37,7 @@ import {
   delegatedWebvhLogStore,
   ensureDidWebProjection,
   ladderVmIds,
+  ladderVmKeyMultibase,
   verifyAccountLog
 } from '@interop/wallet-core/webvh'
 import type {

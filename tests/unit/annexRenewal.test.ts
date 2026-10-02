@@ -32,10 +32,12 @@ vi.mock('@interop/was-client', async importOriginal => ({
 
 import {
   clientAnnexLogStore,
-  ensureGenerationDelegationCurrent,
-  ladderVmKeyMultibase
+  ensureGenerationDelegationCurrent
 } from '@interop/wallet-core/clientAnnex'
-import { verifyAccountLog } from '@interop/wallet-core/webvh'
+import {
+  ladderVmKeyMultibase,
+  verifyAccountLog
+} from '@interop/wallet-core/webvh'
 import { renewTransientGenerationDelegation } from '@/session/annexReach'
 import type { Session } from '@/types/auth'
 

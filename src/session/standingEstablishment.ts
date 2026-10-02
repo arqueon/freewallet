@@ -11,7 +11,7 @@
  * only in what they mint and in the error they fail with.
  */
 import type { UnlockKdf } from '@interop/wallet-core/keyring'
-import { ladderRung } from '@interop/wallet-core/clientAnnex'
+import { ladderRung } from '@interop/wallet-core/webvh'
 import {
   establishStandingUnlock,
   standingFieldsOfKeyringHit

@@ -91,6 +91,7 @@ import {
   documentKeyMultibases,
   isWebvhDid,
   keyAgreementCommitment,
+  ladderRung,
   mintClientWebvhUpdateKeys,
   updateKeyMultibase,
   verifyAccountLog,
@@ -103,8 +104,6 @@ import {
   embeddedGenerationDelegation,
   enrollClientAnnexTransientClient,
   ensureGenerationDelegationCurrent,
-  generateLadderSeed,
-  ladderRung,
   ladderVmAgent,
   ladderVmZcapClient,
   mintCredentialClientAnnexGeneration,
@@ -143,6 +142,7 @@ import {
 } from '@interop/wallet-core/recovery'
 import { base58 } from '@scure/base'
 import {
+  generateLadderSeed,
   preflightUnlockCredentialRetirement,
   publishUnlockKey,
   UNLOCK_MANAGEMENT_ACTIONS,

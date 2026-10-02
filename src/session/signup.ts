@@ -15,10 +15,8 @@
 import { base64urlnopad } from '@scure/base'
 import { KEYRING_KDF, type AccountPointer } from '@interop/wallet-core/keyring'
 import { mintAccountKeySet as mintSharedAccountKeySet } from '@interop/wallet-core/genesis'
-import {
-  assertHostClaimsClientAnnexProfile,
-  generateLadderSeed
-} from '@interop/wallet-core/clientAnnex'
+import { assertHostClaimsClientAnnexProfile } from '@interop/wallet-core/clientAnnex'
+import { generateLadderSeed } from '@interop/wallet-core/unlock'
 import type { PublishedWebvhLog } from '@interop/wallet-core/webvh'
 import { DATE_FMT, PASSKEY_KDF, WAS_SERVER_URL } from '@/app.config'
 import { recordOwnWalletClientEntry } from '@/session/clients'

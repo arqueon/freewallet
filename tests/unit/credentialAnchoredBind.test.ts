@@ -55,7 +55,7 @@ import {
   putUnlockKeyring,
   KEYRING_KDF
 } from '@interop/wallet-core/keyring'
-import { generateLadderSeed } from '@interop/wallet-core/clientAnnex'
+import { generateLadderSeed } from '@interop/wallet-core/unlock'
 import {
   bindCredentialAnchoredUnlockSecret,
   deriveUnlockCredential,

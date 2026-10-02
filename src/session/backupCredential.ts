@@ -32,11 +32,11 @@
  * bounds the live account, not a file already written.
  */
 import { BACKUP_CREDENTIAL_KDF } from '@interop/wallet-core/keyring'
+import { ladderRung } from '@interop/wallet-core/webvh'
 import {
   generateLadderSeed,
-  ladderRung
-} from '@interop/wallet-core/clientAnnex'
-import { UNLOCK_MANAGEMENT_ACTIONS } from '@interop/wallet-core/unlock'
+  UNLOCK_MANAGEMENT_ACTIONS
+} from '@interop/wallet-core/unlock'
 import { errorNameOf } from '@interop/wallet-core/menders'
 import { createLogger } from '@/lib/log'
 import { causeChain } from '@/lib/storageErrors'

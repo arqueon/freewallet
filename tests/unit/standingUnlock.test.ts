@@ -15,7 +15,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { KEYRING_KDF } from '@interop/wallet-core/keyring'
-import { ladderRung } from '@interop/wallet-core/clientAnnex'
+import { ladderRung } from '@interop/wallet-core/webvh'
 import { transientSessionStores } from '@/session/persistence'
 
 vi.mock('@/session/accountCeremonyContext', () => ({
@@ -52,7 +52,8 @@ function enrolledContextStub() {
   }
 }
 
-vi.mock('@interop/wallet-core/unlock', () => ({
+vi.mock('@interop/wallet-core/unlock', async importOriginal => ({
+  ...(await importOriginal<typeof import('@interop/wallet-core/unlock')>()),
   publishUnlockKey: vi.fn(async () => ({}))
 }))
 

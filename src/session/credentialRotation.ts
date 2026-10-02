@@ -43,10 +43,12 @@ import {
   type MendReport,
   type MendReportEntry
 } from '@interop/wallet-core/menders'
-import { keyAgreementCommitment } from '@interop/wallet-core/webvh'
 import {
   attributeLadderRung,
-  ladderRung,
+  keyAgreementCommitment,
+  ladderRung
+} from '@interop/wallet-core/webvh'
+import {
   ladderVmAgent,
   retireClientAnnexRung,
   swapClientAnnexGeneration
