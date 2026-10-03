@@ -41,7 +41,8 @@ unlock secret (passphrase | passkey PRF output)
           the generation delegation
        -> in-memory persistence strategy, replica-less storage
 
-     yes, or rememberBrowser: true -> enrolled client
+     yes -> enrolled client
+       (rememberBrowser: true with no record self-enrolls one first)
        unwrap local client-key record (freewallet-session IndexedDB)
          -> { clientSeed, userKey, webvhUpdateKeys }
        -> agentsFromSeed(clientSeed) -> keyAgent (keyAgent.id === a did:key)
@@ -96,6 +97,9 @@ enrolled client per popup visit would litter the log.
 **The remembered branch.** A fresh browser holding only the credential can
 self-enroll at login as an enrolled client. It runs through the programmatic
 `rememberBrowser: true` entry; a login-form choice is a planned follow-up.
+Until then only the e2e seam (`forcedRememberBrowser`) sets it, so on a WAS
+deployment a production browser becomes remembered only as the enrollee of
+a two-party client enrollment.
 Two loud entries extend the world-readable log through the bridge: a
 reveal-and-commit entry signed by the ladder's current rung, then an add
 entry publishing the minted client. Only then does the user key unwrap from
@@ -451,9 +455,13 @@ block, in registration order: the runner
 (`@interop/wallet-core/menders`) takes the registrations this chain lists
 (`src/session/menders/registrations.ts`) and holds the try, warn, and skip
 discipline once, so a failed registration is logged and the block carries
-on. Only the block's seed aborts it, and the seed is storage provisioning:
-when that fails the login page abandons the session, and neither of the
-block's promises hangs.
+on. The registry admits only a registration whose declared authority the
+session holds, read from the session's own key material, and whose
+`when(route)` predicate admits this login. A registration it does not admit
+reports nothing, and `registryReady` does not wait for it. Only the block's
+seed aborts it, and the seed is storage provisioning: when that fails the
+login page abandons the session, and neither of the block's promises hangs.
+The transient chain has no seed, a transient session provisioning nothing.
 
 Two promises settle it, and both session types set both.
 `session.registryReady` settles when the registry-writing registrations have

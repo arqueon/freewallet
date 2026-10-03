@@ -257,8 +257,7 @@ reads the same join, so a creator is named the same way on both. The
 reading decides on `generator` alone. The server-observed `createdBy` names
 the wallet's invoking DID on a collection the wallet provisioned for an
 app, so it says nothing about the requester here. The storage browser shows
-it as a separate line on the collection contents page and the Resource
-page, described under "Storage model" in ARCHITECTURE.md. The
+it as a separate line (see "Two creator signals" below). The
 same-application test compares app URLs rather than origins, because the
 wallet tells apps apart by `appUrl` and two may share one origin. The
 creator's app URL is the collection's own `generator.url` when it carries
@@ -277,6 +276,46 @@ reading. The same metadata read says whether the collection carries an
 `encryption` descriptor. A string target admits the grantee to no roster,
 so on an encrypted collection the row gets the ciphertext note once the
 second pass lands.
+
+**Two creator signals.** The `generator` stamp is controller-asserted, and
+nothing verifies it. It only labels the consent row and the storage
+browser's listings, and grants nothing. A collection that already stands
+keeps its stamp, so a second requester admitted to it does not rename the
+creator. The content migration stamps an app collection it creates too,
+copying the bundle's value as it stands (see "Content migration" in
+session-persistence.md). The Storage page's listing and the collection
+contents page name an app stamp's creator through `lookupCollectionCreators`
+(`useCollectionCreators`), as the consent row does. A retired entry still
+answers. Only an app the Applications page lists carries the entry resource
+id the caption links with. A creator no entry names is shown by its
+`generator.origin`.
+
+A collection and a Resource carry a second creator signal, `createdBy`. The
+server records it on the first write as the DID whose capability invocation
+created the object. It is server-observed, read-only, and optional. Neither
+signal is verified identity. Under delegated provisioning the two differ by
+design, since the wallet creates an app's collection and `createdBy` names
+the wallet's invoking DID. The collection contents page shows the two as
+separate labeled lines, the stamp as "created for" and `createdBy` as what
+the server observed. The Resource page shows a Resource's `createdBy` the
+same way, since a Resource has no `generator` of its own. It reads the
+Resource's metadata beside the body and hands that read to its Metadata
+card, so expanding the card costs no second GET. Elsewhere the Metadata card
+fetches only when the user expands it.
+
+`resolveCreatedBy` (`src/lib/collectionAttribution.ts`) names a `createdBy`
+DID, driven by `useCreatorAttribution`. A DID the wallet itself invokes as
+reads as "this wallet" (`walletOwnDids` in `src/session/clients.ts`). That
+set is the account DID, every wallet client and ladder VM the verified
+account log ever listed, and the client-annex DID a transient session's own
+writes record. An app, an agent, or a share recipient is named from its
+connection entry by `lookupCreatedByParty` (`src/lib/connectedApps.ts`),
+over the same listing read `lookupCollectionCreators` uses. A `createdBy`
+the wallet invokes as reads the directory only when an app stamp needs
+naming. Any other DID is shown shortened, and an absent one as "not
+recorded". The Storage page's listing shows `generator` alone. It carries
+`createdBy` off the Collection Metadata object it already reads, and
+fetches nothing more for it.
 
 Because the user is recipient zero, the wallet decrypts these collections in
 the storage browser as an ordinary recipient with its vault KAK,
@@ -398,6 +437,49 @@ client-revocation.md), so the revoked app keeps the ability to compute
 blinded terms while the query endpoint stays behind the revoked pull grant.
 Revoking a connected agent runs the same stages with no app key to delete
 (see "The interaction-URL request page" in external-request.md).
+
+**The `connections` directory.** The directory holds one connection entry
+per party the wallet has dealt with: an app, an agent, or a wallet client,
+with `contact` reserved. Each entry sits at a resource id keyed by an HMAC
+of the party's DID under the collection's blinded-index key, so the host
+cannot probe for a guessed DID. An entry carries the party's names, every
+grant the wallet delegated to it, an app's `appKey`, and a wallet client's
+registered writers. Its grants are the revocation index, and the
+`wallet-activity` rows are audit trail that nothing deciding about a party
+reads (`decisions/0034-the-directory-is-the-grant-index.md`). The
+directory rides the session's backend through one store seam
+(`src/stores/connectionsStore.ts`), and is never replicated (see
+"Replica-less, capability-bound storage" in session-persistence.md). Every
+write is a read-modify-write
+under `ifMatch` or a create under `ifNoneMatch`, and a lost race surfaces
+as was-client's `PreconditionFailedError`. A write re-reads only its own
+entry. A page reads the directory once, and every lookup by DID matches in
+memory, so the host sees no GET at the id a DID derives to.
+
+Every directory operation fails closed while the collection is refused as
+the directory (`#directoryAccess` in `StorageManager`). There are five
+refusals. `absent` is a collection with no epoch-bearing descriptor.
+`stranded` is one whose key epochs do not name this session's vault KAK.
+`no-blinded-index-key` is one whose descriptor declares no blinded-index
+key, so no resource id can be derived. `foreign-recipient` is one whose
+current epoch lists a recipient outside the account's user key
+generations. `generator` is one whose Collection Metadata object carries a
+`generator` stamp. The last two mark a collection a requester was
+provisioned with, which some requester could already read. The directory is
+never grantable and never shareable.
+
+Every rule over the encrypted collections reads one roster-wide set,
+`ENCRYPTED_WALLET_COLLECTION_IDS` in `src/app.config.ts`, which holds the
+directory beside the synced ones. Its readers are the descriptor
+acquisition, the local descriptor mint, the stranded report, the user key
+cascade's base set, the credential-anchored mend, and the shares listing.
+
+An entry is retired when its relationship ends: an app disconnect, an agent
+revoke, a wallet-client disconnect, or a forget. Retirement stamps
+`retired`, empties the grants, and drops `appKey`. It keeps the names, so a
+departed party still resolves. It follows the revocation that handled those
+grants, and refuses when the entry has since gained a grant that revocation
+did not handle. A later consent from the same party un-retires the entry.
 
 **Which recipients a rotation keeps.** A rotation wraps the fresh epoch only
 to recipients the wallet admitted, through the admitted-recipient resolver

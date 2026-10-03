@@ -222,7 +222,12 @@ carries. A name is written at signup, at self-enrollment, and at enrollment
 approval, best-effort, and the label is editable inline. A disconnect
 retires the client's entry ahead of its ClientRevoke row, keeping its names,
 and the forget ceremony retires this client's own entry before its removal
-entry. Both are best-effort. The forget waits out this login's writer
+entry. Both are best-effort. A disconnect torn before its retirement leaves
+an unretired entry for a client the document no longer lists, which no
+listing shows. A forget torn between its retirement and its removal entry
+leaves a retired entry for a client the document still lists. That entry
+still names its row, and a re-run or this browser's next remembered login
+converges it. The forget waits out this login's writer
 registration first, since that registration un-retires the entry while the
 document still lists the client. A wallet-client entry normally carries no
 grants. Any it does carry are POSTed, and their grantee rotated off their

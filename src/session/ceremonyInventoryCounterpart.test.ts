@@ -118,17 +118,8 @@ describe('ceremony inventory counterpart', () => {
     expect(rows.length).toBeGreaterThan(0)
   })
 
-  const documentedRows = rows.filter(row => row.moduleCell !== '---')
-  const exemptRows = rows.filter(row => row.moduleCell === '---')
-
-  it('exempts only ceremonies with no module yet', () => {
-    for (const row of exemptRows) {
-      expect(row.ceremony).toBe('Credential-anchored ceremony branches')
-    }
-  })
-
-  it('maps every documented row to a known ceremony id', () => {
-    const mappedIds = documentedRows.map(row => {
+  it('maps every row to a known ceremony id', () => {
+    const mappedIds = rows.map(row => {
       const id = TITLE_TO_ID[row.ceremony]
       if (!id) {
         throw new Error(
@@ -152,7 +143,7 @@ describe('ceremony inventory counterpart', () => {
   })
 
   it('names only module paths that exist', () => {
-    for (const row of documentedRows) {
+    for (const row of rows) {
       const modulePaths = extractModulePaths(row.moduleCell)
       expect(modulePaths.length).toBeGreaterThan(0)
       for (const modulePath of modulePaths) {

@@ -15,8 +15,10 @@ Every WAS signup runs the credential-anchored establishment below, whose
 genesis order promotes the Space controller inline. It mints no enrolled
 client, so the account lands ladder-anchored and is reachable by the
 credential alone from any browser. The plain genesis
-(`ensureAccountGenesis`) is the other path: a no-WAS deployment's signup,
-and the login-time heal for any account it provisioned.
+(`ensureAccountGenesis`) is the other path. It needs a WAS Space, so it
+runs only as the heal in every remembered login's storage provisioning on a
+WAS deployment, a no-op on a healthy account. A no-WAS signup mints the key
+set and binds the local keyring, and runs no genesis.
 
 **The host gate.** Before anything else, a WAS signup reads the configured
 server's service description and refuses a server that does not claim the
@@ -125,7 +127,7 @@ provisioning under this client's did:key, the KMS authentication binding
 (the one stage that overlaps its neighbour), the did:webvh genesis, the user
 key roster strictly after the DID publication, and key epoch[0] on every
 encrypted collection. Every stage detects its own completion from durable
-state, so a torn run heals by re-running at the next login.
+state, so a torn run heals by re-running at the next remembered login.
 `StorageManager.#provisionUserCollections` is the one caller: it supplies
 the KMS stage and the roster store builder, adopts the published DID (also
 dropping the verified-log memo unless it already holds a settled document

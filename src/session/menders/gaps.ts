@@ -1,8 +1,9 @@
 /**
  * The gap allowlist: the residues this wallet accepts standing un-mended,
- * one row per `{ invariant, tornState }` pair, in the order ARCHITECTURE.md's
- * ceremony inventory lists them. One predicate can hold several torn states,
- * and each is its own row.
+ * one row per `{ invariant, tornState }` pair. Row numbers are permanent
+ * labels, so the array order is not the row-number order, and neither
+ * follows ARCHITECTURE.md's open-gaps list, which groups the rows by class.
+ * One predicate can hold several torn states, and each is its own row.
  *
  * `none` means no registration reports the invariant on any trigger, whether
  * because no converger is built, because the code that converges it is not
@@ -16,7 +17,7 @@
 import type { InvariantGap } from '@interop/wallet-core/menders'
 
 /**
- * Every declared gap, in the row order above.
+ * Every declared gap, each labeled by its permanent row number.
  */
 export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
   // 1. This `none` is scoped to the ladder-anchored torn state, whose converger
@@ -100,9 +101,8 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
     item: 'FW-469',
     kind: 'none'
   },
-  // 23. Listed after row 9 so the ARCHITECTURE.md order holds. A transient
-  // spend leaves no pending carrier, so its tail's one retry is the last
-  // registry write that names these entries.
+  // 24. A transient spend leaves no pending carrier, so its tail's one retry
+  // is the last registry write that names these entries.
   {
     invariant: 'no-unlock-space-outlives-its-credential',
     tornState:
@@ -114,8 +114,8 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
   // 10. Retired: the transient chain's collection fan-out seals the
   // collection descriptor logs behind a forget ceremony's removal entry, on
   // both grades. The number stays, so the rows below keep theirs.
-  // 21. The roster half row 10 never named, listed in row 10's place so the
-  // ARCHITECTURE.md order holds. Its only seal is the remembered sweep's
+  // 21. The roster half row 10 never named, listed in row 10's place. Its
+  // only seal is the remembered sweep's
   // roster convergence, which no credential-only visit fires. It keys
   // invariant 37, the roster log's half of invariant 2. The derivation
   // counts 37 reached through its ceremony-tail trigger, so this row stands
@@ -179,7 +179,7 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
   // 22. Retired: the `connections` writer sweep runs at the directory
   // listing read, an encounter site on both session kinds. The number stays,
   // so the rows below keep theirs.
-  // 23. Listed after row 16 so the ARCHITECTURE.md order holds.
+  // 23
   {
     invariant: 'every-party-with-authority-has-a-connection-entry',
     tornState:

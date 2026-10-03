@@ -293,26 +293,37 @@ through that credential's sibling delegation. Every App Connect grant the
 visit chained under the old delegation ends with it.
 
 **The backup export's stage order** (`src/session/backupExport.ts`). The
-export packs a backup credential into the bundle. That is a standing unlock
-credential (`src/session/backupCredential.ts`) whose secret is 32 random
-bytes, derived under wallet-core's `BACKUP_CREDENTIAL_KDF`. The bundle
-carries the secret as `backup-credential.json`, sealed under an export
-passphrase or in the clear. A restore is a transient login on the
+Storage page's export action
+(`src/components/storage/BackupExportDialog.tsx`) runs it. It exports every
+Space the account names through the server's per-Space export route, and
+packs the archives into one outer tar with `@interop/wallet-backup`'s
+`exportBundle`. The export also packs a backup credential into the bundle.
+That is a standing unlock credential (`src/session/backupCredential.ts`)
+whose secret is 32 random bytes, derived under wallet-core's
+`BACKUP_CREDENTIAL_KDF`. The bundle carries the secret as
+`backup-credential.json`, sealed under an export passphrase or in the
+clear. A secret packed in the clear makes the file a bearer credential. A
+restore is a transient login on the
 credential's record, which is not built yet: no login form accepts a backup
 credential today. Nothing is retired and no key is rotated.
 
 The ceremony waits out `session.registryReady` and `session.mends` and
 resolves the account-ceremony context once. The pre-flight runs next, before
 anything is minted, so a refusal there leaves no "Backup <date>" row behind.
-It checks the account Space's, the client-annex Space's, and every registry
-entry's capability for `POST`. The client-annex Space is resolved from the
-account document's `#DelegatedClients` pointer on both session kinds, and a
-named annex Space this session cannot reach refuses the run there. One more
-condition rides the annex. The establishment must commit the new
-credential's rung into the pointed generation, signed by this session's own
-ladder rung. A session holding no ladder seed cannot. On an account naming
-an annex Space, such a session refuses here with `BackupAnnexCommitError`. The new credential's own entry is minted with
-the full verb set, so the pre-flight does not check it.
+It checks every registry entry's capability for `POST`. On the ladder kind
+it also checks the generation delegation on the account Space and the
+record's `delegatedClients` delegation on the annex, each for `POST`. An
+enrolled session root-invokes both Spaces, so there is nothing to check. The
+client-annex Space is resolved from the account document's
+`#DelegatedClients` pointer on both session kinds, and a named annex Space
+this session cannot reach refuses the run there. One more condition rides
+the annex. The establishment must commit the new credential's rung into the
+pointed generation, signed by this session's own ladder rung. On an account
+naming an annex Space, the run refuses here with `BackupAnnexCommitError`
+when the session holds no ladder seed (`no-ladder-seed`), or when the
+pointed generation does not admit this session's rung
+(`rung-uncommitted`). The new credential's own entry is minted with the
+full verb set, so the pre-flight does not check it.
 
 Four stages follow in order. First the establishment, which is the pivot.
 Then the Space listing, read back from the server after it: the account
@@ -326,7 +337,8 @@ three at a time. The account Space's archive is checked against this
 visit's pinned chain head for the account log before its entry is written,
 and a mismatch refuses the run. A visit holding no pin for that log skips
 the check. Then the packing. Once every archive is in hand, and before the
-bundle's last entry is written, the registry is read once more. A set of
+bundle's last entry is written, the registry is read once more, through
+`exportBundle`'s `settle` port. A set of
 unlock Spaces that differs from the listed one refuses the run
 (`BackupRegistryChangedError`). A refusal after the listing errors the
 stream, so the save fails and does not finish the file.
@@ -373,8 +385,9 @@ verification method the document never listed, and the Space delete
 tolerates a 404.
 
 Which capability each export rides depends on the kind. An enrolled session
-root-invokes the account and annex Spaces and invokes each entry's stored
-management zcap directly. A ladder-anchored session rides the generation
+root-invokes the account and annex Spaces. On the siblings it sends a
+freshly minted POST-only child of each management zcap, signed and sent by
+the stored zcap's own delegatee. A ladder-anchored session rides the generation
 delegation on the account Space, the record's `delegatedClients` delegation
 on the annex (sent by the credential's standing client, since the annex
 Space answers to the account did:webvh), and a freshly minted POST-only
@@ -395,10 +408,9 @@ as consistent as the run was quiet. The one bound the ceremony can state it
 does: the registry is re-read once every archive is in hand, and a set of
 unlock Spaces that differs from the listed one fails the run, since a
 credential added mid-run would be missing from the bundle and one removed
-would be in it after its Space was gone. Because the bundle is buffered
-whole before it is handed back (wallet-backup's writer finalizes the pack
-with no consumer attached), that check still runs before the caller sees a
-single byte.
+would be in it after its Space was gone. The bundle streams, so the caller
+has already received its first entries when that check runs. A refusal
+there errors the stream rather than finishing the file.
 
 The rule is fail-whole: one Space that cannot be exported fails the run, so
 no bundle is written that reads as complete and is not. The export
@@ -415,8 +427,25 @@ finished bundle into a Blob instead. A cancelled run renders the cancelled
 message, which says any backup credential it already established is listed
 under Settings > Backup credentials.
 
-**Content migration's app collections** (`src/session/contentMigration.ts`).
-Beside the standard collections, the walk hands the sink every app
+**Content migration** (`src/session/contentMigration.ts`). The Storage
+page's "Import from another wallet" dialog
+(`src/components/storage/ContentMigrationDialog.tsx`) takes the bundle file
+and one secret of the old account: its passphrase, a recovery code, or the
+backup credential the bundle carries. `@interop/wallet-backup` reads the
+bundle and pushes one plaintext Resource at a time at a sink built over
+`StorageManager`'s import methods. A standard-collection Resource lands on
+the session's own backend, so every session kind may run the migration, a
+guest included. The walk contacts no server of the old account, since
+everything it reads comes out of the file. Each import method skips a
+Resource the account already holds by its content identity. Only a
+credential's activities migrate, and a `Create` the account already records
+for that credential is skipped
+(`decisions/0028-only-credential-activities-migrate.md`). The run's counts
+become one Import activity, which replaces any earlier run's Import activity
+for the same bundle. A full Space during any Resource write, a chunked one
+included, stops the walk under `QuotaExceededError`.
+
+**Content migration's app collections**. Beside the standard collections, the walk hands the sink every app
 collection in the bundle's account archive, one at a time: an
 `ensureCollection` call, then its Resources. The sink carries that member only
 when `StorageManager.canProvisionAppCollections` holds (remote storage and
@@ -427,8 +456,9 @@ writes anything. It then runs was-client's guarded ensure, whose `created`
 report decides whether this run made the collection. The earlier read only
 feeds the checks. A create lost to a rival reads the rival's collection
 back and checks it the same way. An encrypted collection is ensured bare
-and then gets its first epoch owner-only, the second half of
-`provisionEncryptedCollection` with no grantee. On a collection the run
+under its archived `generator`. It then gets a fresh governing log, whose
+first epoch is owner-only, and a fresh blinded-index key. That is the second
+half of `provisionEncryptedCollection` with no grantee. On a collection the run
 creates, it declares the archived index schema through was-client's
 add-only `declareIndexes`. It then builds the collection's cipher from
 the descriptor and the collection metadata as it then stands. A standing
@@ -477,12 +507,15 @@ collection's held Resources once per
 run, at its first Resource, and `importAppCollectionResource` decides each Resource
 against that snapshot: `skipped` for the same identity and content,
 `conflicting` for the same identity under other content, and otherwise a
-write. A plaintext Resource keeps its archived content type. A non-JSON one
-arrives as raw bytes and is not in the snapshot, so an id already taken is
-read back and compared by its bytes.
+write. A plaintext Resource's identity is its archived resource id, and it
+keeps that id and its archived content type. A non-JSON one arrives as raw
+bytes and is not in the snapshot, so an id already taken is read back and
+compared by its bytes.
 
 An encrypted Resource arrives by what it decrypted to. A JSON one takes the
-route above. One that decrypted to bytes, a chunked Resource or a small
+route above. Its identity is its payload's own `id`, or its content cid when
+it has none. It is re-sealed under the new user key with its blinded index
+entries, under a fresh content-derived id. One that decrypted to bytes, a chunked Resource or a small
 binary or text one, arrives as raw bytes under its sealed content type. Its
 identity is its archived resource id. `WASRemoteStore.putEncryptedResourceBytes`
 writes it at that id through was-client's `Resource.put` with
@@ -503,7 +536,7 @@ stub is left out of it. A `507` during a chunked write surfaces as
 `QuotaExceededError`, which ends the walk. `migrateContent` refuses a second
 run while one is going in the same tab (`ContentMigrationInProgressError`),
 since that run could reap a stub the first is still filling. Runs in two tabs
-are not held apart.
+or two browsers are not held apart.
 
 App collections are remote-only, so these writes go remote-direct
 on a remembered session too. The app's own recipient entry and grants do
@@ -516,8 +549,9 @@ authenticator: the ordinary revoke, with no secret in hand. It strikes the
 credential's ladder VM and key agreement from the account document, rotates
 the user key off its roster wrap, deletes its unlock Space through the
 entry's management zcap, and drops the entry. On the ladder kind the
-generation delegation this visit rides is replaced first, best-effort, in
-case the credential's ladder VM signed it. A transient session refuses to
+generation delegation this visit rides is replaced first, in case the
+credential's ladder VM signed it, and a replacement that does not install
+refuses the removal (`GenerationDelegationRenewalError`). A transient session refuses to
 remove the backup credential it entered on (`ActingCredentialRemovalError`),
 since every stage would act through the VM being struck. An entry recording
 no management zcap refuses with `BackupCredentialNotRemovableError`. After

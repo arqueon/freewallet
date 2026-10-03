@@ -260,8 +260,8 @@ refuses the whole run on failure, so a torn annex-Space or sibling-Space
 delete leaves the account alive, enterable, and re-runnable. The acting
 credential's own unlock Space is the one exception: past the pivot, a failed
 delete there is retried in-run and then reported rather than failed, since
-reporting failure would tell the user the account survived. The next login
-with that credential offers to remove it instead. A wipe failure past the
+reporting failure would tell the user the account survived. A later login
+with that credential offering to remove it is not built yet. A wipe failure past the
 pivot is accepted the same way, naming the surviving replica as an
 unverified residue.
 
