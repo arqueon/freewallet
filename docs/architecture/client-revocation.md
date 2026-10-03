@@ -136,6 +136,20 @@ account key signed the generation delegation this visit's every request
 rides, and the removal entry strikes it. The replacement is minted by the
 acting credential's ladder VM, installed in place through the credential's
 sibling delegation and adopted into the live session before the entry lands.
+Two outcomes refuse the disconnect before the entry
+(`GenerationDelegationRenewalError`, carrying `reason`). One is a
+replacement that fails to install (`failed`). The other is a document that
+anchors no ladder VM for the acting credential (`no-ladder-vm`). The ladder
+kind's roster and collection stores sign with that VM, so every append
+after the entry would be refused. A last-client transition torn between
+its strike and its install leaves this shape, and a transient visit can
+still reach it through the fallback. In both cases the removal entry is not
+published, the wallet stays connected, and the panel shows a retry. A
+renewal whose annex-log append landed with its response lost leaves a fresh
+delegation in the annex log that the session does not ride. It is inert,
+and a retry adopts it. The two remaining reasons, `no-ladder-seed` and
+`no-pointer`, are unreachable on a ladder-kind context. They proceed, and
+the mend entry reports the reason by name.
 
 No unlock record is written on either branch, since every record's frame
 proof, bridge, and sibling delegation are signed by its OWN credential's

@@ -8,9 +8,9 @@
  *
  * What is exercised here is what the branch adds and what it withholds. It
  * adds three pre-pivot refusals (a registry this session could not read, a
- * pending-shaped passphrase entry, a standing credential the registry does
- * not name) and a generation-delegation replacement that must land BEFORE
- * the removal entry strikes the key that signed the standing one. It
+ * pending-shaped passphrase entry, and a generation-delegation replacement
+ * that did not install), since that replacement must land BEFORE the
+ * removal entry strikes the key that signed the standing one. It
  * withholds the self-revocation multibase (a ladder rung has no self to
  * refuse) and both re-mint stages (every unlock record's bridge is signed by
  * its OWN credential's ladder VM, which this entry does not strike) -- so no
@@ -31,13 +31,18 @@ const state = vi.hoisted(() => ({
   registryCapabilities: [] as unknown[],
   /** whether the pre-pivot detector refuses */
   pendingEntry: false,
-  /** whether the generation-delegation replacement fails */
-  renewFails: false,
   /**
    * What the replacement installs: a freshly minted delegation, the one the
-   * visit already invokes (the policy left it standing), or nothing at all.
+   * visit already invokes (the policy left it standing), or nothing at all,
+   * named by the renewal's skip reason.
    */
-  renewInstalls: 'fresh' as 'fresh' | 'healthy' | 'none',
+  renewInstalls: 'fresh' as
+    | 'fresh'
+    | 'healthy'
+    | 'no-pointer'
+    | 'no-ladder-seed'
+    | 'no-ladder-vm'
+    | 'failed',
   /**
    * The capability the visit rides right now. The live session's stamp, which
    * the renewal below replaces exactly as the real adoption does.
@@ -119,20 +124,24 @@ vi.mock('@/session/forget', async importOriginal => {
 vi.mock('@/session/annexReach', () => ({
   clientAnnexReachFor: vi.fn(() => null),
   ensureGenerationDelegation: vi.fn(async () => ({ renewed: false })),
-  renewTransientGenerationDelegation: vi.fn(async () => {
-    state.calls.push('renewTransientGenerationDelegation')
-    if (state.renewFails) {
-      throw new Error('the sibling delegation is unreachable')
+  tryRenewTransientGenerationDelegation: vi.fn(async () => {
+    state.calls.push('tryRenewTransientGenerationDelegation')
+    if (state.renewInstalls === 'failed') {
+      // What the real renewal does on a caught failure: it logs it and
+      // resolves with the error rather than throwing.
+      return {
+        skipped: 'failed',
+        err: new Error('the sibling delegation is unreachable')
+      }
     }
-    if (state.renewInstalls === 'none') {
-      // What the real renewal does when it installs nothing: it logs its own
-      // reason and resolves with `null` rather than throwing.
-      return null
+    if (state.renewInstalls !== 'fresh' && state.renewInstalls !== 'healthy') {
+      // Installed nothing, for the named reason.
+      return { skipped: state.renewInstalls }
     }
     if (state.renewInstalls === 'healthy') {
       // The policy found the embedded delegation standing, so the same
       // delegation comes back and nothing was renewed.
-      return state.invocationCapability
+      return { delegation: state.invocationCapability }
     }
     const fresh = { id: 'urn:zcap:generation-fresh' }
     if (state.renewSwaps) {
@@ -140,7 +149,7 @@ vi.mock('@/session/annexReach', () => ({
       // live session, so every later stage must ride it.
       state.invocationCapability = fresh
     }
-    return fresh
+    return { delegation: fresh }
   }),
   didWebProjectionStore: vi.fn((args: unknown) => {
     state.calls.push('didWebProjectionStore')
@@ -215,11 +224,12 @@ import { deriveNextKeyHash } from '@interop/did-method-webvh'
 import { revokeAccountClient } from '@interop/wallet-core/clients'
 import {
   didWebProjectionStore,
-  renewTransientGenerationDelegation
+  tryRenewTransientGenerationDelegation
 } from '@/session/annexReach'
 import { assertNoPendingPassphraseEntry } from '@/session/forget'
 import { reprimeVerifiedAccountLog } from '@/session/verifiedLog'
 import {
+  GenerationDelegationRenewalError,
   revokeEnrolledClient,
   type RevokedClientKeys
 } from '@/session/revocation'
@@ -452,7 +462,6 @@ beforeEach(() => {
   state.registryFails = false
   state.registryCapabilities = []
   state.pendingEntry = false
-  state.renewFails = false
   state.renewInstalls = 'fresh'
   state.renewSwaps = false
   state.invocationCapability = GENERATION_DELEGATION
@@ -477,7 +486,7 @@ describe('the pre-pivot stage order', () => {
       // The rule for a struck signer: the replacement is minted and adopted
       // BEFORE the removal entry takes the revoked client's key out of the
       // document, since that key may be what signed the standing one.
-      'renewTransientGenerationDelegation',
+      'tryRenewTransientGenerationDelegation',
       // The post-removal projection is PUT before the entry, not after it: a
       // ladder-signed entry writes `did.jsonl` alone, so `id/did.json` would
       // otherwise keep naming the client the log has struck.
@@ -496,7 +505,9 @@ describe('the pre-pivot stage order', () => {
       session: transientSession(),
       client: REVOKED
     })
-    expect(vi.mocked(renewTransientGenerationDelegation)).toHaveBeenCalledWith(
+    expect(
+      vi.mocked(tryRenewTransientGenerationDelegation)
+    ).toHaveBeenCalledWith(
       expect.objectContaining({
         retiringKeyMultibases: [REVOKED.signingKeyMultibase]
       })
@@ -511,66 +522,31 @@ describe('the pre-pivot stage order', () => {
     expect(state.registryCapabilities).toEqual([GENERATION_DELEGATION])
   })
 
-  it('proceeds when the delegation replacement fails', async () => {
-    // Best-effort: the visit may lose its authority when the revoked key
-    // leaves the document, which a re-run or the next visit's readiness
-    // stage mends. The disconnect itself is not held up, and the tail entry
-    // is what says the replacement did not land.
-    state.renewFails = true
-    const outcome = await revokeEnrolledClient({
-      session: transientSession(),
-      client: REVOKED
-    })
-    expect(outcome.rotated).toBe(true)
-    expect(vi.mocked(revokeAccountClient)).toHaveBeenCalledOnce()
-    expect(outcome.mended).toEqual([
-      {
-        invariant: 'generation-delegation-is-current',
-        ceremonies: ['client-revocation'],
-        outcome: 'failed',
-        errorName: 'Error'
-      }
-    ])
-  })
-
-  it('grades a replacement that installed nothing as failed', async () => {
-    // The renewal swallows its own failures and resolves with `null`, so a
-    // visit that still points at an annex generation and got no delegation
-    // back is a stage that did not run to its end.
-    state.renewInstalls = 'none'
-    const outcome = await revokeEnrolledClient({
-      session: transientSession(),
-      client: REVOKED
-    })
-    expect(outcome.mended).toEqual([
-      {
-        invariant: 'generation-delegation-is-current',
-        ceremonies: ['client-revocation'],
-        outcome: 'failed'
-      }
-    ])
-  })
-
-  it('grades a session with no annex generation as refused', async () => {
-    // Nothing to replace: the session points at no generation, which is the
-    // one reading `no-pointer` states.
-    state.renewInstalls = 'none'
-    const session = transientSession()
-    delete (session.persistence as unknown as { clientAnnex?: unknown })
-      .clientAnnex
-    const outcome = await revokeEnrolledClient({ session, client: REVOKED })
-    expect(outcome.mended).toEqual([
-      {
-        invariant: 'generation-delegation-is-current',
-        ceremonies: ['client-revocation'],
-        outcome: 'refused',
-        detail: { reason: 'no-pointer' }
-      }
-    ])
-  })
+  it.each(['no-pointer', 'no-ladder-seed'] as const)(
+    'proceeds past a %s skip and reports it by name',
+    async reason => {
+      // No annex generation or no ladder members: unreachable on a
+      // ladder-kind context, so a defensive proceed that names its reason.
+      state.renewInstalls = reason
+      const outcome = await revokeEnrolledClient({
+        session: transientSession(),
+        client: REVOKED
+      })
+      expect(outcome.rotated).toBe(true)
+      expect(vi.mocked(revokeAccountClient)).toHaveBeenCalledOnce()
+      expect(outcome.mended).toEqual([
+        {
+          invariant: 'generation-delegation-is-current',
+          ceremonies: ['client-revocation'],
+          outcome: 'refused',
+          detail: { reason }
+        }
+      ])
+    }
+  )
 })
 
-describe('the three pre-pivot refusals', () => {
+describe('the pre-pivot refusals', () => {
   it('refuses an unreadable registry before anything is written', async () => {
     state.registryFails = true
     await expect(
@@ -578,7 +554,9 @@ describe('the three pre-pivot refusals', () => {
     ).rejects.toThrow('Could not read the unlock-methods registry')
     expect(vi.mocked(revokeAccountClient)).not.toHaveBeenCalled()
     expect(vi.mocked(assertNoPendingPassphraseEntry)).not.toHaveBeenCalled()
-    expect(vi.mocked(renewTransientGenerationDelegation)).not.toHaveBeenCalled()
+    expect(
+      vi.mocked(tryRenewTransientGenerationDelegation)
+    ).not.toHaveBeenCalled()
   })
 
   it('refuses a pending-shaped passphrase entry', async () => {
@@ -591,7 +569,55 @@ describe('the three pre-pivot refusals', () => {
 
     expect((thrown as Error).name).toBe('PendingRetirementForgetError')
     expect(vi.mocked(revokeAccountClient)).not.toHaveBeenCalled()
-    expect(vi.mocked(renewTransientGenerationDelegation)).not.toHaveBeenCalled()
+    expect(
+      vi.mocked(tryRenewTransientGenerationDelegation)
+    ).not.toHaveBeenCalled()
+  })
+
+  it('refuses before the removal entry when the delegation replacement fails', async () => {
+    // Publishing the entry anyway would strike the key the visit's
+    // delegation may chain to, losing its authority for the rest of the
+    // cascade. Refused here, before the pivot, the wallet stays connected.
+    state.renewInstalls = 'failed'
+    const session = transientSession()
+    const refusal = revokeEnrolledClient({ session, client: REVOKED })
+
+    await expect(refusal).rejects.toBeInstanceOf(
+      GenerationDelegationRenewalError
+    )
+    await expect(refusal).rejects.toMatchObject({
+      reason: 'failed',
+      cause: { message: 'the sibling delegation is unreachable' }
+    })
+    // The account document is unchanged: neither the projection PUT nor the
+    // removal entry ran, and nothing past them did.
+    expect(vi.mocked(revokeAccountClient)).not.toHaveBeenCalled()
+    expect(state.projectionPuts).toEqual([])
+    expect(session.storage.addHistoryClientRevoked).not.toHaveBeenCalled()
+    expect(state.calls).toEqual([
+      'getUnlockMethods',
+      'loadUserKeyEpochPin',
+      'assertNoPendingPassphraseEntry',
+      'tryRenewTransientGenerationDelegation'
+    ])
+  })
+
+  it('refuses before the removal entry when the document anchors no ladder VM', async () => {
+    // The ladder kind's roster and collection stores sign with this
+    // credential's ladder VM, so with none in the document every append
+    // after the entry would be refused. A last-client transition torn
+    // between its strike and its install leaves this shape.
+    state.renewInstalls = 'no-ladder-vm'
+    const session = transientSession()
+    const refusal = revokeEnrolledClient({ session, client: REVOKED })
+
+    await expect(refusal).rejects.toBeInstanceOf(
+      GenerationDelegationRenewalError
+    )
+    await expect(refusal).rejects.toMatchObject({ reason: 'no-ladder-vm' })
+    expect(vi.mocked(revokeAccountClient)).not.toHaveBeenCalled()
+    expect(state.projectionPuts).toEqual([])
+    expect(session.storage.addHistoryClientRevoked).not.toHaveBeenCalled()
   })
 
   it('hands the detector the one registry the branch already read', async () => {

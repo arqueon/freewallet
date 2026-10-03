@@ -2,8 +2,9 @@
 /**
  * Unit tests for the grant path's generation-delegation renewal stage
  * (`renewTransientGenerationDelegation` in `src/session/annexReach.ts`): the
- * ladder-VM gate it opens with, what it hands wallet-core's ensure, and what
- * it swaps the fresh delegation into. The ensure and the account-log
+ * ladder-VM gate it opens with, what it hands wallet-core's ensure, what it
+ * swaps the fresh delegation into, and the skip reason each way it installs
+ * nothing resolves to (`tryRenewTransientGenerationDelegation`). The ensure and the account-log
  * verification are mocked at the module seam; the ladder VM's own multibase
  * derivation runs for real, so the gate is exercised against real key
  * material rather than a stubbed comparison.
@@ -38,7 +39,10 @@ import {
   ladderVmKeyMultibase,
   verifyAccountLog
 } from '@interop/wallet-core/webvh'
-import { renewTransientGenerationDelegation } from '@/session/annexReach'
+import {
+  renewTransientGenerationDelegation,
+  tryRenewTransientGenerationDelegation
+} from '@/session/annexReach'
 import type { Session } from '@/types/auth'
 
 const ACCOUNT_DID =
@@ -206,5 +210,74 @@ describe('renewTransientGenerationDelegation', () => {
 
     expect(await renewTransientGenerationDelegation({ session })).toBeNull()
     expect(verifyAccountLog).not.toHaveBeenCalled()
+  })
+})
+
+describe('tryRenewTransientGenerationDelegation', () => {
+  it('names a session holding no ladder members no-ladder-seed', async () => {
+    const { session } = transientSession()
+    delete (session.profile as { ladderSeed?: unknown }).ladderSeed
+
+    expect(await tryRenewTransientGenerationDelegation({ session })).toEqual({
+      skipped: 'no-ladder-seed'
+    })
+    expect(verifyAccountLog).not.toHaveBeenCalled()
+  })
+
+  it('names a session with no client annex no-pointer', async () => {
+    const { session } = transientSession()
+    delete (session.persistence as { clientAnnex?: unknown }).clientAnnex
+
+    expect(await tryRenewTransientGenerationDelegation({ session })).toEqual({
+      skipped: 'no-pointer'
+    })
+    expect(verifyAccountLog).not.toHaveBeenCalled()
+  })
+
+  it('names a document anchoring no ladder VM of this credential no-ladder-vm', async () => {
+    vi.mocked(verifyAccountLog).mockResolvedValue({
+      did: ACCOUNT_DID,
+      doc: { id: ACCOUNT_DID, verificationMethod: [] },
+      log: []
+    } as never)
+    const { session } = transientSession()
+
+    expect(await tryRenewTransientGenerationDelegation({ session })).toEqual({
+      skipped: 'no-ladder-vm'
+    })
+  })
+
+  it('names a caught failure failed and carries the error', async () => {
+    const err = new Error('offline')
+    vi.mocked(verifyAccountLog).mockRejectedValue(err)
+    const { session } = transientSession()
+
+    expect(await tryRenewTransientGenerationDelegation({ session })).toEqual({
+      skipped: 'failed',
+      err
+    })
+  })
+
+  it('names a renewal that throws past the ladder-VM gate failed, leaving the session untouched', async () => {
+    // The case the disconnect's refusal exists for: the gate passes, and the
+    // ladder-signed ensure itself fails (an annex append refused, say).
+    const vmKey = await ladderVmKeyMultibase({ ladderSeed: LADDER_SEED })
+    vi.mocked(verifyAccountLog).mockResolvedValue({
+      did: ACCOUNT_DID,
+      doc: documentAnchoring({ vmId: `${ACCOUNT_DID}#${vmKey}` }),
+      log: []
+    } as never)
+    const err = new Error('annex append refused')
+    vi.mocked(ensureGenerationDelegationCurrent).mockRejectedValue(err)
+    const { session, handle, adoptInvocationCapability } = transientSession()
+
+    expect(await tryRenewTransientGenerationDelegation({ session })).toEqual({
+      skipped: 'failed',
+      err
+    })
+    expect(ensureGenerationDelegationCurrent).toHaveBeenCalledOnce()
+    expect(session.profile.invocationCapability).toBe(STALE_DELEGATION)
+    expect(handle.clientAnnex.invocationCapability).toBe(STALE_DELEGATION)
+    expect(adoptInvocationCapability).not.toHaveBeenCalled()
   })
 })

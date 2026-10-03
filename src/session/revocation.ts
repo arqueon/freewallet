@@ -24,10 +24,15 @@
  * refuse: the account simply lands ladder-anchored, the shape a
  * credential-anchored signup produces.
  *
- * Two refusals run before the ladder branch writes anything, both of them
- * the last-client transition's: a registry this session cannot read, and a
- * pending-shaped passphrase entry. The second is what the first exists for,
- * since the check is computed from the registry. Neither branch re-seals an
+ * Three refusals run before the ladder branch publishes its removal entry.
+ * Two are the last-client transition's: a registry this session cannot read,
+ * and a pending-shaped passphrase entry. The second is what the first exists
+ * for, since the check is computed from the registry. The third is the
+ * generation-delegation replacement (`GenerationDelegationRenewalError`):
+ * one that failed to install, or a document anchoring no ladder VM for the
+ * acting credential, which every post-entry roster append signs with. Either
+ * is refused before the removal entry rather than after it rots the visit's
+ * authority. Neither branch re-seals an
  * unlock record: every record's frame proof, bridge, and sibling delegation
  * are signed by its own credential's unlock identity and ladder VM, which
  * this entry does not strike.
@@ -55,7 +60,7 @@ import type { CeremonyId } from '@interop/wallet-core'
 import {
   clientAnnexReachFor,
   ensureGenerationDelegation,
-  renewTransientGenerationDelegation
+  tryRenewTransientGenerationDelegation
 } from '@/session/annexReach'
 import {
   getUnlockMethods,
@@ -104,12 +109,51 @@ export interface RevocationOutcome {
 }
 
 /**
+ * A ladder-branch disconnect refused before its removal entry, for one of
+ * two reasons. `failed`: the replacement of the generation delegation this
+ * visit's requests ride did not install, so publishing the entry could
+ * strike the key that delegation chains to; `cause` carries the renewal's
+ * own error. `no-ladder-vm`: the account document anchors no ladder VM for
+ * the acting credential, and the ladder kind's roster and collection stores
+ * sign with that VM, so every append after the entry would be refused.
+ *
+ * The removal entry was not published, so the wallet is still connected and
+ * the ceremony is retryable as is. A renewal whose annex-log append landed
+ * with its response lost leaves a fresh delegation embedded there that this
+ * session does not ride. It is inert, and a retry adopts it.
+ */
+export class GenerationDelegationRenewalError extends Error {
+  readonly reason: 'failed' | 'no-ladder-vm'
+
+  constructor({
+    reason,
+    cause
+  }: {
+    reason: 'failed' | 'no-ladder-vm'
+    cause?: unknown
+  }) {
+    super(
+      'Disconnecting was refused before the removal entry was published: ' +
+        (reason === 'failed'
+          ? 'this session could not replace its own generation delegation ' +
+            'first.'
+          : "the account document anchors no ladder VM for this session's " +
+            'credential.'),
+      cause !== undefined ? { cause } : undefined
+    )
+    this.name = 'GenerationDelegationRenewalError'
+    this.reason = reason
+  }
+}
+
+/**
  * The cascade's one ceremony-tail mend entry: what this run's generation
  * delegation stage made of `generation-delegation-is-current`. A renewal
  * reports `clean`, a delegation the stage found healthy `noop`, a stage that
- * could not run `refused` with its reason, and a caught failure `failed`
- * with the error's class name (never its message, which may carry a DID or a
- * Space id).
+ * could not run `refused` with its reason, and the enrolled re-mint's caught
+ * failure `failed` with the error's class name (never its message, which may
+ * carry a DID or a Space id). A failed ladder-branch replacement refuses the
+ * disconnect instead, so it never reaches a report.
  *
  * @param remint {object}   the stage's report -- the enrolled branch's
  *   re-mint or the ladder branch's pre-entry replacement -- carrying the
@@ -203,7 +247,8 @@ async function retireRevokedClientEntry({
 /**
  * Runs the whole revocation cascade for one enrolled wallet client. Throws
  * before touching anything on a call that must not proceed (self-revocation,
- * missing key material); once the document edit lands, every later stage is
+ * missing key material, a ladder-branch generation-delegation replacement
+ * that did not install); once the document edit lands, every later stage is
  * best-effort-but-resumable -- a thrown stage leaves durable state a naive
  * re-run (or the login-time completion sweep) converges from. An account with
  * no user key roster yet reports a completed cascade with nothing rotated: the
@@ -301,8 +346,7 @@ async function revokeEnrolledClientHeld({
   // `generation-delegation-is-current`. The cascade below runs no re-mint
   // stage on the ladder branch, so this stage is what the ceremony-tail
   // entry reports there.
-  let ladderRenewal:
-    (GenerationDelegationRemint & { errorName?: string }) | undefined
+  let ladderRenewal: GenerationDelegationRemint | undefined
   if (ladder) {
     // The rule for a struck signer: the removal entry takes the revoked
     // client's account key out of the document, and on an account whose
@@ -312,36 +356,37 @@ async function revokeEnrolledClientHeld({
     // adopted into the live session before the entry lands. A delegation the
     // policy leaves standing costs one read.
     const invoked = session.profile.invocationCapability?.id
-    try {
-      const replacement = await renewTransientGenerationDelegation({
-        session,
-        retiringKeyMultibases: [client.signingKeyMultibase]
+    const renewal = await tryRenewTransientGenerationDelegation({
+      session,
+      retiringKeyMultibases: [client.signingKeyMultibase]
+    })
+    if ('delegation' in renewal) {
+      // An id this visit was not already invoking is one the renewal minted,
+      // the id it was invoking is one the policy left standing.
+      ladderRenewal = { renewed: renewal.delegation.id !== invoked }
+    } else if (renewal.skipped === 'failed') {
+      // A replacement that did not install refuses the disconnect here,
+      // before the removal entry (the pivot), so the wallet is still
+      // connected and a retry starts over. Publishing the entry anyway would
+      // strike the key the visit's delegation may chain to, losing its
+      // authority for the rest of the cascade.
+      throw new GenerationDelegationRenewalError({
+        reason: 'failed',
+        cause: renewal.err
       })
-      // The renewal resolves with the delegation the generation now embeds:
-      // an id this visit was not already invoking is one it minted, the id it
-      // was invoking is one the policy left standing, and `null` is a
-      // replacement it did not install -- a session pointing at no annex
-      // generation, or a renewal that failed inside (it logs its own reason
-      // there rather than throwing).
-      if (replacement) {
-        ladderRenewal = { renewed: replacement.id !== invoked }
-      } else if ('clientAnnex' in session.persistence) {
-        ladderRenewal = { renewed: false, skipped: 'failed' }
-      } else {
-        ladderRenewal = { renewed: false, skipped: 'no-pointer' }
-      }
-    } catch (err) {
-      ladderRenewal = {
-        renewed: false,
-        skipped: 'failed',
-        errorName: errorNameOf(err)
-      }
-      log.warn(
-        'Could not replace the generation delegation before the removal ' +
-          "entry; the visit may lose its authority when the revoked client's " +
-          'key leaves the document',
-        { err }
-      )
+    } else if (renewal.skipped === 'no-ladder-vm') {
+      // The ladder kind's roster and collection stores sign with this
+      // credential's ladder VM. With none in the document, every append
+      // after the entry would be refused, leaving the roster wrapping the
+      // removed client. A last-client transition torn between its strike
+      // and its install leaves exactly this shape, reached by a transient
+      // visit through the fallback.
+      throw new GenerationDelegationRenewalError({ reason: 'no-ladder-vm' })
+    } else {
+      // No ladder members or no annex generation. Neither is reachable on a
+      // ladder-kind context, which resolves from both, so this is a
+      // defensive proceed: the reason is reported by name.
+      ladderRenewal = { renewed: false, skipped: renewal.skipped }
     }
   }
   const result = await revokeAccountClient({
@@ -471,7 +516,8 @@ async function revokeEnrolledClientHeld({
 
   // The ladder branch passes no re-mint closure (it replaced the delegation
   // before the removal entry instead), so the cascade reports no stage there
-  // and the pre-entry replacement's own report stands in its place. The
+  // and the pre-entry replacement's own report stands in its place. A failed
+  // replacement never reaches here, since it refused the disconnect. The
   // fallback, neither branch reporting a stage, is an account with no annex
   // generation to renew.
   const remint: GenerationDelegationRemint & { errorName?: string } =

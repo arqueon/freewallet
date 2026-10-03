@@ -195,6 +195,7 @@
       "disconnectProgress": "Disconnecting -- updating the account log and re-keying the encrypted collections...",
       "disconnectError": "Disconnecting did not finish. It is safe to try again -- the process resumes where it stopped, and your next login also completes any remaining re-keying automatically.",
       "disconnectErrorTransient": "Disconnecting did not finish. It is safe to try again -- the process resumes where it stopped, and the next disconnect or passphrase change completes any remaining re-keying.",
+      "disconnectRefusedRenewal": "Disconnecting was stopped before the wallet was removed: this session could not refresh its own storage access first. The wallet is still connected. Try again, or sign in again and retry.",
       "cascadeIncomplete": "The wallet was disconnected, but some collections could not be re-keyed yet. Your next login completes the re-keying automatically, or disconnect again to retry now.",
       "cascadeIncompleteTransient": "The wallet was disconnected, but some collections could not be re-keyed yet. The next disconnect or passphrase change completes the re-keying, or disconnect again to retry now.",
       "disconnectConfirmAction": "Disconnect wallet",

@@ -505,7 +505,12 @@ export async function renameAccountClient({
  * re-epoch, recovery re-mints, live adoption, and the client's directory
  * entry retired ahead of the audit row). `revokedClientKeysFor` refuses a row whose active
  * update key the log attribution could not isolate -- disconnecting with a
- * guessed key could revoke another party's authority.
+ * guessed key could revoke another party's authority. On the ladder branch
+ * the cascade refuses before its removal entry
+ * (`GenerationDelegationRenewalError`) when the pre-entry
+ * generation-delegation replacement did not install, or when the account
+ * document anchors no ladder VM for the acting credential. The removal entry
+ * was not published, so the wallet is still connected and a retry is safe.
  *
  * @param options {object}
  * @param options.session {Session}

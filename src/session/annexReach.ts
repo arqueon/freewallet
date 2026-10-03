@@ -448,6 +448,18 @@ async function runEnsureGenerationDelegation({
 }
 
 /**
+ * What {@link tryRenewTransientGenerationDelegation} resolves to: the
+ * delegation the generation now embeds, or the reason none was installed,
+ * with the caught error on a `failed` renewal.
+ */
+export type GenerationDelegationRenewal =
+  | { delegation: IZcap }
+  | {
+      skipped: 'no-ladder-seed' | 'no-pointer' | 'no-ladder-vm' | 'failed'
+      err?: unknown
+    }
+
+/**
  * The grant path's blocking renewal stage: renews a transient session's
  * generation delegation in place -- ladder-signed, through the credential's
  * sibling delegation -- and swaps the fresh one into the live session, so
@@ -463,11 +475,14 @@ async function runEnsureGenerationDelegation({
  * exactly the one the transient login's fallback serves: enrolled clients,
  * no ladder VM in the document.
  *
- * Best-effort by contract, `null` by return: a session that is not transient
- * (no invocation capability, no ladder members), a document that does not
- * anchor this ladder, an account log that would not verify, or a renewal
- * that fails for any reason leaves the session untouched, and the caller's
- * stale-delegation refusal stands. Nothing here throws.
+ * Nothing here throws. Every way the renewal can end without installing a
+ * delegation is a resolved `skipped` result naming why, and the session is
+ * left untouched: `no-ladder-seed`, the session holds no standing ladder
+ * members; `no-pointer`, it is not transient (no account pointer DID, no
+ * client annex in its persistence); `no-ladder-vm`, the verified document
+ * does not anchor this credential's ladder VM; `failed`, the account log
+ * would not verify or the renewal failed for any other reason, with the
+ * caught error as `err`.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -476,27 +491,24 @@ async function runEnsureGenerationDelegation({
  *   of them signed counts as rotted, so the replacement is minted and
  *   adopted BEFORE the strike lands rather than after it rots the visit's
  *   only HTTP authority
- * @returns {Promise<IZcap | null>}   the fresh delegation, or `null` when
- *   none was installed
+ * @returns {Promise<GenerationDelegationRenewal>}   the delegation the
+ *   generation now embeds, or the reason none was installed
  */
-export async function renewTransientGenerationDelegation({
+export async function tryRenewTransientGenerationDelegation({
   session,
   retiringKeyMultibases
 }: {
   session: Session
   retiringKeyMultibases?: string[]
-}): Promise<IZcap | null> {
+}): Promise<GenerationDelegationRenewal> {
   const { profile, persistence } = session
   const { ladderSeed, standingUnlock, accountPointer } = profile
   const delegatedClients = standingUnlock?.delegatedClients
-  if (
-    !ladderSeed ||
-    !standingUnlock ||
-    !delegatedClients ||
-    !accountPointer?.did ||
-    !('clientAnnex' in persistence)
-  ) {
-    return null
+  if (!ladderSeed || !standingUnlock || !delegatedClients) {
+    return { skipped: 'no-ladder-seed' }
+  }
+  if (!accountPointer?.did || !('clientAnnex' in persistence)) {
+    return { skipped: 'no-pointer' }
   }
   const accountDid = accountPointer.did
   try {
@@ -516,7 +528,7 @@ export async function renewTransientGenerationDelegation({
           "does not anchor this credential's ladder VM",
         { accountDid }
       )
-      return null
+      return { skipped: 'no-ladder-vm' }
     }
     const reach = standingClientAnnexReachOf({
       pointer: accountPointer,
@@ -547,11 +559,41 @@ export async function renewTransientGenerationDelegation({
     session.storage.remoteStore?.adoptInvocationCapability({
       capability: delegation
     })
-    return delegation
+    return { delegation }
   } catch (err) {
     log.warn('Generation-delegation renewal failed', { err })
-    return null
+    return { skipped: 'failed', err }
   }
+}
+
+/**
+ * {@link tryRenewTransientGenerationDelegation} for a caller that only needs
+ * the delegation. Best-effort by contract, `null` by return: every skip
+ * reason (a session that is not transient or holds no ladder members, a
+ * document that does not anchor this ladder, an account log that would not
+ * verify, a renewal that failed for any reason) leaves the session
+ * untouched, and the caller's stale-delegation refusal stands. Nothing here
+ * throws.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param [options.retiringKeyMultibases] {string[]}   as for
+ *   {@link tryRenewTransientGenerationDelegation}
+ * @returns {Promise<IZcap | null>}   the fresh delegation, or `null` when
+ *   none was installed
+ */
+export async function renewTransientGenerationDelegation({
+  session,
+  retiringKeyMultibases
+}: {
+  session: Session
+  retiringKeyMultibases?: string[]
+}): Promise<IZcap | null> {
+  const renewal = await tryRenewTransientGenerationDelegation({
+    session,
+    ...(retiringKeyMultibases !== undefined ? { retiringKeyMultibases } : {})
+  })
+  return 'delegation' in renewal ? renewal.delegation : null
 }
 
 /**

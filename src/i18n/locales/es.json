@@ -195,6 +195,7 @@
       "disconnectProgress": "Desconectando: actualizando el historial de la cuenta y recifrando las colecciones cifradas...",
       "disconnectError": "La desconexión no terminó. Es seguro intentarlo de nuevo: el proceso continúa donde se detuvo, y tu próximo inicio de sesión también completa automáticamente el recifrado pendiente.",
       "disconnectErrorTransient": "La desconexión no terminó. Es seguro intentarlo de nuevo: el proceso continúa donde se detuvo, y la próxima desconexión o cambio de frase de contraseña completa el recifrado pendiente.",
+      "disconnectRefusedRenewal": "La desconexión se detuvo antes de eliminar la cartera: esta sesión no pudo renovar primero su propio acceso al almacenamiento. La cartera sigue conectada. Inténtalo de nuevo, o vuelve a iniciar sesión y reinténtalo.",
       "cascadeIncomplete": "La cartera se desconectó, pero algunas colecciones aún no se pudieron recifrar. Tu próximo inicio de sesión completa el recifrado automáticamente, o desconecta de nuevo para reintentarlo ahora.",
       "cascadeIncompleteTransient": "La cartera se desconectó, pero algunas colecciones aún no se pudieron recifrar. La próxima desconexión o cambio de frase de contraseña completa el recifrado, o desconecta de nuevo para reintentarlo ahora.",
       "disconnectConfirmAction": "Desconectar cartera",

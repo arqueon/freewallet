@@ -38,6 +38,13 @@
 
 ### Fixed
 
+- A wallet disconnect from a transient session now refuses before the
+  removal entry (`GenerationDelegationRenewalError`, with retry copy in the
+  panel) when its generation-delegation replacement fails, or when the
+  account document anchors no ladder VM for the acting credential. It no
+  longer publishes the entry and loses its authority for the rest of the
+  cascade. The mend report names the skip reason (`no-pointer`,
+  `no-ladder-seed`) in place of `failed`.
 - The unlock record re-bind and the pointer rewrite are a compare-and-swap
   on the served record's ETag, re-reading and retrying on a lost race. The
   re-bind carries forward any delegation its caller did not mint, so a

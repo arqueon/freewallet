@@ -55,6 +55,7 @@ import {
 import { approveEnrollment } from '@/lib/enrollment'
 import { useAsyncLoad } from '@/hooks/useAsyncLoad'
 import { forgetThisBrowser } from '@/session/forget'
+import { GenerationDelegationRenewalError } from '@/session/revocation'
 import { OnboardInviteCard } from '@/components/OnboardInviteCard'
 import { formatDate } from '@/lib/viewMappers/formatDate'
 import { showToast } from '@/stores/toastStore'
@@ -131,7 +132,11 @@ export function EnrolledClientsSection({
   const [disconnectTarget, setDisconnectTarget] =
     useState<AccountClientView | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
-  const [disconnectError, setDisconnectError] = useState(false)
+  // Which disconnect failure copy shows: the resumable cascade failure, or
+  // the pre-entry refusal of a generation-delegation replacement.
+  const [disconnectError, setDisconnectError] = useState<
+    false | 'generic' | 'renewal'
+  >(false)
   const [cascadeWarning, setCascadeWarning] = useState(false)
   // The forget-this-browser confirm dialog and its ceremony run.
   const [forgetOpen, setForgetOpen] = useState(false)
@@ -245,7 +250,15 @@ export function EnrolledClientsSection({
    * Runs the full disconnect cascade for the confirmed client. Every stage
    * after the account-log edit converges under a re-run (and the login-time
    * sweep is the standing backstop), so a failure or partial completion is
-   * surfaced with "run it again" copy rather than treated as fatal.
+   * surfaced with "run it again" copy rather than treated as fatal. A
+   * ladder-branch disconnect refuses before the account-log edit
+   * (`GenerationDelegationRenewalError`) when its generation-delegation
+   * replacement did not install, or when the document anchors no ladder VM
+   * for this session's credential. The wallet is still connected, and the
+   * refusal gets its own retry copy. That copy also offers signing in again:
+   * on a stale session, such as one that ran a ladder-branch passphrase
+   * change earlier in the same visit, a retry refuses again and only a fresh
+   * login clears it.
    */
   const handleDisconnect = async () => {
     const target = disconnectTarget
@@ -273,8 +286,13 @@ export function EnrolledClientsSection({
       }
       await loadClients()
     } catch (err) {
-      log.error('Could not disconnect the wallet client', { err })
-      setDisconnectError(true)
+      if (err instanceof GenerationDelegationRenewalError) {
+        log.warn('The disconnect refused before its removal entry', { err })
+        setDisconnectError('renewal')
+      } else {
+        log.error('Could not disconnect the wallet client', { err })
+        setDisconnectError('generic')
+      }
     } finally {
       setDisconnecting(false)
     }
@@ -761,11 +779,13 @@ export function EnrolledClientsSection({
           )}
           {disconnectError && (
             <Alert severity="error" sx={{ mt: 2 }}>
-              {t(
-                ladderBranch
-                  ? 'settings.clients.disconnectErrorTransient'
-                  : 'settings.clients.disconnectError'
-              )}
+              {disconnectError === 'renewal'
+                ? t('settings.clients.disconnectRefusedRenewal')
+                : t(
+                    ladderBranch
+                      ? 'settings.clients.disconnectErrorTransient'
+                      : 'settings.clients.disconnectError'
+                  )}
             </Alert>
           )}
         </DialogContent>
