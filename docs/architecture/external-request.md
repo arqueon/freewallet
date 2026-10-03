@@ -31,6 +31,8 @@ Without a live app session it runs the ordinary login in place and
 adopts it app-wide. The consent is recorded on the agent's `connections`
 entry, of kind `agent` at the controller's DID, and then on a `Grant`
 activity under the fixed origin marker `n/a (API request)`, as audit trail.
+That sequence is the request consent ceremony the CHAPI popup also runs,
+with the same pivot and tears (see "The consent record" in app-connect.md).
 
 A request may name its requester through the VPR's root `agent: { name }`
 member. The consent panel renders it beside the grantee key, marked
@@ -139,7 +141,8 @@ epoch lists the agent in is dropped, and so is an entry with no grants. A
 row opens the detail page an app row opens (`/applications/:resourceId`).
 
 Revoking a row (`revokeAgentAccess`) runs the app path's stages with no app
-key to delete. It reads the agent's entry, and first rotates each candidate
+key to delete, as the grant revocation ceremony (see "Disconnecting an app"
+in app-connect.md). It reads the agent's entry, and first rotates each candidate
 collection off the agent's key (`revokeCollectionRecipients`). The
 candidates are the collections the entry's grants target, expired grants
 included, plus every unprotected collection in the full listing whose

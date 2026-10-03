@@ -52,6 +52,8 @@ import type { AccountDeletionStage } from '@/session/accountSettings'
 import type { BackupExportStage } from '@/session/backupExport'
 import type { ContentMigrationStage } from '@/session/contentMigration'
 import type { WalletWipeStage } from '@/session/wipe'
+import type { GrantRevocationStage } from '@/lib/connectedApps'
+import type { RequestConsentStage } from '@/lib/walletRequest/respond'
 import { E2E_LOG_TAG_GLOBAL } from '@/lib/e2eLogTag'
 import {
   CEREMONY_MENDER_MSG,
@@ -92,6 +94,8 @@ export type CeremonyStages = {
   'wallet-wipe': WalletWipeStage
   'content-migration': ContentMigrationStage
   'backup-export': BackupExportStage
+  'request-consent': RequestConsentStage
+  'grant-revocation': GrantRevocationStage
 }
 
 /**

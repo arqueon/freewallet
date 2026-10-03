@@ -42,6 +42,7 @@
  * limitation stands: ciphertext a party already fetched stays readable to it
  * -- rotation protects only prospective writes.
  */
+import type { CeremonyDetail } from '@interop/wallet-core'
 import type { StorageManager } from '@/stores/storageManager'
 import type { User } from '@/types/auth'
 import {
@@ -66,6 +67,37 @@ import type { IZcap } from '@interop/data-integrity-core'
 import type { CollectionGenerator } from '@interop/was-client'
 import { appGeneratorIds } from '@/lib/collectionAttribution'
 import { EXTERNAL_REQUEST_ORIGIN } from '@/lib/walletRequest/externalRequest'
+
+/**
+ * The grant revocation's stage ids for the ceremony event channel, in run
+ * order. An app disconnect runs every stage but `remove-grants`. An agent
+ * revoke also skips `delete-app-key`. An unshare runs `rotate-recipients`,
+ * `revoke-grants`, `remove-grants`, and `record-activity`. Each fires once
+ * its write has landed.
+ */
+export const GRANT_REVOCATION_STAGES = [
+  'rotate-recipients',
+  'revoke-grants',
+  'delete-app-key',
+  'retire-entry',
+  'remove-grants',
+  'record-activity'
+] as const
+
+/**
+ * One value of {@link GRANT_REVOCATION_STAGES}.
+ */
+export type GrantRevocationStage = (typeof GRANT_REVOCATION_STAGES)[number]
+
+/**
+ * The stage hook a grant revocation's entry point hands down, so the stages
+ * are marked where their writes land while the emitter stays at the entry
+ * point.
+ */
+export type GrantRevocationStageHook = (
+  stage: GrantRevocationStage,
+  detail?: CeremonyDetail
+) => void
 
 /**
  * One storage capability a party was granted, as its `connections` entry
@@ -747,6 +779,9 @@ function partyOf({
  * @param options.grants {ConnectionGrant[]}   the party's grants
  * @param options.directory {object}   the listing the grants were read from
  * @param options.failureMessage {string}   the error a failed rotation throws
+ * @param [options.onStage] {GrantRevocationStageHook}   marks
+ *   `rotate-recipients` once every rotation landed, and `revoke-grants` once
+ *   the grant stage did; this shared tail emits nothing of its own
  * @returns {Promise<{ outcome: object; rotated: number }>}   the grant
  *   stage's outcome, plus the collections the rotation re-keyed
  */
@@ -755,13 +790,15 @@ async function rotateThenRevokeGrants({
   did,
   grants,
   directory,
-  failureMessage
+  failureMessage,
+  onStage
 }: {
   storage: StorageManager
   did: string
   grants: ConnectionGrant[]
   directory: { listing: ConnectionsListing; spaceUrl?: string }
   failureMessage: string
+  onStage?: GrantRevocationStageHook
 }): Promise<{
   outcome: Awaited<ReturnType<StorageManager['revokeConnectionGrants']>>
   rotated: number
@@ -771,9 +808,16 @@ async function rotateThenRevokeGrants({
     grants,
     directory
   })
+  if (rotation.failed === 0) {
+    onStage?.('rotate-recipients', { rotated: rotation.rotated })
+  }
   const outcome = await storage.revokeConnectionGrants({
     grants,
     revokedByRotation: rotation.revokedIds
+  })
+  onStage?.('revoke-grants', {
+    revoked: outcome.revoked,
+    skipped: outcome.skipped
   })
   if (rotation.failed > 0) {
     throw new Error(failureMessage)
@@ -809,6 +853,7 @@ export class ConnectionEntryMissingError extends Error {
  * @param options {object}
  * @param options.storage {StorageManager}
  * @param options.subjectDid {string}   the app-key credential's subject DID
+ * @param [options.onStage] {GrantRevocationStageHook}
  * @returns {Promise<{ outcome: object; rotated: number; entry:
  *   ConnectionEntry; handledZcapIds: string[] }>}   the grant stage's
  *   outcome, the collections the rotation re-keyed, the entry the grants
@@ -816,10 +861,12 @@ export class ConnectionEntryMissingError extends Error {
  */
 export async function revokeAppAuthority({
   storage,
-  subjectDid
+  subjectDid,
+  onStage
 }: {
   storage: StorageManager
   subjectDid: string
+  onStage?: GrantRevocationStageHook
 }): Promise<{
   outcome: Awaited<ReturnType<StorageManager['revokeConnectionGrants']>>
   rotated: number
@@ -837,7 +884,8 @@ export async function revokeAppAuthority({
     grants,
     directory,
     failureMessage:
-      'Could not rotate every collection off the app being disconnected.'
+      'Could not rotate every collection off the app being disconnected.',
+    onStage
   })
   return {
     outcome,
@@ -873,6 +921,8 @@ export async function revokeAppAuthority({
  * @param options.storage {StorageManager}
  * @param options.user {User}   the session user (activity actor)
  * @param options.app {ConnectedApp}
+ * @param [options.onStage] {GrantRevocationStageHook}   the entry point's
+ *   stage marks, one per landed write
  * @returns {Promise<{ revoked: number; withdrawn: number; skipped: number;
  *   rotated: number }>}   the grant outcome, plus the collections the
  *   rotation re-keyed. `withdrawn` counts the grants this call's own POSTs
@@ -881,11 +931,13 @@ export async function revokeAppAuthority({
 export async function revokeAppAccess({
   storage,
   user,
-  app
+  app,
+  onStage
 }: {
   storage: StorageManager
   user: User
   app: ConnectedApp
+  onStage?: GrantRevocationStageHook
 }): Promise<{
   revoked: number
   withdrawn: number
@@ -894,7 +946,8 @@ export async function revokeAppAccess({
 }> {
   const { outcome, rotated, entry, handledZcapIds } = await revokeAppAuthority({
     storage,
-    subjectDid: app.subjectDid
+    subjectDid: app.subjectDid,
+    onStage
   })
   // The key the entry names now, which a consent since the listing may have
   // re-pointed.
@@ -903,11 +956,13 @@ export async function revokeAppAccess({
       appKey: entry.appKey,
       did: app.subjectDid
     })
+    onStage?.('delete-app-key')
   }
   await storage.retireConnectionEntry({
     did: app.subjectDid,
     handledZcapIds
   })
+  onStage?.('retire-entry')
   await storage.addHistoryAppRevoke({
     user,
     origin: app.origin ?? '',
@@ -915,6 +970,7 @@ export async function revokeAppAccess({
     revoked: outcome.revoked,
     skipped: outcome.skipped
   })
+  onStage?.('record-activity')
   return {
     revoked: outcome.revoked,
     withdrawn: outcome.withdrawn,
@@ -939,6 +995,8 @@ export async function revokeAppAccess({
  * @param options.storage {StorageManager}
  * @param options.user {User}   the session user (activity actor)
  * @param options.agent {ConnectedAgent}
+ * @param [options.onStage] {GrantRevocationStageHook}   the entry point's
+ *   stage marks, one per landed write
  * @returns {Promise<{ revoked: number; withdrawn: number; skipped: number;
  *   rotated: number }>}   the grant outcome, plus the collections the
  *   rotation re-keyed. `withdrawn` counts the grants this call's own POSTs
@@ -947,11 +1005,13 @@ export async function revokeAppAccess({
 export async function revokeAgentAccess({
   storage,
   user,
-  agent
+  agent,
+  onStage
 }: {
   storage: StorageManager
   user: User
   agent: ConnectedAgent
+  onStage?: GrantRevocationStageHook
 }): Promise<{
   revoked: number
   withdrawn: number
@@ -966,12 +1026,14 @@ export async function revokeAgentAccess({
     grants,
     directory,
     failureMessage:
-      'Could not rotate every collection off the agent being revoked.'
+      'Could not rotate every collection off the agent being revoked.',
+    onStage
   })
   await storage.retireConnectionEntry({
     did: agent.controller,
     handledZcapIds: grants.map(grant => grant.zcapId)
   })
+  onStage?.('retire-entry')
   await storage.addHistoryAgentRevoke({
     user,
     origin: agent.origin,
@@ -981,6 +1043,7 @@ export async function revokeAgentAccess({
     revoked: outcome.revoked,
     skipped: outcome.skipped
   })
+  onStage?.('record-activity')
   return {
     revoked: outcome.revoked,
     withdrawn: outcome.withdrawn,

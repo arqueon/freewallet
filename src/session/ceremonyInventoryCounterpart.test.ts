@@ -37,7 +37,9 @@ const TITLE_TO_ID: Record<string, string> = {
   'Account deletion': 'account-deletion',
   'Shared wipe (executor, not user-facing)': 'wallet-wipe',
   'Content migration': 'content-migration',
-  'Backup export': 'backup-export'
+  'Backup export': 'backup-export',
+  'Request consent (App Connect, interaction URL, share)': 'request-consent',
+  'Grant revocation (app, agent, unshare)': 'grant-revocation'
 }
 
 interface CeremonyRow {

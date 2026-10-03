@@ -8,6 +8,7 @@
 import { ENCRYPTED_WALLET_COLLECTION_IDS } from '@/app.config'
 import type { ConnectionEntry } from '@interop/wallet-core/connections'
 import type { Session } from '@/types/auth'
+import { grantRevocationEvents } from '@/session/applications'
 
 /**
  * One reader a collection is shared with, as returned by
@@ -66,6 +67,8 @@ export async function listSharedCollections({
  * (so resources written afterwards are unreadable to the removed reader) and
  * revokes its storage authorization (so the server stops serving it
  * ciphertext). Neither half claws back data the reader already fetched.
+ * This is the grant revocation ceremony's unshare entry point, and it emits
+ * the run's events.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -82,10 +85,15 @@ export async function removeCollectionShare({
   collectionId: string
   recipientId: string
 }): Promise<void> {
-  await session.storage.unshareCollection({
-    profile: session.profile,
-    user: session.user,
-    collectionId,
-    recipientId
-  })
+  const events = grantRevocationEvents()
+  await events.run(
+    async () =>
+      await session.storage.unshareCollection({
+        profile: session.profile,
+        user: session.user,
+        collectionId,
+        recipientId,
+        onStage: (stage, detail) => events.stage(stage, detail)
+      })
+  )
 }

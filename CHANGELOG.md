@@ -16,6 +16,8 @@
   client-annex DID read as this wallet. A connected app, an agent, or a
   share recipient is named from its `connections` entry, and any other DID
   is shown shortened.
+- Request consent and grant revocation (app disconnect, agent revoke,
+  unshare) are named ceremonies and emit stage and outcome events.
 
 ### Changed
 

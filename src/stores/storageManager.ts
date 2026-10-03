@@ -179,6 +179,7 @@ import {
 } from '@/stores/remoteDirectStore'
 import type { SpaceLocation } from '@/lib/walletRequest/processZcaps'
 import type { CredentialActivityVerb } from '@/lib/historyActivity'
+import type { GrantRevocationStageHook } from '@/lib/connectedApps'
 import { uuidv7 } from 'uuidv7'
 import {
   addHistoryNewAccount as buildHistoryNewAccount,
@@ -5844,18 +5845,22 @@ export class StorageManager {
    * @param options.collectionId {string}
    * @param options.recipientId {string}   the removed reader's key-agreement
    *   key id (`kid`)
+   * @param [options.onStage] {GrantRevocationStageHook}   the entry point's
+   *   stage marks, one per landed write
    * @returns {Promise<CollectionEncryption>}   the new descriptor
    */
   async unshareCollection({
     profile,
     user,
     collectionId,
-    recipientId
+    recipientId,
+    onStage
   }: {
     profile: ControllerProfile
     user: User
     collectionId: string
     recipientId: string
+    onStage?: GrantRevocationStageHook
   }): Promise<CollectionEncryption> {
     this.#requireRemote('Unsharing a collection')
     const { keyAgreementKey, keyResolver } = profile
@@ -5894,6 +5899,7 @@ export class StorageManager {
       descriptor: rotation.descriptor,
       vaultKeys: { keyAgreementKey, keyResolver }
     })
+    onStage?.('rotate-recipients')
     if (rotation.failed.length > 0) {
       // As on the grant stage: the ids that did land, and why the rest were
       // skipped, are diagnosable here alone, since nothing is recorded.
@@ -5905,6 +5911,10 @@ export class StorageManager {
       })
       throw rotation.failed[0].err
     }
+    onStage?.('revoke-grants', {
+      revoked: rotation.revokedIds.length,
+      skipped: rotation.skipped.length
+    })
 
     // The revoked share grants leave the reader's entry, which stays live:
     // the party may hold other grants.
@@ -5917,10 +5927,12 @@ export class StorageManager {
         zcapIds: grants.map(grant => grant.zcapId)
       })
     }
+    onStage?.('remove-grants')
 
     await this.#recordActivity(id =>
       buildHistoryCollectionUnshared({ user, collectionId, recipientId, id })
     )
+    onStage?.('record-activity')
     return rotation.descriptor
   }
 

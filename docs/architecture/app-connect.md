@@ -367,6 +367,21 @@ Recording before escrow matters most for an existing private collection,
 whose `generator.id` still names its first creator. The entry's grants are
 the only source that names that collection for the second app.
 
+This sequence is the request consent ceremony (`request-consent`), and
+`composeAndDeliverResponse` is its one entry point, for the CHAPI popup and
+the interaction-URL page alike. Its pivot is the first escrow into a key
+epoch. Before it, every write is the record a failure rolls back. Past it,
+the grantee holds decryption material, so the escrowed grants stay recorded
+and the run can only go forward. A tab closed between the record and the
+escrow leaves recorded grants the requester never received. A tab closed
+past the escrow leaves a recorded grantee that may never get its zcap. Both
+are listed rows, and the user's own revoke from that row converges them.
+The ceremony event channel carries its stages: `record-entry`,
+`record-activity`, `escrow` (the pivot), and `deliver` (the exchange POST).
+The outcome is `clean`, or `refused` for an unavailable Space or an
+unreadable app-key scan, or `failed`, with the failure's `reason` as
+detail.
+
 **The Applications listing** (`listApplicationsView` in
 `src/session/applications.ts`) reads the directory once and filters in
 memory. An app row is an unretired `kind: 'app'` entry holding an `appKey`
@@ -437,6 +452,22 @@ client-revocation.md), so the revoked app keeps the ability to compute
 blinded terms while the query endpoint stays behind the revoked pull grant.
 Revoking a connected agent runs the same stages with no app key to delete
 (see "The interaction-URL request page" in external-request.md).
+
+The disconnect, the agent revoke, and the unshare below are one ceremony,
+grant revocation (`grant-revocation`), with three entry points:
+`revokeApplication` and `revokeAgent` in `src/session/applications.ts`, and
+`removeCollectionShare` in `src/session/shares.ts`. Its pivot is the first
+epoch rotation, or the first grant POST when nothing rotates. Neither can
+be undone. A torn run leaves the row listed, and the user's own re-run from
+that row converges it. The rotate-then-revoke tail the client revocation
+and the forget run on a wallet client's entry (`retireConnectionParty`) is
+shared, and emits nothing of its own. The event channel carries the stages
+`rotate-recipients`, `revoke-grants`, `delete-app-key` (an app only),
+`retire-entry`, `remove-grants` (an unshare only), and `record-activity`,
+each once its write lands. The outcome is `clean` for a run that completed,
+`refused` for an app with no entry (`ConnectionEntryMissingError`), and
+`failed` otherwise. Its detail carries counts only, and a zero `withdrawn`
+and `rotated` there mean the access had already ended.
 
 **The `connections` directory.** The directory holds one connection entry
 per party the wallet has dealt with: an app, an agent, or a wallet client,
@@ -605,7 +636,12 @@ directory once. It rotates the epoch off the reader's kid, under the same
 admitted-recipient resolver a revocation uses, and POSTs the share grants
 the reader's entry holds on that collection. Then it removes those grants
 from the entry (`removeGrants`) and writes a `CollectionUnshare` activity.
-The entry is not retired, since the party may hold other grants.
+The entry is not retired, since the party may hold other grants. The
+unshare runs as the grant revocation ceremony (see "Disconnecting an app").
+Its pivot is the epoch rotation. A run torn after it leaves the reader
+listed through its share grant, and a retry runs the pull alone. A run torn
+after `removeGrants` leaves no audit row. Sharing itself has no ceremony of
+its own: the escrow is one stage of the request consent.
 
 **The grantee's half lives in `@interop/was-react`.** An app declares the
 wallet-owned collections it wants in `WasAppConfig.sharedCollections`, which

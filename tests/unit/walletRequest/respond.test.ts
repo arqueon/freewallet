@@ -19,7 +19,7 @@
  * `processRequest` and the exchange delivery are mocked. The directory logic
  * is wallet-core's own, over an in-memory store.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   connectionResourceId,
   readConnections,
@@ -30,6 +30,7 @@ import type { ConnectionsStore } from '@interop/wallet-core/connections'
 import type { StorageManager } from '@/stores/storageManager'
 import { listConnectedAgents, listConnectedApps } from '@/lib/connectedApps'
 import { HMAC_KEY, memoryConnectionsStore } from '../memoryConnections'
+import { captureCeremonyEvents } from '../ceremonyEventCapture'
 
 const SPACE_URL = 'https://was.example/space/s/'
 const AGENT = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
@@ -1178,6 +1179,84 @@ describe('composeAndDeliverResponse', () => {
       expect(directory.rows.get(resourceId)).toEqual(before)
       expect(state.calls).toEqual(['processRequest'])
       expect(session.storage.addHistoryGrant).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('the request consent events', () => {
+  let capture: ReturnType<typeof captureCeremonyEvents>
+
+  beforeEach(() => {
+    capture = captureCeremonyEvents()
+  })
+
+  afterEach(() => {
+    capture.stop()
+  })
+
+  it('marks the record, the escrow, and the delivery, and ends clean, counts only', async () => {
+    state.provisions = true
+    state.zcaps = [grant({ id: 'urn:zcap:1' })]
+    await respond({
+      requestProfile: agentProfile,
+      requestOrigin: EXTERNAL_REQUEST_ORIGIN,
+      exchangeUrl: 'https://verifier.example/exchange/1'
+    })
+
+    expect(capture.stageNames('request-consent')).toEqual([
+      'record-entry',
+      'record-activity',
+      'escrow',
+      'deliver'
+    ])
+    expect(capture.soleOutcome('request-consent').data).toMatchObject({
+      outcome: 'clean',
+      grants: 1
+    })
+    expect(capture.serialized()).not.toContain(AGENT)
+  })
+
+  it('marks no escrow when a failure rolls the record back', async () => {
+    state.provisions = true
+    state.zcaps = [grant({ id: 'urn:zcap:1' })]
+    state.provisionThrows = new Error('escrow refused')
+    await respond({
+      requestProfile: agentProfile,
+      requestOrigin: EXTERNAL_REQUEST_ORIGIN
+    }).catch(() => undefined)
+
+    expect(capture.stageNames('request-consent')).toEqual([
+      'record-entry',
+      'record-activity'
+    ])
+    expect(capture.soleOutcome('request-consent').data).toMatchObject({
+      outcome: 'failed',
+      reason: 'processFailed'
+    })
+  })
+
+  it('refuses a request whose remote Space is unavailable', async () => {
+    state.processThrows = new FakeZcapUnavailableError()
+    await respond().catch(() => undefined)
+
+    expect(capture.stageNames('request-consent')).toEqual([])
+    expect(capture.soleOutcome('request-consent').data).toMatchObject({
+      outcome: 'refused',
+      reason: 'zcapUnavailable',
+      errorName: 'WalletResponseFailure'
+    })
+  })
+
+  it('fails a run whose exchange delivery failed, after its record', async () => {
+    state.deliverThrows = true
+    await respond({
+      exchangeUrl: 'https://verifier.example/exchange/1'
+    }).catch(() => undefined)
+
+    expect(capture.stageNames('request-consent')).toEqual(['record-activity'])
+    expect(capture.soleOutcome('request-consent').data).toMatchObject({
+      outcome: 'failed',
+      reason: 'exchangeFailed'
     })
   })
 })

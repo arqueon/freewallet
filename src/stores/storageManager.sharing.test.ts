@@ -1676,6 +1676,45 @@ describe('StorageManager.unshareCollection', () => {
     expect(await listed()).toEqual([])
   })
 
+  it('marks each unshare stage once its write lands, a torn run stopping after the rotation', async () => {
+    const reader = await generateAppIdentity()
+    let refuse = true
+    const { storage, profile, user, share } = await shareSession({
+      revoke: async () => {
+        if (refuse) {
+          throw new ValidationError('chain does not verify', { status: 400 })
+        }
+      }
+    })
+    await share(reader)
+    const unshareMarking = async (stages: string[]) =>
+      await storage.unshareCollection({
+        profile,
+        user,
+        collectionId: 'private-credentials',
+        recipientId: reader.recipient.id,
+        onStage: stage => {
+          stages.push(stage)
+        }
+      })
+
+    const torn: string[] = []
+    await expect(unshareMarking(torn)).rejects.toMatchObject({
+      name: 'ValidationError'
+    })
+    expect(torn).toEqual(['rotate-recipients'])
+
+    refuse = false
+    const retried: string[] = []
+    await unshareMarking(retried)
+    expect(retried).toEqual([
+      'rotate-recipients',
+      'revoke-grants',
+      'remove-grants',
+      'record-activity'
+    ])
+  })
+
   it('records the unshare when the server answers AlreadyRevokedError', async () => {
     const reader = await generateAppIdentity()
     const { storage, share, unshare, unshareRecorded } = await shareSession({

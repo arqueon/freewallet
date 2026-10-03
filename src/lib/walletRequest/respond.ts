@@ -29,9 +29,39 @@ import {
   retireConnection,
   type ConnectionKind
 } from '@interop/wallet-core/connections'
+import { ceremonyEvents, type CeremonyEmitter } from '@interop/wallet-core'
 import { createLogger } from '@/lib/log'
 
 const log = createLogger('fw:request:respond')
+
+/**
+ * The request consent's stage ids for the ceremony event channel. Each fires
+ * once its write has landed. `escrow` fires when the first escrow into a key
+ * epoch lands, which is the run's pivot. `deliver` fires when the VC API
+ * exchange accepts the presentation; a CHAPI return is the caller's, so a
+ * run without an exchange ends at `record-activity` or `escrow`.
+ */
+export const REQUEST_CONSENT_STAGES = [
+  'record-entry',
+  'record-activity',
+  'escrow',
+  'deliver'
+] as const
+
+/**
+ * One value of {@link REQUEST_CONSENT_STAGES}.
+ */
+export type RequestConsentStage = (typeof REQUEST_CONSENT_STAGES)[number]
+
+/**
+ * The failure reasons that classify as `refused` on the event channel: the
+ * remote Space was gone, or the app-key scan was unreadable. Both refuse
+ * before anything is delivered. Every other failure is `failed`.
+ */
+const REQUEST_CONSENT_REFUSED_REASONS: ReadonlyArray<string> = [
+  'zcapUnavailable',
+  'appKeysUnreadable'
+]
 
 /**
  * Why a response could not be produced or delivered. Mirrors the popup's block
@@ -415,6 +445,13 @@ async function rollBackConsentEntry({
  * record is kept and the composed response rides on the error for manual
  * delivery.
  *
+ * This is the request consent ceremony's one entry point, for the CHAPI
+ * popup and the interaction-URL page alike, and it emits the run's events.
+ * The outcome is `clean` once the response is composed (and delivered, with
+ * an exchange). A `WalletResponseFailure` is `refused` for an unavailable
+ * Space or an unreadable app-key scan, and `failed` otherwise, its `reason`
+ * riding the detail.
+ *
  * @param options {object}
  * @param options.request {IVPRDetails}
  * @param options.session {Session}
@@ -453,6 +490,78 @@ export async function composeAndDeliverResponse({
   exchangeUrl?: string | null
   expectedAppKeyDid?: string
   delegateStandaloneZcaps?: boolean
+}): Promise<WalletResponse> {
+  const events = ceremonyEvents<RequestConsentStage>({
+    ceremony: 'request-consent',
+    log
+  })
+  let response: WalletResponse
+  try {
+    response = await runRequestConsent({
+      request,
+      session,
+      profile,
+      requestOrigin,
+      selectedVCs,
+      exchangeUrl,
+      expectedAppKeyDid,
+      delegateStandaloneZcaps,
+      events
+    })
+  } catch (err) {
+    if (err instanceof WalletResponseFailure) {
+      const refused = REQUEST_CONSENT_REFUSED_REASONS.includes(err.reason)
+      events.outcome(
+        refused ? 'refused' : 'failed',
+        { reason: err.reason },
+        err
+      )
+    } else {
+      events.outcome('failed', undefined, err)
+    }
+    throw err
+  }
+  events.outcome('clean', { grants: response.zcaps?.length ?? 0 })
+  return response
+}
+
+/**
+ * The consent sequence {@link composeAndDeliverResponse} runs, marking each
+ * stage on the run's emitter as its write lands.
+ *
+ * @param options {object}
+ * @param options.request {IVPRDetails}
+ * @param options.session {Session}
+ * @param options.profile {WalletRequestProfile}
+ * @param options.requestOrigin {string}
+ * @param options.selectedVCs {IVerifiableCredential[]}
+ * @param [options.exchangeUrl] {string}
+ * @param [options.expectedAppKeyDid] {string}
+ * @param [options.delegateStandaloneZcaps] {boolean}
+ * @param options.events {CeremonyEmitter}   the run's emitter
+ * @returns {Promise<WalletResponse>}
+ * @throws {WalletResponseFailure}
+ */
+async function runRequestConsent({
+  request,
+  session,
+  profile,
+  requestOrigin,
+  selectedVCs,
+  exchangeUrl,
+  expectedAppKeyDid,
+  delegateStandaloneZcaps,
+  events
+}: {
+  request: IVPRDetails
+  session: Session
+  profile: WalletRequestProfile
+  requestOrigin: string
+  selectedVCs: IVerifiableCredential[]
+  exchangeUrl?: string | null
+  expectedAppKeyDid?: string
+  delegateStandaloneZcaps?: boolean
+  events: CeremonyEmitter<RequestConsentStage>
 }): Promise<WalletResponse> {
   // Set once the consent is recorded ahead of escrow, so the post-compose
   // record below does not run, and a failed approval can roll it back: the
@@ -496,6 +605,7 @@ export async function composeAndDeliverResponse({
               prior: await priorEntryState({ session, party })
             }
             await recordConsentEntry({ session, party, zcaps, shareZcapIds })
+            events.stage('record-entry', { grants: zcaps.length })
           } else if (zcaps.length > 0) {
             throw new Error(
               'A request that delegated capabilities names no party to ' +
@@ -514,6 +624,7 @@ export async function composeAndDeliverResponse({
             zcaps,
             appConnectResult: appConnect
           })
+          events.stage('record-activity')
         } catch (err) {
           log.error('Could not record the grant history entry', { err })
           // A zero-grant connect delegated nothing, so its entry is the whole
@@ -528,6 +639,10 @@ export async function composeAndDeliverResponse({
       onEscrowed: ({ zcapIds }) => {
         for (const id of zcapIds) {
           escrowed.add(id)
+        }
+        // The first landing is the pivot; a later one emits nothing more.
+        if (zcapIds.length > 0) {
+          events.stage('escrow')
         }
       }
     })
@@ -594,6 +709,7 @@ export async function composeAndDeliverResponse({
           zcaps: grantedZcaps,
           shareZcapIds: []
         })
+        events.stage('record-entry', { grants: grantedZcaps.length })
       } catch (err) {
         // Fail closed: nothing is delivered, so the already-signed
         // delegations stay inert rather than unrevocable. A put that landed
@@ -620,6 +736,7 @@ export async function composeAndDeliverResponse({
         zcaps: grantedZcaps,
         appConnectResult: response.appConnect
       })
+      events.stage('record-activity')
     } catch (err) {
       log.error('Could not record the request history entry', { err })
       if (grantedZcaps.length > 0) {
@@ -661,6 +778,7 @@ export async function composeAndDeliverResponse({
         exchangeUrl,
         verifiablePresentation: response.verifiablePresentation
       })
+      events.stage('deliver')
     } catch (err) {
       log.error('Could not deliver the presentation to the exchange', { err })
       throw new WalletResponseFailure('exchangeFailed', {

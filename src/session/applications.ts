@@ -17,13 +17,70 @@ import {
   revokeAppAccess,
   type AccountSignerCheck,
   type ConnectedAgent,
-  type ConnectedApp
+  type ConnectedApp,
+  type GrantRevocationStage
 } from '@/lib/connectedApps'
+import { ceremonyEvents, type CeremonyEmitter } from '@interop/wallet-core'
 import type { GrantSignerState } from '@interop/wallet-core/clients'
 import type { Session } from '@/types/auth'
 import { createLogger } from '@/lib/log'
 
 const log = createLogger('fw:session:applications')
+
+/**
+ * The grant revocation's typed refusals on the ceremony event channel,
+ * matched by `err.name`. Every other throw classifies as `failed`.
+ */
+const GRANT_REVOCATION_REFUSALS = ['ConnectionEntryMissingError']
+
+/**
+ * Mints one grant revocation run's emitter, at the entry point the user's
+ * click reaches. The shared rotate-then-revoke tail beside the client
+ * revocation and the forget emits nothing of its own.
+ *
+ * @returns {CeremonyEmitter<GrantRevocationStage>}
+ */
+export function grantRevocationEvents(): CeremonyEmitter<GrantRevocationStage> {
+  return ceremonyEvents<GrantRevocationStage>({
+    ceremony: 'grant-revocation',
+    log,
+    refusals: GRANT_REVOCATION_REFUSALS
+  })
+}
+
+/**
+ * The outcome a completed party revocation classifies as. It is always
+ * `clean`, since a run that returns has retired the entry and recorded the
+ * revocation, even when the access itself had already ended. The detail
+ * carries the counts only.
+ *
+ * @param result {object}
+ * @param result.revoked {number}
+ * @param result.withdrawn {number}
+ * @param result.skipped {number}
+ * @param result.rotated {number}
+ * @returns {{ outcome: 'clean', detail: object }}
+ */
+function partyRevocationOutcome(result: {
+  revoked: number
+  withdrawn: number
+  skipped: number
+  rotated: number
+}): {
+  outcome: 'clean'
+  detail: {
+    revoked: number
+    withdrawn: number
+    skipped: number
+    rotated: number
+  }
+} {
+  const { revoked, withdrawn, skipped, rotated } = result
+  return {
+    outcome: 'clean',
+    detail: { revoked, withdrawn, skipped, rotated }
+  }
+}
 
 /**
  * Lists the connected apps and agents together with the account DID and the
@@ -91,7 +148,8 @@ export async function listApplicationsView({
  * POST for a grant that document already reads as dead (expired, orphaned,
  * or chained under a rotted parent delegation) and POSTing every other one,
  * a transient session's grants included, since those derive as unknown
- * while their generation delegation may still stand.
+ * while their generation delegation may still stand. This is the grant
+ * revocation ceremony's app entry point, and it emits the run's events.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -111,11 +169,17 @@ export async function revokeApplication({
   app: ConnectedApp
   grantsState: GrantSignerState
 }): Promise<{ outcomeKey: string }> {
-  const outcome = await revokeAppAccess({
-    storage: session.storage,
-    user: session.user,
-    app
-  })
+  const events = grantRevocationEvents()
+  const outcome = await events.run(
+    async () =>
+      await revokeAppAccess({
+        storage: session.storage,
+        user: session.user,
+        app,
+        onStage: (stage, detail) => events.stage(stage, detail)
+      }),
+    partyRevocationOutcome
+  )
   // Only what this run took away counts. `withdrawn` leaves out a grant
   // the server answered `AlreadyRevokedError`. A collection this run
   // re-keyed counts on its own, and it covers the pull-axis grants the
@@ -174,7 +238,8 @@ export function revokeOutcomeKey({
  * reading exactly as the app path does: a grant the verified document already
  * reads as dead is skipped without a POST, and every other one is POSTed, a
  * transient session's included, since its annex signer derives as unknown
- * while its generation delegation may still stand.
+ * while its generation delegation may still stand. This is the grant
+ * revocation ceremony's agent entry point, and it emits the run's events.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -189,11 +254,17 @@ export async function revokeAgent({
   session: Session
   agent: ConnectedAgent
 }): Promise<{ outcomeKey: string }> {
-  const outcome = await revokeAgentAccess({
-    storage: session.storage,
-    user: session.user,
-    agent
-  })
+  const events = grantRevocationEvents()
+  const outcome = await events.run(
+    async () =>
+      await revokeAgentAccess({
+        storage: session.storage,
+        user: session.user,
+        agent,
+        onStage: (stage, detail) => events.stage(stage, detail)
+      }),
+    partyRevocationOutcome
+  )
   return {
     outcomeKey: agentRevokeOutcomeKey({
       withdrew: outcome.withdrawn > 0 || outcome.rotated > 0
