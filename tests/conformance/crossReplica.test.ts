@@ -504,7 +504,10 @@ class InMemoryStore implements SyncStore {
     } else {
       this.resources.set(id, {
         id,
-        version: latest.version,
+        // The sync port leaves `version` absent under an opaque ETag; the
+        // reference server this suite runs against always sends the
+        // `<generation>.<version>` form, and a fresh local row carries 0.
+        version: latest.version ?? 0,
         etag: latest.etag,
         updatedAt: latest.updatedAt,
         // A non-null MasterState is never a tombstone (the port folds those
@@ -588,7 +591,7 @@ function makeDcwContactResolve({
     })
     store.overwriteDirty(
       id,
-      master.version,
+      master.version ?? 0,
       master.etag,
       envelope,
       local.updatedAt

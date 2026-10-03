@@ -21,6 +21,7 @@ import {
   listBackupCredentialEntries,
   removeAccountBackupCredential
 } from '@/session/backupCredential'
+import { GenerationDelegationRenewalError } from '@/session/annexReach'
 import { showToast } from '@/stores/toastStore'
 import { useAsyncLoad } from '@/hooks/useAsyncLoad'
 import { formatDate } from '@/lib/viewMappers/formatDate'
@@ -69,11 +70,14 @@ export function BackupCredentialsSection({
       await reload()
     } catch (err) {
       log.error('Could not remove the backup credential', { err })
-      setErrorKey(
-        (err as { name?: string }).name === 'ActingCredentialRemovalError'
-          ? 'settings.backupCredentials.actingCredential'
-          : 'settings.backupCredentials.revokeError'
-      )
+      if ((err as { name?: string }).name === 'ActingCredentialRemovalError') {
+        setErrorKey('settings.backupCredentials.actingCredential')
+      } else if (err instanceof GenerationDelegationRenewalError) {
+        // Refused before the strike: the backup credential still stands.
+        setErrorKey('settings.backupCredentials.removeRefusedRenewal')
+      } else {
+        setErrorKey('settings.backupCredentials.revokeError')
+      }
     } finally {
       setRemovingSpaceId(null)
     }

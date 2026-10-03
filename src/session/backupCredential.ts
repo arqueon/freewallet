@@ -311,9 +311,10 @@ export async function listBackupCredentialEntries({
  * The same removal a passkey runs (`removeStandingCredential`): on the
  * ladder branch the generation delegation this visit rides is replaced
  * first, in case the credential being removed is the one whose ladder VM
- * signed it, and the credential this session itself entered on refuses
- * (`ActingCredentialRemovalError`), since every stage would act through the
- * VM being struck.
+ * signed it, and a replacement that does not install refuses the removal
+ * (`GenerationDelegationRenewalError`). The credential this session itself
+ * entered on refuses too (`ActingCredentialRemovalError`), since every stage
+ * would act through the VM being struck.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -321,6 +322,8 @@ export async function listBackupCredentialEntries({
  * @returns {Promise<void>}
  * @throws {ActingCredentialRemovalError}   the credential named is the one
  *   this transient session entered on
+ * @throws {GenerationDelegationRenewalError}   a ladder-branch removal could
+ *   not replace the visit's generation delegation first; nothing was written
  * @throws {BackupCredentialNotRemovableError}   the entry records no
  *   management zcap
  */

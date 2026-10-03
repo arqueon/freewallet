@@ -135,6 +135,7 @@
     "passphraseSame": "The new passphrase must differ from the current one.",
     "passphrasePendingRetirement": "A previous passphrase change did not finish retiring the old passphrase. Log out and log in again with your passphrase, then try again.",
     "passphraseChangeFailed": "Could not change your passphrase. Please try again.",
+    "passphraseChangeRefusedRenewal": "Changing your passphrase was stopped before the old passphrase was retired: this session could not refresh its own storage access first. Your new passphrase is already set up, and the old one still works too. Try the change again with the same new passphrase, or sign in again with the new passphrase, which finishes retiring the old one.",
     "passphraseChangeReconnectApps": "Apps connected from this session will need to reconnect after the change.",
     "passkeysSection": "Passkeys",
     "addPasskey": "Add a passkey",
@@ -169,6 +170,7 @@
     "passkeyRemoving": "Removing...",
     "passkeyRemoved": "Passkey removed.",
     "passkeyRemoveFailed": "Could not remove the passkey. Please try again.",
+    "passkeyRemoveRefusedRenewal": "Removing the passkey was stopped before anything changed: this session could not refresh its own storage access first. The passkey still unlocks this wallet. Try again, or sign in again and retry.",
     "passkeyLastMethod": "This is the only way to unlock this wallet, so it cannot be removed. Add another passkey or a passphrase first.",
     "passkeyActingCredential": "This is the passkey you signed in with, so it cannot remove itself. Sign in with another passkey or with your passphrase to remove it.",
     "addPassphraseHint": "This wallet unlocks with a passkey only. Add a passphrase as a backup way to unlock it.",
@@ -249,7 +251,8 @@
       "removeConfirm": "Remove this backup credential? The backup file it came from will no longer sign in to this account, and this cannot be undone.",
       "removed": "Backup credential removed.",
       "revokeError": "The backup credential could not be removed. Please try again.",
-      "actingCredential": "This is the backup credential you signed in with, so it cannot remove itself. Sign in another way to remove it."
+      "actingCredential": "This is the backup credential you signed in with, so it cannot remove itself. Sign in another way to remove it.",
+      "removeRefusedRenewal": "Removing the backup credential was stopped before anything changed: this session could not refresh its own storage access first. The backup credential still signs in to this account. Try again, or sign in again and retry."
     },
     "deleteFarewellTitle": "Your account is deleted",
     "deleteFarewellAction": "Sign out",

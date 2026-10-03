@@ -121,7 +121,16 @@ vi.mock('@/session/forget', async importOriginal => {
   }
 })
 
-vi.mock('@/session/annexReach', () => ({
+vi.mock('@/session/annexReach', async importOriginal => ({
+  // The refusal class is the real one, so the tests match it the way the
+  // Settings surface does.
+  GenerationDelegationRenewalError: (
+    await importOriginal<typeof import('@/session/annexReach')>()
+  ).GenerationDelegationRenewalError,
+  // So is the refusal that maps the mocked renewal's result onto it.
+  refuseUnrenewedGenerationDelegation: (
+    await importOriginal<typeof import('@/session/annexReach')>()
+  ).refuseUnrenewedGenerationDelegation,
   clientAnnexReachFor: vi.fn(() => null),
   ensureGenerationDelegation: vi.fn(async () => ({ renewed: false })),
   tryRenewTransientGenerationDelegation: vi.fn(async () => {
@@ -224,12 +233,12 @@ import { deriveNextKeyHash } from '@interop/did-method-webvh'
 import { revokeAccountClient } from '@interop/wallet-core/clients'
 import {
   didWebProjectionStore,
+  GenerationDelegationRenewalError,
   tryRenewTransientGenerationDelegation
 } from '@/session/annexReach'
 import { assertNoPendingPassphraseEntry } from '@/session/forget'
 import { reprimeVerifiedAccountLog } from '@/session/verifiedLog'
 import {
-  GenerationDelegationRenewalError,
   revokeEnrolledClient,
   type RevokedClientKeys
 } from '@/session/revocation'

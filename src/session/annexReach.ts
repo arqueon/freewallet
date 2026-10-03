@@ -460,6 +460,84 @@ export type GenerationDelegationRenewal =
     }
 
 /**
+ * A ladder-branch ceremony refused before the account-document edit that
+ * strikes a signer (its pivot), for one of two reasons. Three ceremonies
+ * raise it: a wallet disconnect before its removal entry, and a passphrase
+ * change and an unlock-method removal before their strike entry. `failed`:
+ * the replacement of the generation delegation this visit's requests ride
+ * did not install, so publishing the edit could strike the key that
+ * delegation chains to; `cause` carries the renewal's own error.
+ * `no-ladder-vm`: the account document anchors no ladder VM for the acting
+ * credential, and the ladder kind's roster and collection stores sign with
+ * that VM, so every append after the edit would be refused.
+ *
+ * The edit was not published, so the ceremony is retryable as is. A renewal
+ * whose annex-log append landed with its response lost leaves a fresh
+ * delegation embedded there that this session does not ride. It is inert,
+ * and a retry adopts it.
+ */
+export class GenerationDelegationRenewalError extends Error {
+  readonly reason: 'failed' | 'no-ladder-vm'
+
+  constructor({
+    reason,
+    cause
+  }: {
+    reason: 'failed' | 'no-ladder-vm'
+    cause?: unknown
+  }) {
+    super(
+      'Refused before the account document edit was published: ' +
+        (reason === 'failed'
+          ? 'this session could not replace its own generation delegation ' +
+            'first.'
+          : "the account document anchors no ladder VM for this session's " +
+            'credential.'),
+      cause !== undefined ? { cause } : undefined
+    )
+    this.name = 'GenerationDelegationRenewalError'
+    this.reason = reason
+  }
+}
+
+/**
+ * The pre-strike refusal the three ladder-branch ceremonies share: a
+ * replacement that did not install (`failed`) and a document anchoring no
+ * ladder VM for the acting credential (`no-ladder-vm`) each throw, before
+ * the account-document edit that would leave the visit with no authority.
+ * The other two skip reasons, no ladder members and no annex generation,
+ * pass through: the ladder kind resolves only on a transient session, and
+ * the transient login refuses a record with no sibling delegation and
+ * stamps the landed one into the session, so neither is reachable there.
+ *
+ * @param options {object}
+ * @param options.renewal {GenerationDelegationRenewal}   what
+ *   {@link tryRenewTransientGenerationDelegation} resolved to
+ * @returns {{ delegation: IZcap } | { skipped: 'no-ladder-seed' | 'no-pointer' }}
+ *   the same renewal, narrowed past the two refused reasons
+ * @throws {GenerationDelegationRenewalError}   no replacement installed
+ */
+export function refuseUnrenewedGenerationDelegation({
+  renewal
+}: {
+  renewal: GenerationDelegationRenewal
+}): { delegation: IZcap } | { skipped: 'no-ladder-seed' | 'no-pointer' } {
+  if ('delegation' in renewal) {
+    return renewal
+  }
+  if (renewal.skipped === 'failed') {
+    throw new GenerationDelegationRenewalError({
+      reason: 'failed',
+      cause: renewal.err
+    })
+  }
+  if (renewal.skipped === 'no-ladder-vm') {
+    throw new GenerationDelegationRenewalError({ reason: 'no-ladder-vm' })
+  }
+  return { skipped: renewal.skipped }
+}
+
+/**
  * The grant path's blocking renewal stage: renews a transient session's
  * generation delegation in place -- ladder-signed, through the credential's
  * sibling delegation -- and swaps the fresh one into the live session, so

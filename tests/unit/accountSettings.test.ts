@@ -118,6 +118,9 @@ const state = vi.hoisted(() => ({
   renewedDelegation: null as unknown,
   // Whether the renewal fails (it reports failure by returning null).
   renewalFails: false,
+  // How the discriminated renewal the passphrase change runs before its
+  // strike resolves: a delegation installed, or the named skip reason.
+  ladderRenewal: 'installed' as 'installed' | 'failed' | 'no-ladder-vm',
   // Whether the account-Space DELETE rode an explicit capability.
   wipeRodeCapability: false,
   // The options the WebAuthn registration was called with.
@@ -884,7 +887,31 @@ vi.mock('@interop/wallet-core/clientAnnex', async importOriginal => ({
   )
 }))
 
-vi.mock('@/session/annexReach', () => ({
+vi.mock('@/session/annexReach', async importOriginal => ({
+  // The refusal class is the real one, so the Settings copy and the tests
+  // match it the way production does.
+  GenerationDelegationRenewalError: (
+    await importOriginal<typeof import('@/session/annexReach')>()
+  ).GenerationDelegationRenewalError,
+  // So is the refusal that maps the mocked renewal's result onto it.
+  refuseUnrenewedGenerationDelegation: (
+    await importOriginal<typeof import('@/session/annexReach')>()
+  ).refuseUnrenewedGenerationDelegation,
+  tryRenewTransientGenerationDelegation: vi.fn(async () => {
+    state.calls.push('tryRenewTransientGenerationDelegation')
+    if (state.ladderRenewal === 'failed') {
+      // What the real renewal does on a caught failure: it logs it and
+      // resolves with the error rather than throwing.
+      return {
+        skipped: 'failed',
+        err: new Error('the sibling delegation is unreachable')
+      }
+    }
+    if (state.ladderRenewal === 'no-ladder-vm') {
+      return { skipped: 'no-ladder-vm' }
+    }
+    return { delegation: GENERATION_DELEGATION }
+  }),
   renewTransientGenerationDelegation: vi.fn(
     async ({ session }: { session: { profile: Record<string, unknown> } }) => {
       state.calls.push('renewTransientGenerationDelegation')
@@ -1128,6 +1155,8 @@ const {
 } = await import('@/session/accountSettings')
 const { deleteSpaceWithCapability } =
   await import('@interop/wallet-core/clientAnnex')
+const { GenerationDelegationRenewalError } =
+  await import('@/session/annexReach')
 const { deleteUnlockLocalState } = await import('@/lib/sessionKey')
 const { sessionDisposalSignal } = await import('@/session/sessionLifecycle')
 const { invalidateVerifiedLog } = await import('@/session/verifiedLog')
@@ -1375,6 +1404,7 @@ beforeEach(() => {
   state.accountLogGone = false
   state.renewedDelegation = null
   state.renewalFails = false
+  state.ladderRenewal = 'installed'
   state.registryCapabilities = []
   state.wipeRodeCapability = false
   // The world-readable `did.jsonl` probe: an unauthenticated GET, so it is
@@ -3506,7 +3536,7 @@ describe("changeAccountPassphrase (the ladder branch's unlock-Space stage)", () 
       // writes nothing browser-local, so no login could consume one.
       'establishStandingUnlock',
       'adoptPassphraseRebind',
-      'renewTransientGenerationDelegation',
+      'tryRenewTransientGenerationDelegation',
       'rotateOffUnlockCredential',
       'deleteUnlockSpaceForEntry:unlock-space-passphrase',
       'putUnlockMethods'
@@ -3514,6 +3544,64 @@ describe("changeAccountPassphrase (the ladder branch's unlock-Space stage)", () 
     expect(state.calls).not.toContain('deleteKeyring')
     expect(vi.mocked(deleteKeyring)).not.toHaveBeenCalled()
     expect(oldPassphraseRetired).toBe(true)
+  })
+
+  it('refuses before the strike when the delegation replacement fails', async () => {
+    // The replacement sits between the bind entry and the retirement's
+    // document inventory edit, the change's pivot. Publishing the strike
+    // anyway would take the old ladder VM, and with it the visit's
+    // authority, out of the document.
+    state.ladderRenewal = 'failed'
+    const session = makeSession({ transient: true })
+    const refusal = changeAccountPassphrase({
+      session,
+      oldPassphrase: 'old',
+      newPassphrase: 'new'
+    })
+
+    await expect(refusal).rejects.toBeInstanceOf(
+      GenerationDelegationRenewalError
+    )
+    await expect(refusal).rejects.toMatchObject({
+      reason: 'failed',
+      cause: { message: 'the sibling delegation is unreachable' }
+    })
+    // The account document keeps the old credential: no retirement ran, so
+    // no strike entry was published. Nothing past it ran either: the old
+    // unlock Space and the registry entry naming it stand, the state a
+    // change torn between its establishment and its teardown leaves.
+    expect(state.calls).toEqual([
+      'verifyPassphrase',
+      'establishStandingUnlock',
+      'adoptPassphraseRebind',
+      'tryRenewTransientGenerationDelegation'
+    ])
+    expect(vi.mocked(rotateOffUnlockCredential)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteUnlockSpaceForEntry)).not.toHaveBeenCalled()
+    expect(state.puts).toEqual([])
+    // The live session is put back on the old credential, whose standing
+    // members it still holds, so a retry starts from them.
+    expect(session.profile.ladderSeed).toBe(LADDER_SEED)
+  })
+
+  it('refuses before the strike when the document anchors no ladder VM', async () => {
+    state.ladderRenewal = 'no-ladder-vm'
+    const session = makeSession({ transient: true })
+    const unlockMethod = session.profile.unlockMethod
+    const refusal = changeAccountPassphrase({
+      session,
+      oldPassphrase: 'old',
+      newPassphrase: 'new'
+    })
+
+    await expect(refusal).rejects.toBeInstanceOf(
+      GenerationDelegationRenewalError
+    )
+    await expect(refusal).rejects.toMatchObject({ reason: 'no-ladder-vm' })
+    expect(vi.mocked(rotateOffUnlockCredential)).not.toHaveBeenCalled()
+    expect(state.puts).toEqual([])
+    expect(session.profile.ladderSeed).toBe(LADDER_SEED)
+    expect(session.profile.unlockMethod).toBe(unlockMethod)
   })
 
   it('writes no establishment marker on the ladder branch', async () => {

@@ -217,6 +217,31 @@ same edit. A passkey removal uses the acting credential's own. Which ladder
 the session's login seed may fill is settled against the pre-edit log, so a
 generation swap can never anchor on the credential being removed.
 
+On the ladder branch both ceremonies run the rule for a struck signer
+before the strike. The strike takes a ladder VM out of the document, and
+that VM may have signed the generation delegation this visit's every
+request rides. So a replacement is minted, installed in place, and adopted
+into the live session first. A passphrase change signs it with the NEW
+credential's ladder VM, which the bind entry has already published. A
+passkey or backup-credential removal signs it with the acting credential's
+own. The strike entry is the pivot of both, so the replacement runs before
+the pivot. It cannot move ahead of a passphrase change's establishment,
+since a delegation the old ladder VM signed would rot at the strike.
+
+Two renewal outcomes refuse the ceremony before the strike
+(`GenerationDelegationRenewalError`, carrying `reason`), the same refusal
+the ladder-branch disconnect raises (see "Client revocation and the epoch
+cascade" in client-revocation.md). One is a replacement that fails to
+install (`failed`). The other is a document that anchors no ladder VM for
+the acting credential (`no-ladder-vm`). A refused removal has written
+nothing, and the credential still stands. A refused passphrase change has
+already established the new passphrase. It leaves the state a change torn
+between establishment and teardown leaves, with both passphrases standing
+and the registry entry still naming the old one. The live session is put
+back on the old credential. A retry of the same change converges it, and so
+does the next login with the new passphrase, through the torn-retirement
+repair below. Settings shows each refusal with its own retry copy.
+
 The tail's `onUserKeyAdopted` step re-seals the unlock-methods registry to
 the rotated key in band, before that key persists into the client-key record
 (`adoptRotatedUserKeyInBand`, `src/session/userKeyAdoption.ts`). The re-seal

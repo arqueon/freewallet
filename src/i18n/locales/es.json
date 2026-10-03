@@ -135,6 +135,7 @@
     "passphraseSame": "La nueva frase de contraseña debe ser distinta de la actual.",
     "passphrasePendingRetirement": "Un cambio de frase de contraseña anterior no terminó de retirar la frase antigua. Cierre la sesión, vuelva a iniciarla con su frase de contraseña e inténtelo de nuevo.",
     "passphraseChangeFailed": "No se pudo cambiar su frase de contraseña. Inténtelo de nuevo.",
+    "passphraseChangeRefusedRenewal": "El cambio de frase de contraseña se detuvo antes de retirar la anterior: esta sesión no pudo renovar primero su propio acceso al almacenamiento. Su nueva frase de contraseña ya está configurada, y la anterior también sigue funcionando. Intente el cambio de nuevo con la misma frase nueva, o vuelva a iniciar sesión con la frase nueva, lo que termina de retirar la anterior.",
     "passphraseChangeReconnectApps": "Las aplicaciones conectadas desde esta sesión tendrán que volver a conectarse después del cambio.",
     "passkeysSection": "Llaves de acceso",
     "addPasskey": "Agregar una llave de acceso",
@@ -169,6 +170,7 @@
     "passkeyRemoving": "Eliminando...",
     "passkeyRemoved": "Llave de acceso eliminada.",
     "passkeyRemoveFailed": "No se pudo eliminar la llave de acceso. Inténtelo de nuevo.",
+    "passkeyRemoveRefusedRenewal": "La eliminación de la llave de acceso se detuvo antes de cambiar nada: esta sesión no pudo renovar primero su propio acceso al almacenamiento. La llave de acceso sigue desbloqueando esta cartera. Inténtelo de nuevo, o vuelva a iniciar sesión y reinténtelo.",
     "passkeyLastMethod": "Esta es la única forma de desbloquear esta billetera, por lo que no se puede eliminar. Agregue otra llave de acceso o una frase de contraseña primero.",
     "passkeyActingCredential": "Esta es la llave de acceso con la que inició sesión, así que no puede eliminarse a sí misma. Inicie sesión con otra llave de acceso o con su frase de contraseña para eliminarla.",
     "addPassphraseHint": "Esta billetera se desbloquea solo con una llave de acceso. Agregue una frase de contraseña como forma de respaldo para desbloquearla.",
@@ -249,7 +251,8 @@
       "removeConfirm": "Eliminar esta credencial de respaldo? El archivo de respaldo del que proviene ya no podra iniciar sesion en esta cuenta, y esto no se puede deshacer.",
       "removed": "Credencial de respaldo eliminada.",
       "revokeError": "No se pudo eliminar la credencial de respaldo. Vuelva a intentarlo.",
-      "actingCredential": "Es la credencial de respaldo con la que inicio sesion, asi que no puede eliminarse a si misma. Inicie sesion de otra forma para eliminarla."
+      "actingCredential": "Es la credencial de respaldo con la que inicio sesion, asi que no puede eliminarse a si misma. Inicie sesion de otra forma para eliminarla.",
+      "removeRefusedRenewal": "La eliminación de la credencial de respaldo se detuvo antes de cambiar nada: esta sesión no pudo renovar primero su propio acceso al almacenamiento. La credencial de respaldo sigue iniciando sesión en esta cuenta. Inténtelo de nuevo, o vuelva a iniciar sesión y reinténtelo."
     },
     "deleteFarewellTitle": "Su cuenta ha sido eliminada",
     "deleteFarewellAction": "Cerrar sesión",

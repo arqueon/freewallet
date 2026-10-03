@@ -89,7 +89,11 @@ import {
   assertBrowserLocalSession,
   isBrowserLocalSession
 } from '@/session/persistence'
-import { renewTransientGenerationDelegation } from '@/session/annexReach'
+import {
+  refuseUnrenewedGenerationDelegation,
+  renewTransientGenerationDelegation,
+  tryRenewTransientGenerationDelegation
+} from '@/session/annexReach'
 import {
   findPendingPassphraseEntries,
   findUnrecordedCredentials
@@ -285,6 +289,10 @@ export async function loadUnlockRegistry({
  *   cannot be claimed, so retiring it would leave it standing. Raised by the
  *   read-only pre-flight before anything is written; the same refusal from
  *   the retirement itself propagates rather than writing a pending entry
+ * @throws {GenerationDelegationRenewalError}   a ladder-branch change could
+ *   not replace the visit's generation delegation before the strike. The new
+ *   passphrase is established and the old one still stands; a retry, or a
+ *   login with the new passphrase, finishes the change
  * @throws {Error}   the new passphrase could not be established as a
  *   standing credential; the old passphrase is unchanged
  */
@@ -381,6 +389,9 @@ export async function changeAccountPassphrase({
   // can be standing (no WAS, a guest, an unpromoted account -- the same
   // states with no retirement to run).
   const controller = profile.accountController ?? session.user.id
+  // The unlock method this session acts through, put back if the ladder
+  // branch refuses before its strike (below).
+  const actingUnlockMethod = profile.unlockMethod
   let oldPassphraseRetired: boolean
   let unlockSpaceId: string
   let manageCapability: IZcap | undefined
@@ -592,6 +603,7 @@ export async function changeAccountPassphrase({
   // old passphrase's seed is being retired, so mid-session annex writes
   // (the revocation cascade's re-mint, a later rotation's strike) must sign
   // as the new one.
+  const actingLadderSeed = session.profile.ladderSeed
   if (newLadderSeed) {
     session.profile.ladderSeed = newLadderSeed
   }
@@ -604,20 +616,27 @@ export async function changeAccountPassphrase({
   // the strike lands. Every App Connect grant this visit chained under the
   // old delegation ends with it, the same mid-generation death an ordinary
   // disconnect causes.
+  //
+  // The renewal precedes the change's pivot (the strike) and follows the
+  // bind entry, which publishes the VM that must sign it. A replacement that
+  // did not install refuses the change here, leaving both passphrases
+  // standing: the state a change torn between its establishment and its
+  // teardown leaves, which a retry or the next new-passphrase login
+  // converges. The live session goes back on the old credential first,
+  // since a retry starts from its standing members.
   if (context?.kind === 'ladder' && newLadderSeed && oldLadderSeed) {
+    const renewal = await tryRenewTransientGenerationDelegation({
+      session,
+      retiringKeyMultibases: [
+        await ladderVmKeyMultibase({ ladderSeed: oldLadderSeed })
+      ]
+    })
     try {
-      await renewTransientGenerationDelegation({
-        session,
-        retiringKeyMultibases: [
-          await ladderVmKeyMultibase({ ladderSeed: oldLadderSeed })
-        ]
-      })
+      refuseUnrenewedGenerationDelegation({ renewal })
     } catch (err) {
-      log.warn(
-        'Could not replace the generation delegation before the strike; the ' +
-          'visit may lose its authority when the old ladder VM leaves the document',
-        { err }
-      )
+      session.profile.ladderSeed = actingLadderSeed
+      session.profile.unlockMethod = actingUnlockMethod
+      throw err
     }
   }
   // Retire the OLD credential: document inventory out, user key rotated off its
@@ -1294,6 +1313,9 @@ export async function renameAccountPasskey({
  * @throws {ActingCredentialRemovalError}   the passkey named is the
  *   credential this transient session entered on, whose ladder every stage of
  *   the removal acts through
+ * @throws {GenerationDelegationRenewalError}   a ladder-branch removal could
+ *   not replace the visit's generation delegation before the strike; nothing
+ *   was written
  */
 export async function removeAccountPasskey({
   session,
@@ -1308,9 +1330,10 @@ export async function removeAccountPasskey({
 /**
  * The removal every high-entropy standing credential shares (a passkey, a
  * backup credential): the acting-credential refusal, the generation
- * delegation's replacement on the ladder branch, the revocation, and the
- * rotated key's adoption. A passkey entry carrying no management zcap takes
- * the WebAuthn ceremony path; every other entry revokes through its zcap.
+ * delegation's replacement on the ladder branch (refusing when it does not
+ * install), the revocation, and the rotated key's adoption. A passkey entry
+ * carrying no management zcap takes the WebAuthn ceremony path; every other
+ * entry revokes through its zcap.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -1320,6 +1343,9 @@ export async function removeAccountPasskey({
  * @throws {ActingCredentialRemovalError}   the credential named is the one
  *   this transient session entered on, whose ladder every stage of the
  *   removal acts through
+ * @throws {GenerationDelegationRenewalError}   a ladder-branch removal could
+ *   not replace the visit's generation delegation before the strike; nothing
+ *   was written
  */
 export async function removeStandingCredential({
   session,
@@ -1352,12 +1378,16 @@ export async function removeStandingCredential({
   // VM may be what signed the generation delegation this visit's every
   // request rides. The replacement is signed by the ACTING credential's
   // ladder VM, which stands throughout, installed through that credential's
-  // sibling and adopted into the live session BEFORE the strike lands.
-  // Best-effort: a delegation the policy leaves standing costs one read, and
-  // a renewal that could not run leaves the stages below to refuse for
-  // themselves. Every App Connect grant this visit chained under the
-  // replaced delegation ends with it, the same mid-generation death an
-  // ordinary disconnect causes.
+  // sibling and adopted into the live session BEFORE the strike lands. A
+  // delegation the policy leaves standing costs one read. Every App Connect
+  // grant this visit chained under the replaced delegation ends with it, the
+  // same mid-generation death an ordinary disconnect causes.
+  //
+  // The strike entry is this removal's pivot, so the renewal runs before it
+  // and nothing has been written yet. A replacement that did not install
+  // refuses the removal here (`GenerationDelegationRenewalError`), the way
+  // the ladder-branch disconnect refuses before its removal entry: the
+  // credential still stands, and a retry starts over.
   if (context?.kind === 'ladder') {
     // Which key is about to lose its authority, as the entry records it: the
     // bridge delegation's proof verification method, which under invariant 17
@@ -1366,19 +1396,11 @@ export async function removeStandingCredential({
     // verbatim. An entry recording no bridge signer names none, and the
     // renewal falls back to its own expiry and signer-rot policy.
     const retiringKeyId = entry.delegationKeyId
-    try {
-      await renewTransientGenerationDelegation({
-        session,
-        ...(retiringKeyId ? { retiringKeyMultibases: [retiringKeyId] } : {})
-      })
-    } catch (err) {
-      log.warn(
-        "Could not replace the generation delegation before the credential's " +
-          'strike; the visit may lose its authority when the removed ' +
-          "credential's ladder VM leaves the document",
-        { err }
-      )
-    }
+    const renewal = await tryRenewTransientGenerationDelegation({
+      session,
+      ...(retiringKeyId ? { retiringKeyMultibases: [retiringKeyId] } : {})
+    })
+    refuseUnrenewedGenerationDelegation({ renewal })
   }
   const outcome =
     entry.type === 'passkey' && !canRevokeWithoutCeremony(entry)

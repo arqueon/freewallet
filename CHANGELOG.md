@@ -38,6 +38,15 @@
 
 ### Fixed
 
+- A passphrase change and a passkey or backup-credential removal from a
+  transient session now refuse before their strike entry
+  (`GenerationDelegationRenewalError`, with retry copy in Settings) when
+  their generation-delegation replacement fails, or when the account
+  document anchors no ladder VM for the acting credential. They no longer
+  publish the strike and lose their authority for the rest of the ceremony.
+  A refused passphrase change leaves the new passphrase established and the
+  old one standing, which a retry or a login with the new passphrase
+  finishes. The refusal class moved to `src/session/annexReach.ts`.
 - A wallet disconnect from a transient session now refuses before the
   removal entry (`GenerationDelegationRenewalError`, with retry copy in the
   panel) when its generation-delegation replacement fails, or when the

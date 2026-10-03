@@ -14,17 +14,17 @@
  * The same removal also runs the rule for a struck signer on the ladder
  * branch: the strike takes the removed passkey's ladder VM out of the
  * document, so the generation delegation that VM may have signed is replaced
- * BEFORE the strike lands, naming the retiring VM.
+ * BEFORE the strike lands, naming the retiring VM. A replacement that did
+ * not install refuses the removal there, before anything is written.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { addSink, captureSink } from '@interop/logger'
 
 const state = vi.hoisted(() => ({
   context: null as unknown,
   revoked: [] as unknown[],
-  // What the mocked generation-delegation renewal does: resolve by default,
-  // throw when a test asks for the best-effort catch.
-  renewalError: undefined as unknown
+  // How the mocked generation-delegation renewal resolves: a delegation
+  // installed by default, or the named skip reason.
+  renewal: 'installed' as 'installed' | 'failed' | 'no-ladder-vm' | 'no-pointer'
 }))
 
 vi.mock('@/session/accountCeremonyContext', () => ({
@@ -60,11 +60,19 @@ vi.mock('@/session/unlockMethods', async importOriginal => ({
 // of it at load time, and only the renewal is under test here.
 vi.mock('@/session/annexReach', async importOriginal => ({
   ...(await importOriginal<typeof import('@/session/annexReach')>()),
-  renewTransientGenerationDelegation: vi.fn(async () => {
-    if (state.renewalError) {
-      throw state.renewalError
+  tryRenewTransientGenerationDelegation: vi.fn(async () => {
+    if (state.renewal === 'failed') {
+      // What the real renewal does on a caught failure: it logs it and
+      // resolves with the error rather than throwing.
+      return {
+        skipped: 'failed',
+        err: new Error('the annex log would not resolve')
+      }
     }
-    return null
+    if (state.renewal !== 'installed') {
+      return { skipped: state.renewal }
+    }
+    return { delegation: { id: 'urn:zcap:generation-fresh' } }
   })
 }))
 
@@ -73,7 +81,10 @@ import {
   removeAccountPasskey
 } from '@/session/accountSettings'
 import { revokeUnlockMethod } from '@/session/unlockMethods'
-import { renewTransientGenerationDelegation } from '@/session/annexReach'
+import {
+  GenerationDelegationRenewalError,
+  tryRenewTransientGenerationDelegation
+} from '@/session/annexReach'
 import type { PasskeyUnlockMethod } from '@/session/unlockMethods'
 import type { Session } from '@/types/auth'
 
@@ -114,7 +125,7 @@ function sessionStub(): Session {
 beforeEach(() => {
   state.context = null
   state.revoked = []
-  state.renewalError = undefined
+  state.renewal = 'installed'
   vi.clearAllMocks()
 })
 
@@ -180,7 +191,7 @@ describe('the rule for a struck signer on a passkey removal', () => {
       entry: { ...ENTRY, unlockSpaceId: 'unlock-space-other' }
     })
 
-    const renewal = vi.mocked(renewTransientGenerationDelegation)
+    const renewal = vi.mocked(tryRenewTransientGenerationDelegation)
     expect(renewal).toHaveBeenCalledTimes(1)
     expect(renewal.mock.calls[0]![0]).toMatchObject({
       // The recorded verification-method id goes over verbatim: the
@@ -207,7 +218,7 @@ describe('the rule for a struck signer on a passkey removal', () => {
       entry: { ...entry, unlockSpaceId: 'unlock-space-other' }
     })
 
-    const renewal = vi.mocked(renewTransientGenerationDelegation)
+    const renewal = vi.mocked(tryRenewTransientGenerationDelegation)
     expect(renewal).toHaveBeenCalledTimes(1)
     // The renewal falls back to its own staleness policy rather than being
     // handed an empty retiring set.
@@ -220,34 +231,76 @@ describe('the rule for a struck signer on a passkey removal', () => {
     state.context = { kind: 'enrolled', invoker: {} }
     await removeAccountPasskey({ session: sessionStub(), entry: ENTRY })
 
-    expect(vi.mocked(renewTransientGenerationDelegation)).not.toHaveBeenCalled()
+    expect(
+      vi.mocked(tryRenewTransientGenerationDelegation)
+    ).not.toHaveBeenCalled()
     expect(vi.mocked(revokeUnlockMethod)).toHaveBeenCalledTimes(1)
   })
 
-  it('warns and removes the passkey anyway when the renewal throws', async () => {
+  it('refuses before the strike when the replacement fails', async () => {
+    // The strike entry is the removal's pivot, so nothing has been written
+    // yet. Publishing it anyway could take the key the visit's delegation
+    // chains to out of the document, leaving the rest of the removal with
+    // no authority.
     state.context = {
       kind: 'ladder',
       unlockSpaceId: 'unlock-space-acting',
       invoker: {}
     }
-    state.renewalError = new Error('the annex log would not resolve')
-    const capture = captureSink()
-    addSink(capture.sink)
-
-    await removeAccountPasskey({
+    state.renewal = 'failed'
+    const refusal = removeAccountPasskey({
       session: sessionStub(),
       entry: { ...ENTRY, unlockSpaceId: 'unlock-space-other' }
     })
 
-    // Best-effort: a renewal that could not run leaves the stages below to
-    // refuse for themselves rather than refusing the removal here.
-    expect(vi.mocked(revokeUnlockMethod)).toHaveBeenCalledTimes(1)
-    expect(capture.events).toContainEqual(
-      expect.objectContaining({
-        ns: 'fw:session:settings',
-        level: 'warn',
-        msg: expect.stringContaining('Could not replace the generation')
-      })
+    await expect(refusal).rejects.toBeInstanceOf(
+      GenerationDelegationRenewalError
     )
+    await expect(refusal).rejects.toMatchObject({
+      reason: 'failed',
+      cause: { message: 'the annex log would not resolve' }
+    })
+    // The account document is unchanged: the revocation, whose first write
+    // is the strike entry, never ran.
+    expect(vi.mocked(revokeUnlockMethod)).not.toHaveBeenCalled()
+    expect(state.revoked).toEqual([])
+  })
+
+  it('refuses before the strike when the document anchors no ladder VM', async () => {
+    // The ladder kind's roster and collection stores sign with the acting
+    // credential's ladder VM, so with none in the document every append
+    // after the strike would be refused.
+    state.context = {
+      kind: 'ladder',
+      unlockSpaceId: 'unlock-space-acting',
+      invoker: {}
+    }
+    state.renewal = 'no-ladder-vm'
+    const refusal = removeAccountPasskey({
+      session: sessionStub(),
+      entry: { ...ENTRY, unlockSpaceId: 'unlock-space-other' }
+    })
+
+    await expect(refusal).rejects.toBeInstanceOf(
+      GenerationDelegationRenewalError
+    )
+    await expect(refusal).rejects.toMatchObject({ reason: 'no-ladder-vm' })
+    expect(vi.mocked(revokeUnlockMethod)).not.toHaveBeenCalled()
+  })
+
+  it('proceeds when the session holds no annex generation to renew', async () => {
+    // Unreachable on a ladder-kind context, which resolves from the ladder
+    // members and the annex generation alike, so the removal carries on.
+    state.context = {
+      kind: 'ladder',
+      unlockSpaceId: 'unlock-space-acting',
+      invoker: {}
+    }
+    state.renewal = 'no-pointer'
+    await removeAccountPasskey({
+      session: sessionStub(),
+      entry: { ...ENTRY, unlockSpaceId: 'unlock-space-other' }
+    })
+    expect(vi.mocked(revokeUnlockMethod)).toHaveBeenCalledTimes(1)
   })
 })

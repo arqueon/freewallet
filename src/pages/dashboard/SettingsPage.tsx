@@ -29,6 +29,7 @@ import {
   enrolledCeremonyContext
 } from '@/session/accountCeremonyContext'
 import { WrongPassphraseError } from '@/session/keyring'
+import { GenerationDelegationRenewalError } from '@/session/annexReach'
 import { peekVerifiedAccountLog } from '@/session/verifiedLog'
 import {
   canRevokeWithoutCeremony,
@@ -93,6 +94,26 @@ function deletePhaseKey(phase: string): string {
 }
 
 const log = createLogger('fw:ui:settings')
+
+/**
+ * The copy for each way a passphrase change can fail.
+ */
+const PASSPHRASE_CHANGE_ERROR_KEYS = {
+  incorrect: 'settings.passphraseIncorrect',
+  same: 'settings.passphraseSame',
+  pending: 'settings.passphrasePendingRetirement',
+  renewal: 'settings.passphraseChangeRefusedRenewal',
+  failed: 'settings.passphraseChangeFailed'
+} as const
+
+/**
+ * The copy for each way a passkey removal can fail.
+ */
+const PASSKEY_REMOVE_ERROR_KEYS = {
+  acting: 'settings.passkeyActingCredential',
+  renewal: 'settings.passkeyRemoveRefusedRenewal',
+  failed: 'settings.passkeyRemoveFailed'
+} as const
 
 /**
  * Whether an account document publishes a verification method under
@@ -260,8 +281,11 @@ export function SettingsPage() {
   const [passphraseRotation, setPassphraseRotation] = useState<
     'rotated' | 'skipped' | 'failed' | 'unretired'
   >('skipped')
+  // `renewal` is the ladder branch's refusal before its strike: the new
+  // passphrase is established, the old one still stands, and a retry or a
+  // login with the new passphrase finishes the change.
   const [passphraseChangeError, setPassphraseChangeError] = useState<
-    'incorrect' | 'same' | 'pending' | 'failed' | null
+    'incorrect' | 'same' | 'pending' | 'renewal' | 'failed' | null
   >(null)
   const newPassphraseLengthPassed =
     newPassphrase.length >= PASSWORD_RULES.minlength
@@ -298,6 +322,9 @@ export function SettingsPage() {
         setPassphraseChangeError('same')
       } else if (err instanceof PendingPassphraseRetirementError) {
         setPassphraseChangeError('pending')
+      } else if (err instanceof GenerationDelegationRenewalError) {
+        log.warn('The passphrase change refused before its strike', { err })
+        setPassphraseChangeError('renewal')
       } else {
         log.error('Could not change the passphrase', { err })
         setPassphraseChangeError('failed')
@@ -364,10 +391,11 @@ export function SettingsPage() {
   const [removing, setRemoving] = useState(false)
   // How the last removal ended: `failed` is the generic refusal, `acting` the
   // ladder branch's refusal to remove the credential this session acts
-  // through.
-  const [removeError, setRemoveError] = useState<false | 'failed' | 'acting'>(
-    false
-  )
+  // through, `renewal` its refusal before the strike when the visit's
+  // generation delegation could not be replaced first.
+  const [removeError, setRemoveError] = useState<
+    false | 'failed' | 'acting' | 'renewal'
+  >(false)
   const passkeyEntries = (unlockRegistry?.methods ?? []).filter(
     (method): method is PasskeyUnlockMethod => method.type === 'passkey'
   )
@@ -528,6 +556,10 @@ export function SettingsPage() {
         // The ladder branch refuses to strike the credential this session
         // acts through; another credential's login removes it instead.
         setRemoveError('acting')
+      } else if (err instanceof GenerationDelegationRenewalError) {
+        // Refused before the strike: the passkey still unlocks the wallet.
+        log.warn('The passkey removal refused before its strike', { err })
+        setRemoveError('renewal')
       } else {
         log.error('Could not remove the passkey', { err })
         setRemoveError('failed')
@@ -1072,13 +1104,7 @@ export function SettingsPage() {
                     ))}
                   {passphraseChangeError && (
                     <Alert severity="error">
-                      {passphraseChangeError === 'incorrect'
-                        ? t('settings.passphraseIncorrect')
-                        : passphraseChangeError === 'same'
-                          ? t('settings.passphraseSame')
-                          : passphraseChangeError === 'pending'
-                            ? t('settings.passphrasePendingRetirement')
-                            : t('settings.passphraseChangeFailed')}
+                      {t(PASSPHRASE_CHANGE_ERROR_KEYS[passphraseChangeError])}
                     </Alert>
                   )}
                   <Typography variant="body2" color="text.secondary">
@@ -1651,9 +1677,7 @@ export function SettingsPage() {
             )}
             {removeError && (
               <Alert severity="error" sx={{ mt: 2 }}>
-                {removeError === 'acting'
-                  ? t('settings.passkeyActingCredential')
-                  : t('settings.passkeyRemoveFailed')}
+                {t(PASSKEY_REMOVE_ERROR_KEYS[removeError])}
               </Alert>
             )}
           </DialogContent>
