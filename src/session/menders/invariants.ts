@@ -35,13 +35,17 @@ const DECLARATIONS: ReadonlyArray<
 > = [
   // 1
   // converger: `convergeRosterToDocument` (`src/session/userKeySweep.ts`)
-  // over wallet-core `/clients`' `convergeUserKeyRosterToAccount`.
+  // over wallet-core `/clients`' `convergeUserKeyRosterToAccount`. The
+  // authority is that standing converger's reach, the remembered sweep,
+  // which needs this client's key agent. On a transient session only a
+  // ladder-kind ceremony's own tail converges it, as the one roster append
+  // the ceremony-tail license admits per inventory-changing version.
   {
     id: 'roster-wraps-exactly-the-document-key-set',
     statement:
       "The user key roster's current epoch wraps the user key to exactly the key-agreement keys the account document lists: no recipient the document has stopped keying, and no keyed client left without a wrap.",
     standsOn: ['ladder-anchored', 'enrolled'],
-    authority: 'account',
+    authority: 'enrolled',
     triggers: ['remembered-login-chain', 'ceremony-tail'],
     ceremonies: [
       'client-revocation',
@@ -59,16 +63,15 @@ const DECLARATIONS: ReadonlyArray<
     evidence: ['verified-log']
   },
   // 2
-  // converger: none of its own -- the roster half is the `seal()` backstop
-  // inside invariant 1's converger, the collection half sits inside
-  // invariant 3's (`cascadeCollectionsToUserKey`). The transient chain's
-  // collection fan-out reports the collection half; the roster half has no
-  // transient converger (gap row 21). Also runs in the remote-direct CHAPI
-  // popup.
+  // converger: none of its own -- it sits inside invariant 3's
+  // (`cascadeCollectionsToUserKey`). The transient chain's collection
+  // fan-out reports it, and that fan-out also runs in the remote-direct
+  // CHAPI popup. The roster log's half is invariant 37, since its converger
+  // needs `enrolled`.
   {
     id: 'governed-log-heads-anchor-past-the-membership-change',
     statement:
-      "A governed log's verified head (the roster's, and each encrypted collection's `meta/log`) is anchored at a controller version no earlier than the controller's latest assertion-key removal.",
+      "Each encrypted collection's governing log (its `meta/log`) has a verified head anchored at a controller version no earlier than the controller's latest assertion-key removal.",
     standsOn: ['ladder-anchored', 'enrolled'],
     authority: 'account',
     triggers: [
@@ -627,13 +630,17 @@ const DECLARATIONS: ReadonlyArray<
   // 33
   // converger: `storage.ensureUserCollections`, a `StorageManager` method
   // fired as a `storageReady` sweep; it refuses an in-memory session, so the
-  // transient trigger is impossible (design note 33).
+  // transient trigger is impossible (design note 33). The authority is that
+  // converger's reach today, a browser-local session's provisioning, rather
+  // than the predicate's: a transient session holds `account` but has no
+  // replica-less converger. FW-464 widens it back to `account` once one
+  // lands.
   {
     id: 'standard-collections-are-provisioned',
     statement:
       'The account Space carries every standard collection the wallet writes to, each with its descriptor.',
     standsOn: ['ladder-anchored', 'enrolled'],
-    authority: 'account',
+    authority: 'enrolled',
     triggers: ['remembered-login-chain'],
     ceremonies: ['account-genesis', 'credential-anchored-genesis'],
     evidence: ['host-listing']
@@ -683,6 +690,32 @@ const DECLARATIONS: ReadonlyArray<
     triggers: [],
     ceremonies: [],
     evidence: ['host-listing']
+  },
+  // 37
+  // converger: the `seal()` backstop inside invariant 1's converger
+  // (`convergeRosterToDocument`, `src/session/userKeySweep.ts`), reported
+  // by the remembered sweep. The roster log's half of invariant 2, on
+  // invariant 1's authority and for invariant 1's reason: a roster append
+  // needs this client's key agent, or a ladder-kind ceremony's one licensed
+  // tail append, so no transient chain converges it. Gap row 21 keeps the
+  // residue visible.
+  {
+    id: 'roster-log-head-anchors-past-the-membership-change',
+    statement:
+      "The user key roster log's verified head is anchored at a controller version no earlier than the controller's latest assertion-key removal.",
+    standsOn: ['ladder-anchored', 'enrolled'],
+    authority: 'enrolled',
+    triggers: ['remembered-login-chain', 'ceremony-tail'],
+    ceremonies: [
+      'client-revocation',
+      'forget-client',
+      'last-client-transition',
+      'unlock-credential-rotation',
+      'recovery-code-revocation'
+    ],
+    // The anchored version of the roster log's verified head, read under the
+    // visit's pins.
+    evidence: ['verified-log']
   }
 ]
 

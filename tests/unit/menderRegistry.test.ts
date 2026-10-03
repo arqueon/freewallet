@@ -91,14 +91,18 @@ describe('census completeness', () => {
 })
 
 describe('the transient-reachable set', () => {
-  it('is the twenty entries the design pins', () => {
+  it('is the twenty-one entries the design pins', () => {
     const reachable = transientReachableInvariants({
       registry: freewalletMenderRegistry
     })
     // Row 35 joined when the connections writer sweep became an encounter
     // site at the directory listing read, which a transient session reaches.
+    // Row 37 joined when it split off row 2 as the roster log's half. It is
+    // counted through its ceremony-tail trigger, as row 2 was before the
+    // split, and row 2 stays since its transient collection fan-out still
+    // reports it.
     expect(reachable.map(rowOf)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 25, 26, 32, 35
+      1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 25, 26, 32, 35, 37
     ])
   })
 })
@@ -120,7 +124,9 @@ describe('the gap allowlist', () => {
     // connections writer sweep became an encounter site at the directory
     // listing read. Row 36 entered `none` with its declaration: nothing
     // backfills the connections directory. Row 20 left the census with the
-    // login-time stranded app-key sweep.
+    // login-time stranded app-key sweep. Row 37 entered no derived set when
+    // it split off row 2: the remembered sweep reports it and its
+    // ceremony-tail trigger counts it reached.
     expect(
       derived
         .filter(gap => gap.kind === 'unreachable')
@@ -252,6 +258,11 @@ describe('the code counterpart', () => {
         row: 35,
         file: 'src/session/connectionWriters.ts',
         symbol: 'sweepHeldConnectionWriters'
+      },
+      {
+        row: 37,
+        file: 'src/session/userKeySweep.ts',
+        symbol: 'sweepUserKeyToDocument'
       }
     ]
 

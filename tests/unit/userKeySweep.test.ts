@@ -189,9 +189,11 @@ const POINTER = {
 }
 
 /**
- * The two invariants the sweep registration reports, in report order.
+ * The three invariants the sweep registration reports, in report order.
  */
 const ROSTER_INVARIANT = 'roster-wraps-exactly-the-document-key-set'
+const ROSTER_LOG_INVARIANT =
+  'roster-log-head-anchors-past-the-membership-change'
 const COLLECTIONS_INVARIANT = 'collection-epochs-name-the-current-user-key'
 
 function rosterRead({ rotated = false } = {}) {
@@ -207,13 +209,14 @@ function rosterRead({ rotated = false } = {}) {
  * The sweep's own entries in this session's mend report, by invariant.
  *
  * @param session {Session}
- * @returns {Promise<object>}   the roster-stage entry and the fan-out entry,
- *   each undefined when the block never reached the registration
+ * @returns {Promise<object>}   the roster-stage entries and the fan-out
+ *   entry, each undefined when the block never reached the registration
  */
 async function sweepEntries(session: Session) {
   const report = (await session.mends) ?? []
   return {
     roster: report.find(entry => entry.invariant === ROSTER_INVARIANT),
+    rosterLog: report.find(entry => entry.invariant === ROSTER_LOG_INVARIANT),
     collections: report.find(entry => entry.invariant === COLLECTIONS_INVARIANT)
   }
 }
@@ -312,9 +315,12 @@ async function arrangeRememberedLogin({ withRemote = true } = {}) {
 /**
  * The convergence's own best-effort default: a healthy roster (and equally a
  * document that could not be fetched or verified) hands the fan-out back the
- * key and descriptor the login already had.
+ * key and descriptor the login already had. `overrides` spreads over that
+ * result, for the non-rotating repairs (an escrow, a seal).
+ *
+ * @param [overrides] {object}
  */
-function convergenceLeavesInputUnchanged() {
+function convergenceLeavesInputUnchanged(overrides: object = {}) {
   vi.mocked(convergeUserKeyRosterToAccount).mockImplementation((async ({
     userKey,
     descriptor
@@ -325,8 +331,38 @@ function convergenceLeavesInputUnchanged() {
     rotated: false,
     staleRecipientIds: [],
     userKey,
-    descriptor
+    descriptor,
+    ...overrides
   })) as never)
+}
+
+/**
+ * The convergence found the roster still wrapping the current key to a
+ * recipient the document no longer keys, rotated it, and handed back the
+ * fresh key through the adoption callback. `overrides` spreads over the
+ * rotated result.
+ *
+ * @param [overrides] {object}
+ */
+function convergenceRotatesToFreshKey(overrides: object = {}) {
+  vi.mocked(convergeUserKeyRosterToAccount).mockImplementation((async ({
+    onUserKeyAdopted
+  }: {
+    onUserKeyAdopted?: (adopted: unknown) => Promise<void>
+  }) => {
+    await onUserKeyAdopted?.({
+      userKey: FRESH_USER_KEY,
+      latestEpochId: FRESH_USER_KEY.id,
+      descriptor: CONVERGED_DESCRIPTOR
+    })
+    return {
+      rotated: true,
+      staleRecipientIds: ['did:key:z6MkGone#z6LSGone'],
+      userKey: FRESH_USER_KEY,
+      descriptor: CONVERGED_DESCRIPTOR,
+      ...overrides
+    }
+  }) as never)
 }
 
 beforeEach(() => {
@@ -387,20 +423,10 @@ describe('the login-time cascade-completion sweep', () => {
     vi.mocked(checkUserKeyRosterAtLogin).mockResolvedValue(
       rosterRead() as never
     )
-    vi.mocked(convergeUserKeyRosterToAccount).mockImplementation((async ({
-      userKey,
-      descriptor
-    }: {
-      userKey: unknown
-      descriptor: unknown
-    }) => ({
-      rotated: false,
+    convergenceLeavesInputUnchanged({
       sealed: false,
-      staleRecipientIds: [],
-      escrowedRecipientIds: ['did:key:z6LSTornClient#kak'],
-      userKey,
-      descriptor
-    })) as never)
+      escrowedRecipientIds: ['did:key:z6LSTornClient#kak']
+    })
     const fake = await arrangeRememberedLogin()
 
     const { session } = await loginWithPassphrase({ passphrase: PASSPHRASE })
@@ -413,27 +439,38 @@ describe('the login-time cascade-completion sweep', () => {
     })
   })
 
-  it('reports the roster mended when the convergence only sealed the log', async () => {
+  it('reports the roster log mended when the convergence only sealed it', async () => {
     // The seal backstop: a torn revocation whose rotation no-op'd leaves the
     // roster log's head anchored before the membership change, and the
     // backstop's append is the mend.
     vi.mocked(checkUserKeyRosterAtLogin).mockResolvedValue(
       rosterRead() as never
     )
-    vi.mocked(convergeUserKeyRosterToAccount).mockImplementation((async ({
-      userKey,
-      descriptor
-    }: {
-      userKey: unknown
-      descriptor: unknown
-    }) => ({
-      rotated: false,
-      sealed: true,
-      staleRecipientIds: [],
-      escrowedRecipientIds: [],
-      userKey,
-      descriptor
-    })) as never)
+    convergenceLeavesInputUnchanged({ sealed: true, escrowedRecipientIds: [] })
+    const fake = await arrangeRememberedLogin()
+
+    const { session } = await loginWithPassphrase({ passphrase: PASSPHRASE })
+    fake.resolveProvisioning()
+
+    const entries = await sweepEntries(session!)
+    expect(entries.rosterLog).toMatchObject({
+      outcome: 'clean',
+      detail: { rotated: false, sealed: true }
+    })
+    // The wraps are a separate predicate: the seal moved no recipient.
+    expect(entries.roster).toMatchObject({ outcome: 'noop' })
+    // The fan-out is a separate predicate: nothing moved an epoch here.
+    expect(entries.collections).toMatchObject({ outcome: 'noop' })
+  })
+
+  it('reports the roster log mended when the convergence rotated without sealing', async () => {
+    // A torn revocation whose rotation did not run: the convergence rotates,
+    // and that rotation's own append anchors the roster log's head past the
+    // membership change, so the backstop finds nothing left to seal.
+    vi.mocked(checkUserKeyRosterAtLogin).mockResolvedValue(
+      rosterRead() as never
+    )
+    convergenceRotatesToFreshKey({ sealed: false, escrowedRecipientIds: [] })
     const fake = await arrangeRememberedLogin()
 
     const { session } = await loginWithPassphrase({ passphrase: PASSPHRASE })
@@ -442,10 +479,12 @@ describe('the login-time cascade-completion sweep', () => {
     const entries = await sweepEntries(session!)
     expect(entries.roster).toMatchObject({
       outcome: 'clean',
-      detail: { sealed: true }
+      detail: { staleRecipients: 1 }
     })
-    // The fan-out is a separate predicate: nothing moved an epoch here.
-    expect(entries.collections).toMatchObject({ outcome: 'noop' })
+    expect(entries.rosterLog).toMatchObject({
+      outcome: 'clean',
+      detail: { rotated: true, sealed: false }
+    })
   })
 
   it('sweeps with the freshly adopted user key when the roster read rotated', async () => {
@@ -640,6 +679,10 @@ describe('the login-time cascade-completion sweep', () => {
       outcome: 'failed',
       errorName: 'Error'
     })
+    expect(entries.rosterLog).toMatchObject({
+      outcome: 'failed',
+      errorName: 'Error'
+    })
     expect(entries.collections).toMatchObject({
       outcome: 'failed',
       errorName: 'Error'
@@ -656,6 +699,10 @@ describe('the login-time cascade-completion sweep', () => {
 
     const entries = await sweepEntries(session!)
     expect(entries.roster).toMatchObject({
+      outcome: 'noop',
+      detail: { reason: 'nothing-to-sweep-from' }
+    })
+    expect(entries.rosterLog).toMatchObject({
       outcome: 'noop',
       detail: { reason: 'nothing-to-sweep-from' }
     })
@@ -815,26 +862,7 @@ describe('the roster stage of the sweep', () => {
     vi.mocked(checkUserKeyRosterAtLogin).mockResolvedValue(
       rosterRead() as never
     )
-    // The convergence found the roster still wrapping the current key to a
-    // recipient the document no longer keys, rotated it, and handed back the
-    // fresh key through the adoption callback.
-    vi.mocked(convergeUserKeyRosterToAccount).mockImplementation((async ({
-      onUserKeyAdopted
-    }: {
-      onUserKeyAdopted?: (adopted: unknown) => Promise<void>
-    }) => {
-      await onUserKeyAdopted?.({
-        userKey: FRESH_USER_KEY,
-        latestEpochId: FRESH_USER_KEY.id,
-        descriptor: CONVERGED_DESCRIPTOR
-      })
-      return {
-        rotated: true,
-        staleRecipientIds: ['did:key:z6MkGone#z6LSGone'],
-        userKey: FRESH_USER_KEY,
-        descriptor: CONVERGED_DESCRIPTOR
-      }
-    }) as never)
+    convergenceRotatesToFreshKey()
     const persistClientKeys = vi.fn(async () => undefined)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 

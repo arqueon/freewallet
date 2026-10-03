@@ -19,6 +19,13 @@
 
 ### Changed
 
+- Three mender declarations now name the authority their standing converger
+  needs. `roster-wraps-exactly-the-document-key-set` and
+  `standard-collections-are-provisioned` are declared `enrolled`.
+  `governed-log-heads-anchor-past-the-membership-change` keeps the collection
+  logs, and the roster log's half is the new
+  `roster-log-head-anchors-past-the-membership-change`, which the remembered
+  sweep reports when it seals the roster log.
 - A collection's `generator` stamp reads "Created for" on every surface,
   the Storage page's listing included, since it is the wallet's record of
   whom it created the collection for and not an observation of who wrote it.

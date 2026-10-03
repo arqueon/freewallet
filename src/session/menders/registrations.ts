@@ -25,6 +25,7 @@ import {
   errorNameOf,
   type InvariantId,
   type MendOutcome,
+  type MendReport,
   type MendReportEntry,
   type Registration,
   type RegistrationSite
@@ -212,6 +213,14 @@ function transient(deps: LoginMenderDeps): TransientMenderDeps {
  * none of the registry, bridge, or promotion writes below runs on a session
  * whose provisioning was refused -- which is what a rejected chain seed has
  * always done.
+ *
+ * The runner admits the seed like any registration, so that abort holds only
+ * on a session holding its invariant's authority, `enrolled`: a remembered
+ * profile carrying its update keys, key-agreement key, and key agent. A
+ * remembered session missing any of them skips the seed and runs the block
+ * without the guard. Every remembered path mints the update keys and a
+ * pending record resumes enrollment first, so no login reaches here without
+ * them today.
  */
 export const REMEMBERED_SEED: Registration<LoginMenderDeps, CeremonyId> = {
   trigger: 'remembered-login-chain',
@@ -229,7 +238,8 @@ export const REMEMBERED_SEED: Registration<LoginMenderDeps, CeremonyId> = {
 
 /**
  * The cascade-completion sweep: the roster convergence and the collection
- * fan-out, one registration reporting both predicates. It runs first because
+ * fan-out, one registration reporting three predicates: the roster's wraps,
+ * the roster log's seal, and the collection epochs. It runs first because
  * its convergence may rotate the user key and re-seal the registry to the
  * fresh one, and a registry read-modify-write racing that re-seal would
  * rewrite the record under the pre-rotation keys and undo it within one
@@ -239,6 +249,7 @@ const USER_KEY_SWEEP: Registration<LoginMenderDeps, CeremonyId> = {
   trigger: 'remembered-login-chain',
   reports: [
     'roster-wraps-exactly-the-document-key-set',
+    'roster-log-head-anchors-past-the-membership-change',
     'collection-epochs-name-the-current-user-key'
   ],
   async converge(deps) {
@@ -250,19 +261,11 @@ const USER_KEY_SWEEP: Registration<LoginMenderDeps, CeremonyId> = {
       !userKey ||
       !session.storage.remoteStore
     ) {
-      const detail = { reason: 'nothing-to-sweep-from' }
-      return [
-        {
-          invariant: 'roster-wraps-exactly-the-document-key-set',
-          outcome: 'noop',
-          detail
-        },
-        {
-          invariant: 'collection-epochs-name-the-current-user-key',
-          outcome: 'noop',
-          detail
-        }
-      ]
+      return uniformEntries({
+        registration: USER_KEY_SWEEP,
+        outcome: 'noop',
+        reason: 'nothing-to-sweep-from'
+      })
     }
     const { rotated, sealed, staleRecipients, escrowedRecipients, cascade } =
       await sweepUserKeyToDocument({
@@ -271,15 +274,17 @@ const USER_KEY_SWEEP: Registration<LoginMenderDeps, CeremonyId> = {
         userKey,
         read: rosterRead
       })
-    // The convergence mends the predicate three ways, and only one of them
-    // rotates: it can also escrow a torn enrollment's missing wraps, or seal
-    // the roster log's head past a membership change. Any of the three is a
-    // login that repaired the roster.
-    const converged = rotated || sealed || escrowedRecipients > 0
+    // The convergence mends the wraps two ways, and only one of them
+    // rotates: it can also escrow a torn enrollment's missing wraps. Either
+    // is a login that repaired the roster. The roster log's own predicate is
+    // mended by either append this login made to it: the seal backstop's,
+    // or the rotation's own, which anchors the head past the membership
+    // change just as well.
+    const converged = rotated || escrowedRecipients > 0
+    const anchored = rotated || sealed
     const rosterDetail = {
       ...(staleRecipients > 0 ? { staleRecipients } : {}),
-      ...(escrowedRecipients > 0 ? { escrowedRecipients } : {}),
-      ...(sealed ? { sealed } : {})
+      ...(escrowedRecipients > 0 ? { escrowedRecipients } : {})
     }
     return [
       {
@@ -289,9 +294,42 @@ const USER_KEY_SWEEP: Registration<LoginMenderDeps, CeremonyId> = {
           ? { detail: rosterDetail }
           : {})
       },
+      {
+        invariant: 'roster-log-head-anchors-past-the-membership-change',
+        ...(anchored
+          ? { outcome: 'clean' as const, detail: { rotated, sealed } }
+          : { outcome: 'noop' as const })
+      },
       collectionEpochsEntry({ cascade })
     ]
   }
+}
+
+/**
+ * One entry per invariant a registration reports, all of one outcome: the
+ * shape a registration returns when it did not reach its converger.
+ *
+ * @param options {object}
+ * @param options.registration {object}   the registration whose `reports`
+ *   list the entries' invariants
+ * @param options.outcome {'refused' | 'noop'}
+ * @param options.reason {string}
+ * @returns {MendReport}
+ */
+export function uniformEntries({
+  registration,
+  outcome,
+  reason
+}: {
+  registration: { reports: ReadonlyArray<InvariantId> }
+  outcome: 'refused' | 'noop'
+  reason: string
+}): MendReport<CeremonyId> {
+  return registration.reports.map(invariant => ({
+    invariant,
+    outcome,
+    detail: { reason }
+  }))
 }
 
 /**
@@ -782,10 +820,9 @@ export async function cascadeLadderCollections({
  * The same fan-out seals each collection's descriptor log: a collection
  * already on the current key whose log head is anchored before the account
  * document's latest `assertionMethod` removal takes a verbatim re-append
- * anchored past it. That is the collection half of the governed-log
- * invariant, which a forget ceremony leaves open since its fan-out runs
- * before its removal entry. The roster log's half stays with the remembered
- * sweep.
+ * anchored past it. That is the governed-log invariant, which a forget
+ * ceremony leaves open since its fan-out runs before its removal entry. The
+ * roster log's own invariant stays with the remembered sweep.
  *
  * It starts from the roster this visit read and converges no roster itself,
  * so a rotation torn before its roster append is not this registration's.
@@ -812,19 +849,11 @@ const TRANSIENT_COLLECTION_CASCADE: Registration<LoginMenderDeps, CeremonyId> =
       const { session, context, rosterRead } = transient(deps)
       const resolved = await context()
       if (resolved?.kind !== 'ladder') {
-        const detail = { reason: 'no-ladder-context' }
-        return [
-          {
-            invariant: 'collection-epochs-name-the-current-user-key',
-            outcome: 'noop',
-            detail
-          },
-          {
-            invariant: 'governed-log-heads-anchor-past-the-membership-change',
-            outcome: 'noop',
-            detail
-          }
-        ]
+        return uniformEntries({
+          registration: TRANSIENT_COLLECTION_CASCADE,
+          outcome: 'noop',
+          reason: 'no-ladder-context'
+        })
       }
       const cascade = await cascadeLadderCollections({
         session,
@@ -835,8 +864,8 @@ const TRANSIENT_COLLECTION_CASCADE: Registration<LoginMenderDeps, CeremonyId> =
         collectionEpochsEntry({ cascade }),
         {
           invariant: 'governed-log-heads-anchor-past-the-membership-change',
-          // The collection half alone: this registration seals no roster log.
-          // A collection that failed may be the one left unsealed.
+          // The collection logs alone: this registration seals no roster
+          // log. A collection that failed may be the one left unsealed.
           ...(cascade.failed.length > 0
             ? {
                 outcome: 'partial' as const,

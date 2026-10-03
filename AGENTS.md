@@ -100,8 +100,8 @@ that file's header; the rules that apply when working an item:
   binding decisions -- contract-binding ones, and do-not-reopen rejections
   of an approach -- into tracked `decisions/` records (see "Ecosystem
   conventions" below); the design doc itself stays a working artifact.
-- Never refer to invariants just by number, always include a brief description
-  in parentheses.
+- Never refer to invariant just by number, always include a brief description
+  in parentheses. Wrong: `invariant 25`, correct: `invariant 25 (<brief explanation of what it entails>)`
 
 For a cross-repo change (a spec, a wire contract, or a shared `@interop/*`
 API), four standing measures apply: the item carries a `touches:` field

@@ -14,6 +14,8 @@ import type { InvariantId } from '@interop/wallet-core/menders'
 export const MENDER_WARNINGS: Readonly<Record<InvariantId, string>> = {
   'roster-wraps-exactly-the-document-key-set':
     'The user key cascade-completion sweep failed',
+  'roster-log-head-anchors-past-the-membership-change':
+    'The user key cascade-completion sweep failed',
   'governed-log-heads-anchor-past-the-membership-change':
     'The user key cascade-completion sweep failed',
   'collection-epochs-name-the-current-user-key':

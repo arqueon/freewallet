@@ -5,7 +5,8 @@
  * collection onto the key that convergence settled on.
  *
  * It is one registration of the remembered login's mender block, reporting
- * two invariants: the roster wraps exactly the document's key set, and every
+ * three invariants: the roster wraps exactly the document's key set, the
+ * roster log's head is anchored past the latest membership change, and every
  * collection epoch names the current user key. Staleness is read from
  * server-held state alone, so a cascade another client crashed partway is
  * completed here and a healthy account writes nothing.

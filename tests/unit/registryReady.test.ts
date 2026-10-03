@@ -380,7 +380,7 @@ describe('the FW-300 storageReady / registryReady split', () => {
       'annex-gc'
     ])
     // The routing entry the login fired, then every registration of the
-    // block, by the invariants it reports: the provisioning seed, the sweep's two, the four shared passes, the two
+    // block, by the invariants it reports: the provisioning seed, the sweep's three, the four shared passes, the two
     // standing refreshes, the pointer heal's two, the generation-delegation
     // heal, then the tail -- the annex GC and the keystore report. A
     // registration that stopped reporting would drop its ids from this
@@ -391,6 +391,7 @@ describe('the FW-300 storageReady / registryReady split', () => {
       'this-browser-is-still-an-enrolled-client',
       'standard-collections-are-provisioned',
       'roster-wraps-exactly-the-document-key-set',
+      'roster-log-head-anchors-past-the-membership-change',
       'collection-epochs-name-the-current-user-key',
       'unlock-registry-opens-under-the-current-user-key',
       'registry-passphrase-entry-names-the-standing-credential',

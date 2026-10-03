@@ -840,7 +840,7 @@ built:
 Second, a residue whose only mender is a remembered login:
 
 - The user key roster log behind an ordinary forget ceremony's removal
-  entry (invariant `governed-log-heads-anchor-past-the-membership-change`).
+  entry (invariant `roster-log-head-anchors-past-the-membership-change`).
   The forget rotates the roster before the entry, so the roster log's head
   anchors at a version that still lists the forgotten client's key, and that
   key can keep appending there until a still-listed key appends past the
@@ -873,8 +873,9 @@ Second, a residue whose only mender is a remembered login:
   Space.
 - A signup torn before its standard collections are provisioned, on an
   account that runs no remembered login (invariant
-  `standard-collections-are-provisioned`). Whether the transient heal
-  re-provisions them is the tracking item's first question.
+  `standard-collections-are-provisioned`). The one converger needs a
+  browser-local session. The tracking item builds a replica-less one over
+  the remote store for the transient chain.
 - A forgotten or disconnected browser whose local wipe tore, on an account
   with no remembered login left to run the detector (invariant
   `this-browser-is-still-an-enrolled-client`). Whether this is a gap at all

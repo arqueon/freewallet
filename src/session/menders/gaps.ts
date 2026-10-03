@@ -80,7 +80,9 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
     kind: 'none'
   },
   // 8. Lapsed on the 2026-09-09 trigger correction; stands until a review
-  // confirms the residue mended.
+  // confirms the residue mended. The derivation counts the invariant reached
+  // through its ceremony-tail trigger, though the ladder-kind tail is a
+  // one-shot license and the standing converger needs `enrolled`.
   {
     invariant: 'roster-wraps-exactly-the-document-key-set',
     tornState:
@@ -114,9 +116,12 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
   // both grades. The number stays, so the rows below keep theirs.
   // 21. The roster half row 10 never named, listed in row 10's place so the
   // ARCHITECTURE.md order holds. Its only seal is the remembered sweep's
-  // roster convergence, which no credential-only visit fires.
+  // roster convergence, which no credential-only visit fires. It keys
+  // invariant 37, the roster log's half of invariant 2. The derivation
+  // counts 37 reached through its ceremony-tail trigger, so this row stands
+  // by declaration.
   {
-    invariant: 'governed-log-heads-anchor-past-the-membership-change',
+    invariant: 'roster-log-head-anchors-past-the-membership-change',
     tornState:
       "The user key roster log behind an ordinary forget ceremony's removal entry.",
     standsOn: ['enrolled'],
@@ -143,7 +148,8 @@ export const MENDER_GAPS: ReadonlyArray<InvariantGap> = [
   },
   // 13. Retired 2026-10-01: invariant 20 (stranded app keys) left the
   // census with its sweep. The number stays, so the rows below keep theirs.
-  // 14
+  // 14. The one converger needs a browser-local session, so invariant 33 is
+  // declared `enrolled` until FW-464 builds the replica-less one.
   {
     invariant: 'standard-collections-are-provisioned',
     tornState:

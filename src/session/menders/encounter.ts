@@ -49,6 +49,7 @@ import { createLogger } from '@/lib/log'
 import { isSessionDisposed } from '@/session/sessionLifecycle'
 import { freewalletMenderRegistry } from './index.js'
 import { heldFor } from './run.js'
+import { uniformEntries } from './registrations.js'
 
 const log = createLogger('fw:session:registry')
 
@@ -101,31 +102,6 @@ function mapFor<Value>({
     store.set(session, map)
   }
   return map
-}
-
-/**
- * One entry per reported invariant, all of one outcome.
- *
- * @param options {object}
- * @param options.registration {RegistrationSite}
- * @param options.outcome {'refused' | 'noop'}
- * @param options.reason {string}
- * @returns {MendReport}
- */
-function uniformEntries({
-  registration,
-  outcome,
-  reason
-}: {
-  registration: RegistrationSite
-  outcome: 'refused' | 'noop'
-  reason: string
-}): MendReport<CeremonyId> {
-  return registration.reports.map(invariant => ({
-    invariant,
-    outcome,
-    detail: { reason }
-  }))
 }
 
 /**
