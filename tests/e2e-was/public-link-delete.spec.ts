@@ -5,7 +5,8 @@ import {
   signupViaWizard,
   E2E_TEST_CREDENTIAL
 } from './helpers'
-import { listStoredResourceIds } from './storedLogs'
+import { listStoredResourceIds } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 /**
  * Deleting a credential that has a live public link. The public copy is
@@ -125,6 +126,7 @@ async function expectStoredPrivateCredentialCount({
       async () =>
         (
           await listStoredResourceIds({
+            dataDir: WAS_E2E_DATA_DIR,
             spaceId,
             collectionId: 'private-credentials'
           })

@@ -21,6 +21,15 @@
 - The cross-replica conformance suite boots `was-teaching-server` through
   its `was-teaching-server/testing` export, as a devDependency, in place of a
   sibling build.
+- A node session harness (`tests/harness/`, `pnpm run test:harness`) runs
+  real signups and logins as scripted actors against an in-process
+  `was-teaching-server`, with no browser and no module mocks. It covers
+  transient and remembered actors, a passkey-style second credential, and
+  four built account shapes. Its first test records per-visit log growth
+  over 20 transient visits.
+- `addAccountPasskey` takes an optional `register` ceremony, and the
+  browser-local persistence strategy an optional `replicaStorage`, both for
+  tests.
 
 ### Changed
 

@@ -5,20 +5,27 @@
  *
  * Neither is world-readable, and neither can be fetched from a test runner:
  * the roster and the annex sit behind the account's zcap authority, and a
- * transient visit's own authority lives only inside the page. So the
- * assertions read the teaching server's FileSystem backend off disk, the way
- * `storeOracle.ts` already answers "does this Space still exist?". A resource
- * is one file inside its collection directory, named `r.<resource id with
- * dots percent-encoded>.<content type>.<extension>`, holding the stored bytes
+ * transient visit's own authority lives only inside the page (or the
+ * harness actor's tab memory). So the assertions read the teaching server's
+ * FileSystem backend off disk, the way `storeOracle.ts` already answers
+ * "does this Space still exist?". A resource is one file inside its
+ * collection directory, named `r.<resource id with dots
+ * percent-encoded>.<content type>.<extension>`, holding the stored bytes
  * verbatim.
  *
  * Both logs are JSONL: one entry per line, each entry restating the
  * parameters that hold at its version, so the last line carries the current
  * `updateKeys` and `nextKeyHashes` and the current roster state.
+ *
+ * Every reader takes the server's data root as `dataDir`. The Playwright WAS
+ * suite passes its run's root (`tests/e2e-was/wasDataDir.ts`), and the node
+ * harness passes its temp backend's (`tests/harness/`), so both read the
+ * same stores through this one implementation.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { parseVersionedVm, vmFragmentOf } from '@interop/vh-resource-log'
+import { delegatedClientsPointer } from '@interop/wallet-core/clientAnnex'
 import { storedSpacesDir } from './storeOracle'
 
 /**
@@ -43,21 +50,28 @@ export interface StoredLogEntry {
  * such resource (or does not exist).
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.resourceId {string}   e.g. `user-key.jsonl`
  * @returns {Promise<string | undefined>}
  */
 export async function readStoredResource({
+  dataDir,
   spaceId,
   collectionId,
   resourceId
 }: {
+  dataDir: string
   spaceId: string
   collectionId: string
   resourceId: string
 }): Promise<string | undefined> {
-  const directory = path.join(storedSpacesDir(), spaceId, collectionId)
+  const directory = path.join(
+    storedSpacesDir({ dataDir }),
+    spaceId,
+    collectionId
+  )
   let entries: string[]
   try {
     entries = await fs.readdir(directory)
@@ -85,21 +99,24 @@ export async function readStoredResource({
  * file can outlive its deleted resource. An absent collection reads as none.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @returns {Promise<string[]>}
  */
 export async function listStoredResourceIds({
+  dataDir,
   spaceId,
   collectionId
 }: {
+  dataDir: string
   spaceId: string
   collectionId: string
 }): Promise<string[]> {
   let fileNames: string[]
   try {
     fileNames = await fs.readdir(
-      path.join(storedSpacesDir(), spaceId, collectionId)
+      path.join(storedSpacesDir({ dataDir }), spaceId, collectionId)
     )
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -117,28 +134,84 @@ export async function listStoredResourceIds({
  * empty log.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.resourceId {string}
  * @returns {Promise<StoredLogEntry[]>}
  */
 export async function readStoredLog({
+  dataDir,
   spaceId,
   collectionId,
   resourceId
 }: {
+  dataDir: string
   spaceId: string
   collectionId: string
   resourceId: string
 }): Promise<StoredLogEntry[]> {
-  const text = await readStoredResource({ spaceId, collectionId, resourceId })
+  const text = await readStoredResource({
+    dataDir,
+    spaceId,
+    collectionId,
+    resourceId
+  })
   if (text === undefined) {
     return []
   }
+  return parseLogLines({ text })
+}
+
+/**
+ * A stored JSONL log's text split into its entries, oldest first.
+ *
+ * @param options {object}
+ * @param options.text {string}
+ * @returns {StoredLogEntry[]}
+ */
+function parseLogLines({ text }: { text: string }): StoredLogEntry[] {
   return text
     .split('\n')
     .filter(line => line.trim().length > 0)
     .map(line => JSON.parse(line) as StoredLogEntry)
+}
+
+/**
+ * One stored log's size: its entry count and its stored byte length. An
+ * absent resource reads as zero of each.
+ *
+ * @param options {object}
+ * @param options.dataDir {string}   the server's data root
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}
+ * @returns {Promise<{ entries: number, bytes: number }>}
+ */
+export async function readStoredLogSize({
+  dataDir,
+  spaceId,
+  collectionId,
+  resourceId
+}: {
+  dataDir: string
+  spaceId: string
+  collectionId: string
+  resourceId: string
+}): Promise<{ entries: number; bytes: number }> {
+  const text = await readStoredResource({
+    dataDir,
+    spaceId,
+    collectionId,
+    resourceId
+  })
+  if (text === undefined) {
+    return { entries: 0, bytes: 0 }
+  }
+  return {
+    entries: parseLogLines({ text }).length,
+    bytes: Buffer.byteLength(text, 'utf8')
+  }
 }
 
 /**
@@ -148,13 +221,16 @@ export async function readStoredLog({
  * moved `currentEpoch`.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}   the account Space id
  * @returns {Promise<{ entries: number, epochIds: string[],
  *   currentEpoch: string | undefined }>}
  */
 export async function readUserKeyRoster({
+  dataDir,
   spaceId
 }: {
+  dataDir: string
   spaceId: string
 }): Promise<{
   entries: number
@@ -162,6 +238,7 @@ export async function readUserKeyRoster({
   currentEpoch: string | undefined
 }> {
   const log = await readStoredLog({
+    dataDir,
     spaceId,
     collectionId: 'key-map',
     resourceId: 'user-key.jsonl'
@@ -181,15 +258,18 @@ export async function readUserKeyRoster({
  * one.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.annexSpaceId {string}
  * @param options.generationId {string}   e.g. `gen-Ux3v0kQf9aPmB2hZ`
  * @returns {Promise<{ entries: number, updateKeys: string[],
  *   nextKeyHashes: string[] }>}
  */
 export async function readAnnexGeneration({
+  dataDir,
   annexSpaceId,
   generationId
 }: {
+  dataDir: string
   annexSpaceId: string
   generationId: string
 }): Promise<{
@@ -198,6 +278,7 @@ export async function readAnnexGeneration({
   nextKeyHashes: string[]
 }> {
   const log = await readStoredLog({
+    dataDir,
     spaceId: annexSpaceId,
     collectionId: generationId,
     resourceId: 'did.jsonl'
@@ -234,6 +315,97 @@ export function annexLocationOf({ pointer }: { pointer: string }): {
 }
 
 /**
+ * The annex generation the account log's head points at, read off the
+ * stored log's last entry. Each did:webvh entry's `state` is the whole
+ * document at that version, so the head's `#DelegatedClients` service is
+ * the current pointer. The read is unverified: this is a store oracle, and
+ * the session under test is what verifies the log. Undefined when the
+ * account log is absent or its head names no generation.
+ *
+ * @param options {object}
+ * @param options.dataDir {string}   the server's data root
+ * @param options.spaceId {string}   the account Space id
+ * @returns {Promise<{ annexSpaceId: string, generationId: string } |
+ *   undefined>}
+ */
+export async function readPointedAnnexGeneration({
+  dataDir,
+  spaceId
+}: {
+  dataDir: string
+  spaceId: string
+}): Promise<{ annexSpaceId: string; generationId: string } | undefined> {
+  const log = (await readStoredLog({
+    dataDir,
+    spaceId,
+    collectionId: 'id',
+    resourceId: 'did.jsonl'
+  })) as Array<StoredLogEntry & { state?: object }>
+  const head = log[log.length - 1]
+  if (head?.state === undefined) {
+    return undefined
+  }
+  const pointer = delegatedClientsPointer({
+    doc: head.state as Parameters<typeof delegatedClientsPointer>[0]['doc']
+  })
+  return pointer === undefined ? undefined : annexLocationOf({ pointer })
+}
+
+/**
+ * The sizes of the three logs a transient visit can grow: the account log
+ * (`id/did.jsonl`), the annex generation the account log's head points at
+ * (`<gen-id>/did.jsonl` in the annex Space), and the user key roster
+ * (`key-map/user-key.jsonl`). An absent log reads as zero entries and zero
+ * bytes, and an account whose head points at no generation reads the annex
+ * as absent.
+ *
+ * @param options {object}
+ * @param options.dataDir {string}   the server's data root
+ * @param options.spaceId {string}   the account Space id
+ * @returns {Promise<{ accountLog: { entries: number, bytes: number },
+ *   annexGeneration: { entries: number, bytes: number, generationId?: string },
+ *   userKeyRoster: { entries: number, bytes: number } }>}
+ */
+export async function readAccountLogSizes({
+  dataDir,
+  spaceId
+}: {
+  dataDir: string
+  spaceId: string
+}): Promise<{
+  accountLog: { entries: number; bytes: number }
+  annexGeneration: { entries: number; bytes: number; generationId?: string }
+  userKeyRoster: { entries: number; bytes: number }
+}> {
+  const accountLog = await readStoredLogSize({
+    dataDir,
+    spaceId,
+    collectionId: 'id',
+    resourceId: 'did.jsonl'
+  })
+  const userKeyRoster = await readStoredLogSize({
+    dataDir,
+    spaceId,
+    collectionId: 'key-map',
+    resourceId: 'user-key.jsonl'
+  })
+  const pointed = await readPointedAnnexGeneration({ dataDir, spaceId })
+  const annexGeneration =
+    pointed === undefined
+      ? { entries: 0, bytes: 0 }
+      : {
+          ...(await readStoredLogSize({
+            dataDir,
+            spaceId: pointed.annexSpaceId,
+            collectionId: pointed.generationId,
+            resourceId: 'did.jsonl'
+          })),
+          generationId: pointed.generationId
+        }
+  return { accountLog, annexGeneration, userKeyRoster }
+}
+
+/**
  * An encrypted collection's governing descriptor log's stored lines, oldest
  * first, or an empty list when the collection holds no log. The FileSystem
  * backend keeps the log beside the collection's resources, as
@@ -241,14 +413,17 @@ export function annexLocationOf({ pointer }: { pointer: string }): {
  * the JSONL log verbatim.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}   the account Space id
  * @param options.collectionId {string}   e.g. `contacts`
  * @returns {Promise<string[]>}
  */
 async function readCollectionLogLines({
+  dataDir,
   spaceId,
   collectionId
 }: {
+  dataDir: string
   spaceId: string
   collectionId: string
 }): Promise<string[]> {
@@ -256,7 +431,7 @@ async function readCollectionLogLines({
   try {
     text = await fs.readFile(
       path.join(
-        storedSpacesDir(),
+        storedSpacesDir({ dataDir }),
         spaceId,
         collectionId,
         `.collectionlog.${collectionId}.json`
@@ -287,15 +462,18 @@ async function readCollectionLogLines({
  * names. An absent log reads as zero entries.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}   the account Space id
  * @param options.collectionId {string}   e.g. `contacts`
  * @returns {Promise<{ entries: number, currentEpoch: string | undefined,
  *   generations: string[] }>}
  */
 export async function readCollectionEpoch({
+  dataDir,
   spaceId,
   collectionId
 }: {
+  dataDir: string
   spaceId: string
   collectionId: string
 }): Promise<{
@@ -303,7 +481,11 @@ export async function readCollectionEpoch({
   currentEpoch: string | undefined
   generations: string[]
 }> {
-  const lines = await readCollectionLogLines({ spaceId, collectionId })
+  const lines = await readCollectionLogLines({
+    dataDir,
+    spaceId,
+    collectionId
+  })
   if (lines.length === 0) {
     return { entries: 0, currentEpoch: undefined, generations: [] }
   }
@@ -352,13 +534,16 @@ function keysOf(
  * key material.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}   the account Space id
  * @returns {Promise<Array<{ versionId: string, assertionKeys: Set<string>,
  *   invocationKeys: Set<string> }>>}
  */
 export async function readAccountLogVersions({
+  dataDir,
   spaceId
 }: {
+  dataDir: string
   spaceId: string
 }): Promise<
   Array<{
@@ -368,6 +553,7 @@ export async function readAccountLogVersions({
   }>
 > {
   const log = (await readStoredLog({
+    dataDir,
     spaceId,
     collectionId: 'id',
     resourceId: 'did.jsonl'
@@ -430,6 +616,7 @@ export function latestAssertionRemovalIndexOf({
  * absent log reads as `undefined`.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}   the account Space id
  * @param options.collectionId {string}   e.g. `contacts`
  * @param options.accountVersionIds {string[]}   the account log's
@@ -438,10 +625,12 @@ export function latestAssertionRemovalIndexOf({
  *   anchorIndex: number, signerKey: string | undefined } | undefined>}
  */
 export async function readCollectionLogHeadAnchor({
+  dataDir,
   spaceId,
   collectionId,
   accountVersionIds
 }: {
+  dataDir: string
   spaceId: string
   collectionId: string
   accountVersionIds: string[]
@@ -454,7 +643,11 @@ export async function readCollectionLogHeadAnchor({
     }
   | undefined
 > {
-  const lines = await readCollectionLogLines({ spaceId, collectionId })
+  const lines = await readCollectionLogLines({
+    dataDir,
+    spaceId,
+    collectionId
+  })
   if (lines.length === 0) {
     return undefined
   }
@@ -502,6 +695,7 @@ export const ENCRYPTED_STANDARD_COLLECTIONS = [
  * `anchorIndex` is at or past `removalIndex`.
  *
  * @param options {object}
+ * @param options.dataDir {string}   the server's data root
  * @param options.spaceId {string}   the account Space id
  * @returns {Promise<{ removalIndex: number, removalVersionId: string,
  *   latestAssertionKeys: Set<string>, latestInvocationKeys: Set<string>,
@@ -509,8 +703,10 @@ export const ENCRYPTED_STANDARD_COLLECTIONS = [
  *   Awaited<ReturnType<typeof readCollectionLogHeadAnchor>>> }>}
  */
 export async function readCollectionSealState({
+  dataDir,
   spaceId
 }: {
+  dataDir: string
   spaceId: string
 }): Promise<{
   removalIndex: number
@@ -519,7 +715,7 @@ export async function readCollectionSealState({
   latestInvocationKeys: Set<string>
   heads: Record<string, Awaited<ReturnType<typeof readCollectionLogHeadAnchor>>>
 }> {
-  const versions = await readAccountLogVersions({ spaceId })
+  const versions = await readAccountLogVersions({ dataDir, spaceId })
   const accountVersionIds = versions.map(version => version.versionId)
   const removalIndex = latestAssertionRemovalIndexOf({ versions })
   const heads: Record<
@@ -528,6 +724,7 @@ export async function readCollectionSealState({
   > = {}
   for (const collectionId of ENCRYPTED_STANDARD_COLLECTIONS) {
     heads[collectionId] = await readCollectionLogHeadAnchor({
+      dataDir,
       spaceId,
       collectionId,
       accountVersionIds

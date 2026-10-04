@@ -7,7 +7,8 @@ import {
   readSpaceArchive
 } from '@interop/space-archive'
 import { fillSettled, forceRememberBrowser, sessionSpaceId } from './helpers'
-import { readStoredResource } from './storedLogs'
+import { readStoredResource } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 /**
  * Hosted did:webvh DID log e2e (Track F, Phase 2). Runs against the app in
@@ -351,6 +352,7 @@ test('a Space export carries did.jsonl byte-exact and world-readable, and its im
   const spaceId = await sessionSpaceId(page)
   expect(
     await readStoredResource({
+      dataDir: WAS_E2E_DATA_DIR,
       spaceId,
       collectionId: 'key-map',
       resourceId: 'keys.json'

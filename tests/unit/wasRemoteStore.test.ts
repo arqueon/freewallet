@@ -7,6 +7,7 @@ import type { ZcapClient } from '@interop/ezcap'
 import type { IZcap } from '@interop/data-integrity-core'
 import type {
   CollectionEncryption,
+  ResourceChangeDocument,
   SpaceMetadata,
   WasClient
 } from '@interop/was-client'
@@ -379,10 +380,18 @@ describe('WASRemoteStore.collectionMetadata', () => {
 describe('WASRemoteStore.listSyncedDocuments', () => {
   it('reads the feed snapshot under the bound capability at the configured page size', async () => {
     const capability = { id: 'urn:zcap:gen' } as unknown as IZcap
-    const documents = vi.fn().mockResolvedValue([
-      { id: 'b', _deleted: false, updatedAt: 't', version: 2, data: { n: 3 } },
-      { id: 'c', _deleted: false, updatedAt: 't', version: 1, data: { n: 4 } }
-    ])
+    const feed: ResourceChangeDocument[] = ['b', 'c'].map((id, position) => ({
+      kind: 'resource',
+      id,
+      contentType: 'application/json',
+      deleted: false,
+      updatedAt: 't',
+      updatedAtCounter: 0,
+      originId: 'stub',
+      checkpoint: String(position + 1),
+      data: { n: position + 3 }
+    }))
+    const documents = vi.fn().mockResolvedValue(feed)
     const collection = vi.fn().mockReturnValue({ documents })
     const space = vi.fn().mockReturnValue({ collection })
     const store = storeWithStubbedClient({ space })

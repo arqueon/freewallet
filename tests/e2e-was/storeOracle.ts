@@ -1,17 +1,11 @@
 /**
- * The store-side oracle for the account-deletion e2e: "does Space X still
- * exist on the server?", answered by inspecting the teaching server's
- * FileSystem backend directly rather than by asking the server over HTTP.
- *
- * An HTTP probe cannot answer it. The server masks an authorization refusal
- * on a Space request as a 404, so after the account Space is gone every
- * survivor whose controller was the account did:webvh answers 404 whether it
- * was deleted or merely stranded -- exactly the Spaces (the auxiliary annex
- * ones) the completeness assertion is about. The harness runs the teaching
- * server as a child process on that backend (`playwright.was.config.ts`), so
- * the runner can read the store off disk: a Space is the directory
- * `<server repo>/data/spaces/<spaceId>`, removed whole by a Space DELETE,
- * with no tombstone and no index file to consult.
+ * The Playwright-bound half of the store-side oracle. The store reads
+ * themselves live in `tests/shared/storeOracle.ts` and
+ * `tests/shared/storedLogs.ts`, which take the server's data root as an
+ * argument; the WAS suite passes its run's root (`WAS_E2E_DATA_DIR`). What
+ * stays here needs Playwright: a polled assertion over the store, the
+ * account Space id read off a live page, and the annex Space ids read out of
+ * the world-readable log over a request context.
  *
  * The ids come from public signals rather than test seams wherever one
  * exists: the account Space id off the live `StorageManager` the auth store
@@ -20,91 +14,13 @@
  * have no such signal, so they are named by difference -- the Spaces the
  * store gained while the account was being built, minus the two kinds above.
  */
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { expect, type APIRequestContext, type Page } from '@playwright/test'
+import { spaceIdOfUrl, survivingSpaceIds } from '../shared/storeOracle'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 /**
- * The FileSystem backend's Spaces directory. The harness starts the teaching
- * server with `WAS_DATA_DIR` set to the run's own data root
- * (`playwright.was.config.ts`, `wasDataDir.ts`), so the store lives there and
- * not under the server checkout's `data/`.
- *
- * @returns {string}
- */
-export function storedSpacesDir(): string {
-  return path.join(WAS_E2E_DATA_DIR, 'spaces')
-}
-
-/**
- * Every Space id the store currently holds. An absent Spaces directory (a
- * server that has never written one) reads as an empty store rather than an
- * error, matching the backend's own `listSpaces`.
- *
- * @returns {Promise<string[]>}
- */
-export async function listStoredSpaceIds(): Promise<string[]> {
-  let entries
-  try {
-    entries = await fs.readdir(storedSpacesDir(), { withFileTypes: true })
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return []
-    }
-    throw err
-  }
-  return entries.filter(entry => entry.isDirectory()).map(entry => entry.name)
-}
-
-/**
- * Whether one Space still exists in the store. The Space id is the directory
- * name verbatim (no encoding), and a Space DELETE removes that directory
- * recursively, so its presence is the whole predicate.
- *
- * @param options {object}
- * @param options.spaceId {string}
- * @returns {Promise<boolean>}
- */
-export async function spaceExistsInStore({
-  spaceId
-}: {
-  spaceId: string
-}): Promise<boolean> {
-  try {
-    const stats = await fs.stat(path.join(storedSpacesDir(), spaceId))
-    return stats.isDirectory()
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return false
-    }
-    throw err
-  }
-}
-
-/**
- * The Space ids the store gained since a baseline listing -- the Spaces one
- * account's setup created, when nothing else was writing to the server. The
- * WAS suite runs on a single worker, so a `beforeAll` baseline and a listing
- * taken once the account is built bracket exactly that account's Spaces.
- *
- * @param options {object}
- * @param options.baseline {string[]}   the listing taken before the account
- *   was created
- * @returns {Promise<string[]>}
- */
-export async function storedSpaceIdsSince({
-  baseline
-}: {
-  baseline: string[]
-}): Promise<string[]> {
-  const before = new Set(baseline)
-  return (await listStoredSpaceIds()).filter(spaceId => !before.has(spaceId))
-}
-
-/**
- * Asserts every named Space is gone from the store, and reports the ones
- * that survived. Polled rather than read once: the deletion walk's last
+ * Asserts every named Space is gone from the run's store, and reports the
+ * ones that survived. Polled rather than read once: the deletion walk's last
  * requests and the app's own logout race each other, and the assertion is
  * about the walk having landed, not about which finished first.
  *
@@ -124,27 +40,12 @@ export async function expectSpacesGone({
   timeoutMs?: number
 }): Promise<void> {
   await expect
-    .poll(async () => await survivingSpaceIds({ spaceIds }), {
-      message,
-      timeout: timeoutMs
-    })
+    .poll(
+      async () =>
+        await survivingSpaceIds({ dataDir: WAS_E2E_DATA_DIR, spaceIds }),
+      { message, timeout: timeoutMs }
+    )
     .toEqual([])
-}
-
-/**
- * Which of the named Spaces the store still holds.
- *
- * @param options {object}
- * @param options.spaceIds {string[]}
- * @returns {Promise<string[]>}
- */
-export async function survivingSpaceIds({
-  spaceIds
-}: {
-  spaceIds: string[]
-}): Promise<string[]> {
-  const held = new Set(await listStoredSpaceIds())
-  return spaceIds.filter(spaceId => held.has(spaceId))
 }
 
 /**
@@ -164,20 +65,6 @@ export async function accountSpaceIdFrom(page: Page): Promise<string> {
     throw new Error('This page holds no session with a remote Space.')
   }
   return spaceIdOfUrl(spaceUrl)
-}
-
-/**
- * The Space id a WAS Space URL names.
- *
- * @param url {string}
- * @returns {string}
- */
-export function spaceIdOfUrl(url: string): string {
-  const match = /\/space\/([^/?#]+)/.exec(url)
-  if (!match) {
-    throw new Error(`Not a WAS Space URL: "${url}".`)
-  }
-  return decodeURIComponent(match[1]!)
 }
 
 /**

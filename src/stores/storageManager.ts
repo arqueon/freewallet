@@ -2382,7 +2382,7 @@ export class StorageManager {
     if (isBrowserLocalSession(persistence)) {
       ;({ localStore } = await BrowserStore.initClient({
         user,
-        storage: rxStorage,
+        storage: rxStorage ?? persistence.replicaStorage,
         ciphers
       }))
     } else if (remoteStore) {

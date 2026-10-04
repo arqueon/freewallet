@@ -10,7 +10,8 @@ import {
 import { generateParallelDidWeb } from '@interop/did-method-webvh'
 import { CapabilityAgent } from '@interop/capability-agent'
 import { didKeyZcapClient } from '@interop/wallet-core/webvh'
-import { readCollectionSealState } from './storedLogs'
+import { readCollectionSealState } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 export { awaitLoginChain } from '../shared/loginChain'
 
@@ -554,7 +555,10 @@ export async function expectUnsealedCollectionLogs({
 }: {
   spaceId: string
 }): Promise<number> {
-  const state = await readCollectionSealState({ spaceId })
+  const state = await readCollectionSealState({
+    dataDir: WAS_E2E_DATA_DIR,
+    spaceId
+  })
   console.log(
     `after forget: removal at account version ${state.removalIndex + 1} ` +
       `(${state.removalVersionId}); head anchors: ` +
@@ -600,7 +604,10 @@ export async function expectSealedCollectionLogs({
   spaceId: string
   removalIndex: number
 }): Promise<void> {
-  const state = await readCollectionSealState({ spaceId })
+  const state = await readCollectionSealState({
+    dataDir: WAS_E2E_DATA_DIR,
+    spaceId
+  })
   console.log(
     'after the transient login: head anchors: ' +
       JSON.stringify(

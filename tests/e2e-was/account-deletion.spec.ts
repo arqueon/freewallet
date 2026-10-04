@@ -40,15 +40,18 @@ import {
 import {
   accountSpaceIdFrom,
   annexSpaceIdsFromLog,
-  expectSpacesGone,
+  expectSpacesGone
+} from './storeOracle'
+import {
   storedSpaceIdsSince,
   listStoredSpaceIds,
   survivingSpaceIds
-} from './storeOracle'
+} from '../shared/storeOracle'
 import {
   captureLocalStorageKeys,
   expectNoStorageResidue
 } from '../shared/storageResidue'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.
@@ -104,7 +107,7 @@ async function buildLadderAnchoredAccount(
   browser: Browser,
   testInfo: TestInfo
 ): Promise<DeletableAccount> {
-  const baseline = await listStoredSpaceIds()
+  const baseline = await listStoredSpaceIds({ dataDir: WAS_E2E_DATA_DIR })
 
   // --- Terminal A: the credential-anchored signup (no enrolled client). ---
   const first = await coldTerminal(browser, APP_URL)
@@ -123,7 +126,10 @@ async function buildLadderAnchoredAccount(
   }
   // The Spaces the signup created: the account Space, the annex Space, and
   // the passphrase's unlock Space. Terminal B adds the recovery code's.
-  const signupSpaceIds = await storedSpaceIdsSince({ baseline })
+  const signupSpaceIds = await storedSpaceIdsSince({
+    dataDir: WAS_E2E_DATA_DIR,
+    baseline
+  })
 
   // --- Terminal B: the remembered self-enrollment and the second unlock
   // method, the one step the tier refusals keep off a transient session. ---
@@ -167,7 +173,10 @@ async function buildLadderAnchoredAccount(
     await second.context.close()
   }
 
-  const spaceIds = await storedSpaceIdsSince({ baseline })
+  const spaceIds = await storedSpaceIdsSince({
+    dataDir: WAS_E2E_DATA_DIR,
+    baseline
+  })
   // The oracle names what it is about to assert on: the data Space, at least
   // one auxiliary annex Space, and the two unlock Spaces named by difference.
   expect(spaceIds, 'the store gained the account data Space').toContain(
@@ -350,7 +359,12 @@ test.describe.serial('Account deletion from a transient session', () => {
 
       // Nothing was deleted.
       expect(
-        (await survivingSpaceIds({ spaceIds: account.spaceIds })).sort()
+        (
+          await survivingSpaceIds({
+            dataDir: WAS_E2E_DATA_DIR,
+            spaceIds: account.spaceIds
+          })
+        ).sort()
       ).toEqual([...account.spaceIds].sort())
     } finally {
       await context.close()
@@ -479,7 +493,10 @@ test.describe.serial('Account deletion torn after the pivot', () => {
       // The account Space and everything before the pivot are gone, the
       // recovery code's unlock Space among them; exactly one Space stands,
       // the acting credential's (the passphrase's) own unlock Space.
-      const surviving = await survivingSpaceIds({ spaceIds: account.spaceIds })
+      const surviving = await survivingSpaceIds({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceIds: account.spaceIds
+      })
       expect(surviving).not.toContain(account.accountSpaceId)
       for (const annexSpaceId of account.annexSpaceIds) {
         expect(surviving).not.toContain(annexSpaceId)

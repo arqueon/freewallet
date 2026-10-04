@@ -16,11 +16,12 @@
 import { test, expect, type Browser, type Page } from '@playwright/test'
 import { addCredentialViaPaste, fillSettled, signupViaWizard } from './helpers'
 import { accountSpaceIdFrom } from './storeOracle'
-import { readAccountLogVersions } from './storedLogs'
+import { readAccountLogVersions } from '../shared/storedLogs'
 import {
   captureLocalStorageKeys,
   expectNoStorageResidue
 } from '../shared/storageResidue'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.
@@ -60,7 +61,10 @@ test.describe.serial('credential-anchored signup', () => {
       // client is keyed on. The passphrase's ladder VM publishes under
       // `assertionMethod` alone, which shows the log read is not empty.
       const spaceId = await accountSpaceIdFrom(page)
-      const versions = await readAccountLogVersions({ spaceId })
+      const versions = await readAccountLogVersions({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId
+      })
       expect(versions.length, 'the account log is stored').toBeGreaterThan(0)
       for (const { versionId, invocationKeys } of versions) {
         expect(

@@ -150,10 +150,14 @@ function recordingWas(): {
     async documents() {
       return [
         {
+          kind: 'resource',
           id: 'r1',
-          _deleted: false,
+          contentType: 'application/json',
+          deleted: false,
           updatedAt: '2026-01-01T00:00:00.000Z',
-          version: 1,
+          updatedAtCounter: 0,
+          originId: 'stub',
+          checkpoint: '1',
           data: { collectionId }
         }
       ]

@@ -25,7 +25,8 @@ import {
   sessionSpaceId,
   signupViaWizard
 } from './helpers'
-import { listStoredResourceIds } from './storedLogs'
+import { listStoredResourceIds } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 /**
  * The agent-grant e2e (WAS mode): a CLI agent asking for storage access
@@ -612,6 +613,7 @@ test.describe('agent grant over an interaction URL', () => {
 
     // The server stores that one Resource for it.
     const stored = await listStoredResourceIds({
+      dataDir: WAS_E2E_DATA_DIR,
       spaceId: await sessionSpaceId(page),
       collectionId: 'connections'
     })

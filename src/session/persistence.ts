@@ -31,6 +31,7 @@ import {
   memoryResourceLogPinStore,
   type ResourceLogPinStore
 } from '@interop/vh-resource-log'
+import type { RxStorage } from 'rxdb/plugins/core'
 import { uuidv7 } from 'uuidv7'
 import { getOrCreateWriterId } from '@/lib/writerId'
 import {
@@ -171,6 +172,10 @@ interface SessionPersistenceBase {
 export interface BrowserLocalSessionPersistence extends SessionPersistenceBase {
   storage: typeof STORAGE_INDEXEDDB
   idb?: IDBFactory
+  // The RxDB storage the local replica opens on, in place of the default
+  // Dexie one over the global `indexedDB`. Absent in the app. A test that
+  // owns a browser profile supplies it, so that profile's replica is its own.
+  replicaStorage?: RxStorage<unknown, unknown>
 }
 
 /**
@@ -463,20 +468,25 @@ export function memoryEpochPinStore(): UserKeyEpochPinStore {
  * @param [options.persistCaches] {boolean}   false for a guest: the cache
  *   pair is in-memory for the session and never persisted (a guest's
  *   identity is random and its data dies with the session); default true
+ * @param [options.replicaStorage] {RxStorage<unknown, unknown>}   the RxDB
+ *   storage the local replica opens on; absent, the default Dexie storage
  * @returns {BrowserLocalSessionPersistence}
  */
 export function browserLocalSessionPersistence({
   idb,
-  persistCaches = true
+  persistCaches = true,
+  replicaStorage
 }: {
   idb?: IDBFactory
   persistCaches?: boolean
+  replicaStorage?: RxStorage<unknown, unknown>
 } = {}): BrowserLocalSessionPersistence {
   const descriptorCaches = new Map<string, EncryptionDescriptorCache>()
   const metaCaches = new Map<string, CollectionMetaCache>()
   return {
     storage: STORAGE_INDEXEDDB,
     ...(idb ? { idb } : {}),
+    ...(replicaStorage ? { replicaStorage } : {}),
     logPins: memoryResourceLogPinStore(),
     epochPins: memoryEpochPinStore(),
     unlockMethodsCache: {

@@ -25,6 +25,7 @@
   "include": [
     "vite.config.ts",
     "vitest.conformance.config.ts",
+    "vitest.harness.config.ts",
     "playwright.config.ts",
     "playwright.was.config.ts"
   ]

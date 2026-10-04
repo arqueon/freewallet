@@ -14,7 +14,11 @@
  * Space. Every request is recorded in `requests`, with the capability it
  * invoked under.
  */
-import { WasClient } from '@interop/was-client'
+import {
+  WasClient,
+  type ChangesPage,
+  type ResourceChangeDocument
+} from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import { TEST_SERVICE_DESCRIPTION } from '../shared/wasServiceFixture'
 
@@ -75,21 +79,26 @@ export function memoryWasServer(): {
       (args.json as { profile?: unknown } | undefined)?.profile === 'changes'
     ) {
       const prefix = path.slice(0, -'query'.length)
-      const documents = [...store]
+      const documents: ResourceChangeDocument[] = [...store]
         .filter(
           ([stored]) =>
             stored.startsWith(prefix) &&
             !stored.slice(prefix.length).includes('/')
         )
-        .map(([stored, bytes]) => ({
+        .map(([stored, bytes], position) => ({
+          kind: 'resource',
           id: stored.slice(prefix.length),
-          _deleted: false,
+          // The type `GET` serves the same Resource under.
+          contentType: 'application/jose+json',
+          deleted: false,
           updatedAt: '2026-10-01T00:00:00.000Z',
-          version: 1,
+          updatedAtCounter: 0,
+          originId: 'memory',
+          checkpoint: String(position + 1),
           etag: etags.get(stored),
           data: JSON.parse(new TextDecoder().decode(bytes))
         }))
-      const page = { documents, checkpoint: null }
+      const page: ChangesPage = { documents, checkpoint: null }
       return {
         status: 200,
         headers: new Headers({ 'content-type': 'application/json' }),

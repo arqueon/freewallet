@@ -266,6 +266,11 @@ export class BrowserStore {
    * @returns {Promise<boolean>}
    */
   async userExists(): Promise<boolean> {
+    // Guarded: absent in node, where a test's memory storage holds the
+    // replica and nothing enumerates it. The caller's remote probe answers.
+    if (typeof indexedDB === 'undefined') {
+      return false
+    }
     const databases = await indexedDB.databases()
     return databases.some(db => db.name!.includes(`${this.dbPrefix}-wallet-db`))
   }

@@ -10,7 +10,8 @@ import {
   signupViaWizard,
   usageBytesOfRow
 } from './helpers'
-import { listStoredResourceIds } from './storedLogs'
+import { listStoredResourceIds } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 // Background replication pushes a local write a beat after the wallet-side
 // action, so a usage figure is polled until the server's measurement moves.
@@ -163,7 +164,13 @@ async function expectStoredResourceCount({
   await expect
     .poll(
       async () =>
-        (await listStoredResourceIds({ spaceId, collectionId })).length,
+        (
+          await listStoredResourceIds({
+            dataDir: WAS_E2E_DATA_DIR,
+            spaceId,
+            collectionId
+          })
+        ).length,
       USAGE_POLL
     )
     .toBe(count)
@@ -188,11 +195,21 @@ async function settledStoredResourceCount({
 }): Promise<number> {
   let settled = 0
   await expect(async () => {
-    const first = (await listStoredResourceIds({ spaceId, collectionId }))
-      .length
+    const first = (
+      await listStoredResourceIds({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId,
+        collectionId
+      })
+    ).length
     await new Promise(resolve => setTimeout(resolve, 3_000))
-    const second = (await listStoredResourceIds({ spaceId, collectionId }))
-      .length
+    const second = (
+      await listStoredResourceIds({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId,
+        collectionId
+      })
+    ).length
     expect(first).toBeGreaterThan(0)
     expect(second).toBe(first)
     settled = second

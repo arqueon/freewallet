@@ -7,7 +7,8 @@ import {
   signupViaWizard,
   submitTransientLogin
 } from './helpers'
-import { readCollectionEpoch, readUserKeyRoster } from './storedLogs'
+import { readCollectionEpoch, readUserKeyRoster } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 /**
  * The Settings "Connected wallets" surface e2e (WAS mode): the enrolled
@@ -368,8 +369,12 @@ test.describe('The Settings connected-wallets surface', () => {
 
       // The key generation the directory is sealed under before the
       // disconnect: the user key the roster names as current.
-      const rosterBefore = await readUserKeyRoster({ spaceId })
+      const rosterBefore = await readUserKeyRoster({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId
+      })
       const directoryBefore = await readCollectionEpoch({
+        dataDir: WAS_E2E_DATA_DIR,
         spaceId,
         collectionId: 'connections'
       })
@@ -400,9 +405,13 @@ test.describe('The Settings connected-wallets surface', () => {
       // generations only, never to a client key directly, so "no longer
       // readable by the revoked client" shows as the directory moving to the
       // rotated user key and off the one the revoked client held.
-      const rosterAfter = await readUserKeyRoster({ spaceId })
+      const rosterAfter = await readUserKeyRoster({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId
+      })
       expect(rosterAfter.currentEpoch).not.toBe(rosterBefore.currentEpoch)
       const directoryAfter = await readCollectionEpoch({
+        dataDir: WAS_E2E_DATA_DIR,
         spaceId,
         collectionId: 'connections'
       })

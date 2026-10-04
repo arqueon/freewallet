@@ -19,7 +19,7 @@
  *
  * The roster and the collection logs are capability-gated, so the
  * assertions read the teaching server's FileSystem backend off disk
- * (`storedLogs.ts`).
+ * (`tests/shared/storedLogs.ts`).
  */
 import { test, expect } from '@playwright/test'
 import {
@@ -31,7 +31,8 @@ import {
   signupViaWizard,
   submitTransientLogin
 } from './helpers'
-import { readCollectionEpoch, readUserKeyRoster } from './storedLogs'
+import { readCollectionEpoch, readUserKeyRoster } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.
@@ -64,7 +65,11 @@ async function readCollectionEpochs(spaceId: string) {
     Awaited<ReturnType<typeof readCollectionEpoch>>
   > = {}
   for (const collectionId of ENCRYPTED_COLLECTIONS) {
-    epochs[collectionId] = await readCollectionEpoch({ spaceId, collectionId })
+    epochs[collectionId] = await readCollectionEpoch({
+      dataDir: WAS_E2E_DATA_DIR,
+      spaceId,
+      collectionId
+    })
   }
   return epochs
 }
@@ -88,7 +93,10 @@ test.describe.serial('a user key rotation torn mid-fan-out', () => {
       // rotation's escrow must keep readable.
       await addCredentialViaPaste(page)
       spaceId = await sessionSpaceId(page)
-      const rosterBefore = await readUserKeyRoster({ spaceId })
+      const rosterBefore = await readUserKeyRoster({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId
+      })
       retiredGeneration = rosterBefore.currentEpoch!
       expect(retiredGeneration).toBeTruthy()
       const before = await readCollectionEpochs(spaceId)
@@ -145,7 +153,10 @@ test.describe.serial('a user key rotation torn mid-fan-out', () => {
 
     // The roster's rotation landed: one more generation, and the current one
     // moved.
-    const rosterAfter = await readUserKeyRoster({ spaceId })
+    const rosterAfter = await readUserKeyRoster({
+      dataDir: WAS_E2E_DATA_DIR,
+      spaceId
+    })
     currentGeneration = rosterAfter.currentEpoch!
     expect(currentGeneration).not.toBe(retiredGeneration)
     expect(rosterAfter.epochIds).toContain(retiredGeneration)
@@ -188,9 +199,10 @@ test.describe.serial('a user key rotation torn mid-fan-out', () => {
 
     // The mend was a collection fan-out, not a second rotation: the roster's
     // current generation is unchanged.
-    expect((await readUserKeyRoster({ spaceId })).currentEpoch).toBe(
-      currentGeneration
-    )
+    expect(
+      (await readUserKeyRoster({ dataDir: WAS_E2E_DATA_DIR, spaceId }))
+        .currentEpoch
+    ).toBe(currentGeneration)
     const mended = await readCollectionEpochs(spaceId)
     for (const collectionId of ENCRYPTED_COLLECTIONS) {
       const { generations } = mended[collectionId]!

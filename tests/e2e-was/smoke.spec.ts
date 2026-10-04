@@ -1,6 +1,8 @@
 import { test, expect, type Page } from '@playwright/test'
 import { fillSettled, goToStorage, signupViaWizard } from './helpers'
-import { accountSpaceIdFrom, spaceExistsInStore } from './storeOracle'
+import { accountSpaceIdFrom } from './storeOracle'
+import { spaceExistsInStore } from '../shared/storeOracle'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 /**
  * WAS (remote storage) smoke tests. These run against the app in remote mode
@@ -22,7 +24,7 @@ import { accountSpaceIdFrom, spaceExistsInStore } from './storeOracle'
 async function expectConnectedSpace(page: Page): Promise<void> {
   const spaceId = await accountSpaceIdFrom(page)
   expect(
-    await spaceExistsInStore({ spaceId }),
+    await spaceExistsInStore({ dataDir: WAS_E2E_DATA_DIR, spaceId }),
     'the account Space exists on the server'
   ).toBe(true)
   await goToStorage(page)

@@ -230,6 +230,7 @@ vi.mock('@/session/accountCeremonyContext', () => ({
 }))
 
 import { deriveNextKeyHash } from '@interop/did-method-webvh'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { revokeAccountClient } from '@interop/wallet-core/clients'
 import {
   didWebProjectionStore,
@@ -258,6 +259,17 @@ const POINTER = {
   spaceId: 'space-123',
   host: 'https://was.example.test'
 }
+
+/**
+ * The sibling passphrase's committed rung and the recovery code's update
+ * key, as the registry records them. Real Ed25519 multikeys, since the
+ * revocation hashes them with `deriveNextKeyHash`, which refuses anything
+ * else.
+ */
+const SIBLING_PASSPHRASE_RUNG = (await Ed25519VerificationKey.generate())
+  .publicKeyMultibase
+const CODE_UPDATE_KEY = (await Ed25519VerificationKey.generate())
+  .publicKeyMultibase
 
 const REVOKED: RevokedClientKeys = {
   signingKeyMultibase: 'z6MkRevokedClient',
@@ -460,14 +472,14 @@ function registryWithSiblings(): object {
         createdAt: '2026-08-01T00:00:00.000Z',
         unlockSpaceId: 'unlock-space-sibling',
         keyAgreementKeyMultibase: 'z6LSSiblingPassphraseKak',
-        updateKeyMultibase: 'z6MkSiblingPassphraseRung',
+        updateKeyMultibase: SIBLING_PASSPHRASE_RUNG,
         manageCapability: { id: 'urn:zcap:manage-sibling' }
       },
       {
         type: 'recovery-code',
         createdAt: '2026-08-02T00:00:00.000Z',
         unlockSpaceId: 'unlock-space-code',
-        updateKeyMultibase: 'z6MkCodeUpdate',
+        updateKeyMultibase: CODE_UPDATE_KEY,
         manageCapability: { id: 'urn:zcap:manage-code' }
       }
     ]
@@ -710,8 +722,8 @@ describe('the options the ladder branch hands over, and the ones it withholds', 
     expect(vi.mocked(revokeAccountClient)).toHaveBeenCalledWith(
       expect.objectContaining({
         knownLatentHashes: [
-          await deriveNextKeyHash('z6MkSiblingPassphraseRung'),
-          await deriveNextKeyHash('z6MkCodeUpdate')
+          await deriveNextKeyHash(SIBLING_PASSPHRASE_RUNG),
+          await deriveNextKeyHash(CODE_UPDATE_KEY)
         ]
       })
     )

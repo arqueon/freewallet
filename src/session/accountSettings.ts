@@ -1164,6 +1164,9 @@ export class PasskeyNotEstablishedError extends Error {
  * @param options.userName {string}   WebAuthn user name for the ceremony
  * @param options.promptForPrfRetry {function}   resolves the user's choice
  *   when the authenticator needs a second (assertion) ceremony for the PRF
+ * @param [options.register] {typeof registerPasskey}   the WebAuthn
+ *   registration ceremony; defaults to `registerPasskey`. A test with no
+ *   WebAuthn supplies its own authenticator here
  * @returns {Promise<{ record: UnlockMethodsRecord, recorded: boolean }>}
  * @throws {PasskeyNotEstablishedError}   the passkey could not be made a
  *   standing credential; it is not connected to the account
@@ -1172,12 +1175,14 @@ export async function addAccountPasskey({
   session,
   locale,
   userName,
-  promptForPrfRetry
+  promptForPrfRetry,
+  register = registerPasskey
 }: {
   session: Session
   locale: string
   userName: string
   promptForPrfRetry: () => Promise<boolean>
+  register?: typeof registerPasskey
 }): Promise<{ record: UnlockMethodsRecord; recorded: boolean }> {
   // Wait out the login-time registry passes rather than racing their
   // read-modify-writes; on a settled session the chain resolved long ago.
@@ -1192,7 +1197,7 @@ export async function addAccountPasskey({
       (method): method is PasskeyUnlockMethod => method.type === 'passkey'
     )
     .map(method => base64urlnopad.decode(method.credentialId))
-  const registration = await registerPasskey({
+  const registration = await register({
     userHandle: base64urlnopad.decode(base.webAuthnUserId),
     userName,
     excludeCredentialIds,

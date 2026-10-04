@@ -96,6 +96,7 @@ vi.mock('@/session/userKeyCascade', () => ({
 }))
 
 import { deriveNextKeyHash } from '@interop/did-method-webvh'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { revokeAccountClient } from '@interop/wallet-core/clients'
 import { userKeyVaultKeys } from '@interop/wallet-core/keys'
 import {
@@ -140,6 +141,13 @@ const POINTER = {
   spaceId: 'space-123',
   host: 'https://was.example.test'
 }
+
+/**
+ * A recovery code's recorded update key. A real Ed25519 multikey, since the
+ * revocation hashes it with `deriveNextKeyHash`, which refuses anything else.
+ */
+const CODE_UPDATE_KEY = (await Ed25519VerificationKey.generate())
+  .publicKeyMultibase
 
 const REVOKED: RevokedClientKeys = {
   signingKeyMultibase: 'z6MkRevokedClient',
@@ -725,14 +733,14 @@ describe('the knownLatentHashes hand-off', () => {
       version: 1,
       webAuthnUserId: 'handle',
       methods: [
-        { type: 'recovery-code', updateKeyMultibase: 'z6MkCodeUpdate' },
+        { type: 'recovery-code', updateKeyMultibase: CODE_UPDATE_KEY },
         { type: 'passkey', credentialId: 'ignored' }
       ]
     } as never)
     await revokeEnrolledClient({ session: sessionWith(), client: REVOKED })
     expect(vi.mocked(revokeAccountClient)).toHaveBeenCalledWith(
       expect.objectContaining({
-        knownLatentHashes: [await deriveNextKeyHash('z6MkCodeUpdate')]
+        knownLatentHashes: [await deriveNextKeyHash(CODE_UPDATE_KEY)]
       })
     )
   })

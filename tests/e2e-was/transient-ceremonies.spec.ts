@@ -52,11 +52,12 @@ import {
   annexLocationOf,
   readAnnexGeneration,
   readUserKeyRoster
-} from './storedLogs'
+} from '../shared/storedLogs'
 import {
   captureLocalStorageKeys,
   expectNoStorageResidue
 } from '../shared/storageResidue'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.
@@ -182,8 +183,14 @@ test.describe.serial('the passphrase change from a transient session', () => {
       expect(before.ladderVms, 'the account is ladder-anchored').toHaveLength(1)
       expect(before.pointer, 'the account points at a generation').toBeTruthy()
       const annexBefore = annexLocationOf({ pointer: before.pointer! })
-      const rosterBefore = await readUserKeyRoster({ spaceId: accountSpaceId })
-      const generationBefore = await readAnnexGeneration(annexBefore)
+      const rosterBefore = await readUserKeyRoster({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId: accountSpaceId
+      })
+      const generationBefore = await readAnnexGeneration({
+        dataDir: WAS_E2E_DATA_DIR,
+        ...annexBefore
+      })
 
       newPassphrase = `Rebound-transient-${Date.now()}-Zz9!`
       await page.goto('/#/settings')
@@ -216,7 +223,10 @@ test.describe.serial('the passphrase change from a transient session', () => {
       // The roster gained exactly one epoch: the convergence append's fresh
       // user key. (The escrow append before it adds a recipient to the
       // existing epochs rather than an epoch.)
-      const rosterAfter = await readUserKeyRoster({ spaceId: accountSpaceId })
+      const rosterAfter = await readUserKeyRoster({
+        dataDir: WAS_E2E_DATA_DIR,
+        spaceId: accountSpaceId
+      })
       expect(rosterAfter.epochIds.length).toBe(rosterBefore.epochIds.length + 1)
       expect(rosterAfter.currentEpoch).not.toBe(rosterBefore.currentEpoch)
       for (const epochId of rosterBefore.epochIds) {
@@ -246,7 +256,10 @@ test.describe.serial('the passphrase change from a transient session', () => {
       // generation, and that generation's log carries the new credential's
       // rung commit and no longer carries the old credential's rung.
       expect(after.pointer).toBe(before.pointer)
-      const generationAfter = await readAnnexGeneration(annexBefore)
+      const generationAfter = await readAnnexGeneration({
+        dataDir: WAS_E2E_DATA_DIR,
+        ...annexBefore
+      })
       expect(generationAfter.entries).toBeGreaterThan(generationBefore.entries)
       const committed = generationAfter.nextKeyHashes.filter(
         hash => !generationBefore.nextKeyHashes.includes(hash)

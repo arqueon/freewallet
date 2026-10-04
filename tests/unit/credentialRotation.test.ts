@@ -146,6 +146,7 @@ vi.mock('@/session/verifiedLog', () => ({
 }))
 
 import { deriveNextKeyHash } from '@interop/did-method-webvh'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import {
   preflightUnlockCredentialRetirement,
   retireUnlockCredential
@@ -191,6 +192,13 @@ const FRESH_USER_KEY = {
 const ROSTER_DESCRIPTOR = { epochs: [{ id: FRESH_USER_KEY.id }] }
 
 /**
+ * The retiring client's own update key in the pre-edit log. A real Ed25519
+ * multikey, since `deriveNextKeyHash` refuses anything else.
+ */
+const RETIRING_CLIENT_UPDATE_KEY = (await Ed25519VerificationKey.generate())
+  .publicKeyMultibase
+
+/**
  * A pre-edit log whose standing parameters commit exactly one rung of the
  * given ladder, beside this client's own update key.
  *
@@ -208,9 +216,9 @@ async function logCommittingRung({
 }): Promise<{ updateKeys: string[]; nextKeyHashes: string[] }> {
   const rung = await ladderRung({ ladderSeed, index })
   return {
-    updateKeys: ['z6MkRetiringClientUpdate'],
+    updateKeys: [RETIRING_CLIENT_UPDATE_KEY],
     nextKeyHashes: [
-      await deriveNextKeyHash('z6MkRetiringClientUpdate'),
+      await deriveNextKeyHash(RETIRING_CLIENT_UPDATE_KEY),
       await deriveNextKeyHash(rung.keyMultibase)
     ]
   }

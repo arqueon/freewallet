@@ -8,7 +8,8 @@ import {
   sessionSpaceId,
   signupViaWizard
 } from './helpers'
-import { listStoredResourceIds } from './storedLogs'
+import { listStoredResourceIds } from '../shared/storedLogs'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 /**
  * The Applications revocation surface e2e (WAS mode), modeled on
@@ -393,6 +394,7 @@ test.describe('The Applications revocation surface', () => {
 
     // The server stores both as Resources of the `connections` collection.
     const stored = await listStoredResourceIds({
+      dataDir: WAS_E2E_DATA_DIR,
       spaceId: await sessionSpaceId(page),
       collectionId: 'connections'
     })

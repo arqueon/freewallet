@@ -16,7 +16,7 @@
  * removal entry and signed by the standing credential's ladder VM.
  *
  * The collection logs are capability-gated, so the assertions read the
- * teaching server's FileSystem backend off disk (`storedLogs.ts`). Every
+ * teaching server's FileSystem backend off disk (`tests/shared/storedLogs.ts`). Every
  * stage pays the deliberately slow unlock KDF on top of several WAS
  * ceremonies, hence the generous timeouts.
  */

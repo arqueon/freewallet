@@ -29,7 +29,7 @@ import {
   sessionSpaceId,
   signupViaWizard
 } from './helpers'
-import { readAccountLogVersions } from './storedLogs'
+import { readAccountLogVersions } from '../shared/storedLogs'
 import {
   captureFrameLocalStorageKeys,
   expectNoFrameStorageResidue
@@ -43,6 +43,7 @@ import {
   injectPopupGetEvent,
   withoutUnpartitionedStorageAccess
 } from './popupHarness'
+import { WAS_E2E_DATA_DIR } from './wasDataDir'
 
 // Chromium's Local Network Access checks block a loopback subresource
 // fetched from a DIFFERENT loopback origin, which is exactly the cross-site
@@ -460,6 +461,7 @@ test.describe.serial('the CHAPI popup on a transient session', () => {
       // `capabilityInvocation` key. A remembered session's App Connect
       // response holds and signs as exactly this did:key.
       const accountKeys = await readAccountLogVersions({
+        dataDir: WAS_E2E_DATA_DIR,
         spaceId: await sessionSpaceId(page)
       })
       const latestKeys = accountKeys[accountKeys.length - 1]!
