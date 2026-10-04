@@ -310,7 +310,7 @@ describe('ensureKmsAuthentication', () => {
   })
 
   it('waits for the Space before writing', async () => {
-    const { remoteStore, keystoreAgent, puts } = fakes()
+    const { remoteStore, keystoreAgent, puts, generatedCount } = fakes()
     let releaseSpace: () => void = () => {}
     const spaceReady = new Promise<void>(resolve => {
       releaseSpace = resolve
@@ -323,7 +323,11 @@ describe('ensureKmsAuthentication', () => {
       did: DID,
       spaceReady
     })
-    await Promise.resolve()
+    // Every step ahead of the write settles on microtasks, so one macrotask
+    // turn drains them all: the key is minted, and only the Space holds the
+    // write back.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(generatedCount()).toBe(1)
     expect(puts).toEqual([])
 
     releaseSpace()

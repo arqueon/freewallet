@@ -173,9 +173,12 @@ const publicCollectionDetail: ICapabilityQueryDetail = {
   }
 }
 
+// A target on another origin that otherwise names this Space and one of its
+// standing collections, so only the origin check can refuse it.
 const foreignDetail: ICapabilityQueryDetail = {
   controller: RP_DID,
-  invocationTarget: 'https://someone-else.example/space/OTHER/data'
+  invocationTarget:
+    'https://someone-else.example/space/L8qcqABC/example-app-data'
 }
 
 // A share request: read AND decrypt an encrypted standard collection. Its
@@ -417,71 +420,83 @@ describe('resolveInvocationTarget', () => {
   })
 
   it('refuses a foreign URL', () => {
+    // The Space id and the collection are this wallet's and the collection
+    // stands, so the foreign origin is the only reason to refuse.
     const target = resolveInvocationTarget({
-      descriptor: 'https://someone-else.example/space/OTHER',
+      descriptor:
+        'https://someone-else.example/space/L8qcqABC/example-app-data',
       space: SPACE,
-      collections: NO_COLLECTIONS,
+      collections: STANDING_COLLECTIONS,
       requester: {}
     })
     expect(target.targetClass).toBeUndefined()
-    expect(target.targetClass).toBeUndefined()
+    expect(target.invocationTarget).toBeUndefined()
   })
 
   // These previously classified as an RP `collection` (the string started with
   // `${SPACE_URL}` and the segment was read off it verbatim), so a query or a
   // fragment smuggled past the prefix check earned the full write ceiling on a
   // target the server would route somewhere else entirely.
+  // Each names a standing collection (or a Resource in one), so the query or
+  // the fragment is the only reason to refuse.
   it('refuses a plain-URL target carrying a query or a fragment', () => {
     for (const descriptor of [
       `${SPACE_URL}private-credentials?x=1`,
       `${SPACE_URL}private-credentials#frag`,
       `${SPACE_URL}example-app-data/doc1?x=1`,
-      `${SPACE_URL}?x=1`,
-      `${SPACE_URL}#frag`
+      `${SPACE_URL}example-app-data/doc1#frag`
     ]) {
       const target = resolveInvocationTarget({
         descriptor,
         space: SPACE,
-        collections: NO_COLLECTIONS,
+        collections: STANDING_COLLECTIONS,
         requester: {}
       })
       expect(target.targetClass).toBeUndefined()
-      expect(target.targetClass).toBeUndefined()
+      expect(target.invocationTarget).toBeUndefined()
     }
   })
 
   it('refuses a path that escapes the Space through dot segments', () => {
+    // Each lands on a collection id this Space holds, in another Space, so
+    // the Space-id check is the only reason to refuse.
     for (const descriptor of [
-      `${SPACE_URL}../other-space/private`,
-      `${SPACE_URL}example-app-data/../../other-space/private`,
-      `${SPACE_URL}..`
+      `${SPACE_URL}../other-space/example-app-data`,
+      `${SPACE_URL}example-app-data/../../other-space/example-app-data`,
+      `${SPACE_URL}../other-space/example-app-data/doc1`
     ]) {
       const target = resolveInvocationTarget({
         descriptor,
         space: SPACE,
-        collections: NO_COLLECTIONS,
+        collections: STANDING_COLLECTIONS,
         requester: {}
       })
       expect(target.targetClass).toBeUndefined()
-      expect(target.targetClass).toBeUndefined()
+      expect(target.invocationTarget).toBeUndefined()
     }
   })
 
   it('refuses a first path segment that is not a valid collection id', () => {
-    for (const segment of [
+    // The snapshot lists each decoded segment as a standing collection, so
+    // the collection naming rule is the only reason to refuse.
+    const segments = [
       'Upper-Case',
       '-leading-hyphen',
       'has%20space',
       'x'.repeat(65)
-    ]) {
+    ]
+    const collections = existingCollectionsFrom(
+      segments.map(segment => ({ id: decodeURIComponent(segment) }))
+    )
+    for (const segment of segments) {
       const target = resolveInvocationTarget({
         descriptor: `${SPACE_URL}${segment}/doc1`,
         space: SPACE,
-        collections: NO_COLLECTIONS,
+        collections,
         requester: {}
       })
       expect(target.targetClass).toBeUndefined()
-      expect(target.targetClass).toBeUndefined()
+      expect(target.invocationTarget).toBeUndefined()
     }
   })
 
@@ -540,11 +555,13 @@ describe('resolveInvocationTarget', () => {
       const target = resolveInvocationTarget({
         descriptor: `${origin}${space.pathname}/example-app-data`,
         space: SPACE,
-        collections: NO_COLLECTIONS,
+        // The path names a standing collection, so the origin is the only
+        // reason to refuse.
+        collections: STANDING_COLLECTIONS,
         requester: {}
       })
       expect(target.targetClass).toBeUndefined()
-      expect(target.targetClass).toBeUndefined()
+      expect(target.invocationTarget).toBeUndefined()
     }
   })
 
@@ -616,7 +633,9 @@ describe('resolveInvocationTarget', () => {
       const resolved = resolveInvocationTarget({
         descriptor: target,
         space: SPACE,
-        collections: NO_COLLECTIONS,
+        // Every collection named stands, so the depth is the only reason to
+        // refuse.
+        collections: STANDING_COLLECTIONS,
         requester: {}
       })
       expect(resolved.targetClass).toBeUndefined()
@@ -755,7 +774,7 @@ describe('resolveInvocationTarget', () => {
       requester: {}
     })
     expect(target.targetClass).toBeUndefined()
-    expect(target.targetClass).toBeUndefined()
+    expect(target.invocationTarget).toBeUndefined()
   })
 
   it('resolves a public collection: plaintext, provisioned, isPublic', () => {
@@ -794,14 +813,15 @@ describe('resolveInvocationTarget', () => {
         }).targetClass
       ).not.toBe('public-collection')
     }
+    // The string form resolves onto a standing private collection.
     expect(
       resolveInvocationTarget({
         descriptor: `${SPACE_URL}example-app-data`,
         space: SPACE,
-        collections: NO_COLLECTIONS,
+        collections: STANDING_COLLECTIONS,
         requester: {}
       }).targetClass
-    ).not.toBe('public-collection')
+    ).toBe('collection')
   })
 
   it('refuses a public grant on protected wallet collections', () => {
@@ -947,14 +967,15 @@ describe('resolveInvocationTarget', () => {
         }).targetClass
       ).not.toBe('share')
     }
+    // The string form resolves onto a standing protected collection.
     expect(
       resolveInvocationTarget({
         descriptor: `${SPACE_URL}private-credentials`,
         space: SPACE,
-        collections: NO_COLLECTIONS,
+        collections: STANDING_COLLECTIONS,
         requester: {}
       }).targetClass
-    ).not.toBe('share')
+    ).toBe('protected-collection')
   })
 
   it('rejects an invalid public-collection name', () => {
@@ -1003,7 +1024,7 @@ describe('existing-collection state (create-only public collections)', () => {
       requester: {}
     })
     expect(target.targetClass).toBeUndefined()
-    expect(target.targetClass).toBeUndefined()
+    expect(target.invocationTarget).toBeUndefined()
   })
 
   it('keeps the re-grant on an already-public collection satisfiable', () => {
@@ -1026,9 +1047,12 @@ describe('existing-collection state (create-only public collections)', () => {
   })
 
   it('classes a string target naming a public collection public-collection', () => {
-    for (const invocationTarget of [
-      `${SPACE_URL}example-app-public`,
-      `${SPACE_URL}example-app-public/some-resource`
+    for (const [invocationTarget, canonicalTarget] of [
+      [`${SPACE_URL}example-app-public`, `${SPACE_URL}example-app-public/`],
+      [
+        `${SPACE_URL}example-app-public/some-resource`,
+        `${SPACE_URL}example-app-public/some-resource`
+      ]
     ]) {
       const grant = resolveGrant({
         descriptor: {
@@ -1040,7 +1064,7 @@ describe('existing-collection state (create-only public collections)', () => {
         collections: EXISTING
       })
       expect(grant.target.targetClass).toBe('public-collection')
-      expect(grant.target.targetClass).toBe('public-collection')
+      expect(grant.target.invocationTarget).toBe(canonicalTarget)
       expect(grant.allowedActions).toEqual([
         'GET',
         'HEAD',
@@ -1067,7 +1091,9 @@ describe('existing-collection state (create-only public collections)', () => {
       collections: EXISTING
     })
     expect(grant.target.targetClass).toBe('public-collection')
-    expect(grant.target.targetClass).toBe('public-collection')
+    expect(grant.target.invocationTarget).toBe(
+      `${SPACE_URL}example-app-public/`
+    )
     // Nothing to provision either: the `#collection` spelling of an existing
     // public collection is the idempotent public re-grant, so the public
     // policy is never re-applied and no recipient roster is ever set up on a
@@ -1399,9 +1425,11 @@ describe('whole-Space targets', () => {
     const grant = resolveGrant({
       descriptor: foreignDetail,
       space: SPACE,
-      collections: NO_COLLECTIONS
+      collections: STANDING_COLLECTIONS
     })
     expect(grant.target.targetClass).toBeUndefined()
+    expect(grant.target.invocationTarget).toBeUndefined()
+    expect(grant.allowedActions).toEqual([])
   })
 })
 
@@ -2361,6 +2389,10 @@ describe('processRequest with zcaps', () => {
   })
 
   it('enforces domain binding before delegating on a zcap request', async () => {
+    delegated.length = 0
+    ensureCalls.length = 0
+    provisionCalls.length = 0
+    shareCalls.length = 0
     await expect(
       processRequest({
         request: {
@@ -2377,5 +2409,9 @@ describe('processRequest with zcaps', () => {
         delegateStandaloneZcaps: true
       })
     ).rejects.toThrow(/does not match request origin/)
+    expect(delegated).toHaveLength(0)
+    expect(ensureCalls).toHaveLength(0)
+    expect(provisionCalls).toHaveLength(0)
+    expect(shareCalls).toHaveLength(0)
   })
 })

@@ -85,8 +85,8 @@ const CORE_RESULT = {
 }
 
 /**
- * The call order the persist mocks push into, so the write ordering is
- * asserted on rather than inferred.
+ * The call order the persist mocks and the core mock push into, so the
+ * write ordering against the publish is asserted on rather than inferred.
  */
 let order: string[] = []
 
@@ -95,7 +95,7 @@ let order: string[] = []
  * the call's `persistClientKeys`.
  */
 const persistClosure = vi.fn(async () => {
-  order.push('persist')
+  order.push('completion-persist')
 })
 
 /**
@@ -123,7 +123,7 @@ function hit(): KeyringFetchResult {
       agents: { keyAgreementKey: {}, zcapClient: {} }
     },
     enrollClientKeys: vi.fn(async () => {
-      order.push('persist')
+      order.push('pending-persist')
       return persistClosure
     })
   } as unknown as KeyringFetchResult
@@ -132,8 +132,9 @@ function hit(): KeyringFetchResult {
 beforeEach(() => {
   vi.clearAllMocks()
   order = []
-  // The core fires the required persist hook once (the pending write) and
-  // returns with `committed` stated, as the real ceremony does.
+  // The core fires the required persist hook once (the pending write), then
+  // publishes, and returns with `committed` stated, as the real ceremony
+  // does. The markers place each persist against the publish and the return.
   vi.mocked(selfEnrollClientCore).mockImplementation(
     async (options: unknown) => {
       const { onCommitted } = options as {
@@ -148,6 +149,8 @@ beforeEach(() => {
         clientSeed: CORE_RESULT.clientSeed,
         webvhUpdateKeys: CORE_RESULT.webvhUpdateKeys
       })
+      order.push('core-publish')
+      order.push('core-return')
       return { ...CORE_RESULT, committed: true } as never
     }
   )
@@ -164,9 +167,14 @@ describe('selfEnrollStandingClient', () => {
       pinStore: memoryResourceLogPinStore(),
       found
     })
-    // Two persists: the hook's pending write (pre-pivot), then the
-    // completion's enrolled shape.
-    expect(order).toEqual(['persist', 'persist'])
+    // Two persists: the hook's pending write before the core publishes
+    // (pre-pivot), then the completion's enrolled shape after it returns.
+    expect(order).toEqual([
+      'pending-persist',
+      'core-publish',
+      'core-return',
+      'completion-persist'
+    ])
     expect(found.enrollClientKeys).toHaveBeenNthCalledWith(1, {
       clientSeed: CORE_RESULT.clientSeed,
       webvhUpdateKeys: CORE_RESULT.webvhUpdateKeys,

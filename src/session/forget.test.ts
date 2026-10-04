@@ -129,11 +129,8 @@ vi.mock('@/session/unlockMethods', async () => ({
   ),
   updateUnlockMethods: vi.fn()
 }))
-const {
-  getUnlockMethods,
-  managementZcapClient,
-  refreshStandingDelegationFields
-} = await import('@/session/unlockMethods')
+const { getUnlockMethods, refreshStandingDelegationFields } =
+  await import('@/session/unlockMethods')
 
 vi.mock('@/session/recovery', () => ({
   recoveryEntriesOf: vi.fn(() => [])
@@ -1143,7 +1140,7 @@ describe('forgetThisBrowser (the ceremony grades)', () => {
     // record here would stamp this session's key as K's frame signer, and
     // the frame proof is checked before decryption, so the next login on K
     // would refuse the record it can no longer settle.
-    const { session } = fakeSession()
+    const { session, rebindRecord } = fakeSession()
     vi.mocked(getUnlockMethods).mockResolvedValue({
       methods: [
         {
@@ -1175,9 +1172,9 @@ describe('forgetThisBrowser (the ceremony grades)', () => {
       .mocked(refreshStandingDelegationFields)
       .mock.calls.map(call => call[0]!.unlockSpaceId)
     expect(spaces).toEqual(['unlock-1'])
-    // The only client that could PUT into a sibling's unlock Space is the
-    // one built from that entry's management zcap; none is ever built.
-    expect(vi.mocked(managementZcapClient)).not.toHaveBeenCalled()
+    // The record re-seal goes through the login credential's own re-bind
+    // closure, once.
+    expect(vi.mocked(rebindRecord)).toHaveBeenCalledTimes(1)
   })
 
   it("builds the ceremony's bridge store over the session's chain-head pins", async () => {

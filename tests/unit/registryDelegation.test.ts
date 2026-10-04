@@ -7,9 +7,10 @@
  * registry request must ride the visit's generation delegation. The tier
  * guard that used to refuse these writes outright is gone, and what keeps
  * them honest is the write protocol itself: the delegation travels on the
- * read, on the collection ensure, and on the conditional PUT, and a lost
- * compare-and-swap race re-reads and re-applies under the same delegation
- * rather than reverting the concurrent writer.
+ * read and on the conditional PUT, and a lost compare-and-swap race re-reads
+ * and re-applies under the same delegation rather than reverting the
+ * concurrent writer. With no explicit capability, each request rides the
+ * session's own `profile.invocationCapability`, read at that request.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mintUserKey, userKeyVaultKeys } from '@interop/wallet-core/keys'
@@ -132,7 +133,7 @@ beforeEach(() => {
 })
 
 describe('the registry write under a generation delegation', () => {
-  it('carries the delegation on the read, the ensure, and the PUT', async () => {
+  it('carries the delegation on the read and the PUT', async () => {
     const session = await transientSession()
     await updateUnlockMethods({
       session,
@@ -176,6 +177,33 @@ describe('the registry write under a generation delegation', () => {
       GENERATION_DELEGATION,
       GENERATION_DELEGATION
     ])
+  })
+
+  it('rides the session invocation capability when no override is given', async () => {
+    const session = await transientSession()
+    session.profile.invocationCapability = GENERATION_DELEGATION
+    await updateUnlockMethods({
+      session,
+      mutate: current => current ?? emptyUnlockMethodsRegistry()
+    })
+    expect(wasState.capabilities.read).toEqual([GENERATION_DELEGATION])
+    expect(wasState.capabilities.put).toEqual([GENERATION_DELEGATION])
+  })
+
+  it('reads the session invocation capability at each request', async () => {
+    const session = await transientSession()
+    const renewed = { id: 'urn:zcap:generation:renewed' } as unknown as IZcap
+    session.profile.invocationCapability = GENERATION_DELEGATION
+    await updateUnlockMethods({
+      session,
+      mutate: current => {
+        // A renewal landing between the read and the PUT.
+        session.profile.invocationCapability = renewed
+        return current ?? emptyUnlockMethodsRegistry()
+      }
+    })
+    expect(wasState.capabilities.read).toEqual([GENERATION_DELEGATION])
+    expect(wasState.capabilities.put).toEqual([renewed])
   })
 
   it('invokes the root capability when no delegation is supplied', async () => {

@@ -283,15 +283,20 @@ async function didFromSeed(seed: Uint8Array): Promise<string> {
  * @param [options] {object}
  * @param [options.withRemote] {boolean}   whether the storage stub exposes a
  *   remote store
+ * @param [options.pointer] {object}   the account pointer the unlock record
+ *   carries
  * @returns {Promise<object>}   the storage stub, whose provisioning promise
  *   the test releases
  */
-async function arrangeRememberedLogin({ withRemote = true } = {}) {
+async function arrangeRememberedLogin({
+  withRemote = true,
+  pointer = POINTER as { did?: string; spaceId: string; host: string }
+} = {}) {
   const clientSeed = randomSeed()
   const controller = await didFromSeed(clientSeed)
   vi.mocked(fetchKeyring).mockResolvedValue({
     controller,
-    pointer: POINTER,
+    pointer,
     // The ENROLLED shape: a record missing any of the four members would
     // route into the pending-record resume instead of the ordinary login.
     clientKeys: {
@@ -691,6 +696,9 @@ describe('the login-time cascade-completion sweep', () => {
   })
 
   it('does not fire without a roster (an account provisioning has not created one)', async () => {
+    // A null read is also what the roster policy hands back for an offline
+    // check (its own swallow, kept in wallet-core's tests), so this case
+    // covers that one at this seam too.
     vi.mocked(checkUserKeyRosterAtLogin).mockResolvedValue(null)
     const fake = await arrangeRememberedLogin()
 
@@ -711,21 +719,7 @@ describe('the login-time cascade-completion sweep', () => {
       detail: { reason: 'nothing-to-sweep-from' }
     })
     expect(vi.mocked(cascadeCollectionsToUserKey)).not.toHaveBeenCalled()
-  })
-
-  it('does not fire when the roster check was offline (cached user key kept)', async () => {
-    // An unreachable server is the roster policy's own swallow: it keeps the
-    // cached key authoritative and reports no read at all.
-    vi.mocked(checkUserKeyRosterAtLogin).mockResolvedValue(null)
-    const fake = await arrangeRememberedLogin()
-
-    const { session } = await loginWithPassphrase({ passphrase: PASSPHRASE })
-    fake.resolveProvisioning()
-
-    const entries = await sweepEntries(session!)
-    expect(entries.roster).toMatchObject({ outcome: 'noop' })
-    expect(entries.collections).toMatchObject({ outcome: 'noop' })
-    expect(vi.mocked(cascadeCollectionsToUserKey)).not.toHaveBeenCalled()
+    // With no read, the session keeps the record's cached user key.
     expect(session!.profile.userKey).toEqual(OLD_USER_KEY)
   })
 
@@ -1001,6 +995,42 @@ describe('the roster stage of the sweep', () => {
   })
 
   it('does not run for an account whose pointer names no DID', async () => {
+    vi.mocked(checkUserKeyRosterAtLogin).mockResolvedValue(
+      rosterRead() as never
+    )
+    const fake = await arrangeRememberedLogin({
+      pointer: { ...POINTER, did: undefined }
+    })
+
+    const { session } = await loginWithPassphrase({ passphrase: PASSPHRASE })
+
+    // The roster read itself requires a pointer that names the account DID
+    // (the epoch-signature check resolves the signer against the account
+    // log), so a did-less pointer skips the read -- and with neither a read
+    // nor the store it came through, the sweep registration has nothing to
+    // sweep from.
+    expect(vi.mocked(checkUserKeyRosterAtLogin)).not.toHaveBeenCalled()
+
+    // Release the block's seed so the registration is actually reached.
+    fake.resolveProvisioning()
+    const entries = await sweepEntries(session!)
+    expect(entries.roster).toMatchObject({
+      outcome: 'noop',
+      detail: { reason: 'nothing-to-sweep-from' }
+    })
+    expect(entries.rosterLog).toMatchObject({
+      outcome: 'noop',
+      detail: { reason: 'nothing-to-sweep-from' }
+    })
+    expect(entries.collections).toMatchObject({
+      outcome: 'noop',
+      detail: { reason: 'nothing-to-sweep-from' }
+    })
+    expect(vi.mocked(convergeUserKeyRosterToAccount)).not.toHaveBeenCalled()
+    expect(vi.mocked(cascadeCollectionsToUserKey)).not.toHaveBeenCalled()
+  })
+
+  it('skips the roster convergence when the session pointer names no did:webvh', async () => {
     const fake = makeFakeStorage()
     vi.mocked(StorageManager.initStorageClients).mockResolvedValue({
       storage: fake.storage,
@@ -1010,21 +1040,44 @@ describe('the roster stage of the sweep', () => {
       rosterRead() as never
     )
 
-    const { rosterRead: read, rosterStore } = await initSessionFromSeed({
+    const {
+      session,
+      rosterRead: read,
+      rosterStore
+    } = await initSessionFromSeed({
       seed: randomSeed(),
       userKey: OLD_USER_KEY,
-      accountPointer: { ...POINTER, did: undefined }
+      accountPointer: POINTER
+    })
+    // The sweep itself, handed a read and a store, on a session whose
+    // pointer still names the pre-promotion did:key: the convergence has no
+    // did:webvh document to converge onto, so only the fan-out runs, under
+    // the login's own key and descriptor.
+    const unpromoted = {
+      ...session,
+      profile: {
+        ...session.profile,
+        accountPointer: { ...POINTER, did: 'did:key:z6MkUnpromotedAccount' }
+      }
+    } as unknown as Session
+    epochPins.load.mockClear()
+    await sweepUserKeyToDocument({
+      session: unpromoted,
+      store: rosterStore!,
+      userKey: session.profile.userKey!,
+      read: read!
     })
 
-    // The roster read itself requires a pointer that names the account DID
-    // (the epoch-signature check resolves the signer against the account
-    // log), so a did-less pointer skips the read -- and with neither a read
-    // nor the store it came through, the sweep registration has nothing to
-    // sweep from.
-    expect(vi.mocked(checkUserKeyRosterAtLogin)).not.toHaveBeenCalled()
-    expect(read).toBeNull()
-    expect(rosterStore).toBeUndefined()
     expect(vi.mocked(convergeUserKeyRosterToAccount)).not.toHaveBeenCalled()
-    expect(vi.mocked(cascadeCollectionsToUserKey)).not.toHaveBeenCalled()
+    expect(epochPins.load).not.toHaveBeenCalled()
+    expect(fake.holdRotatedVaultKeys).not.toHaveBeenCalled()
+    expect(
+      vi.mocked(cascadeCollectionsToUserKey)
+    ).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        rosterDescriptor: ROSTER_DESCRIPTOR,
+        userKey: OLD_USER_KEY
+      })
+    )
   })
 })

@@ -385,13 +385,44 @@ describe('the shared wipe enumeration', () => {
     })
 
     expect(targets.accountDids).toContain(siblingDid)
-    // The replica-database prefix the by-name delete uses, and the
-    // localStorage cache scope, both derive from that did:key.
+    // The localStorage cache scope derives from that did:key.
     expect(targets.cacheScopes).toContain(`local:${siblingDid}`)
-    expect(deriveSpaceId(siblingDid)).toBeTruthy()
 
-    await executeLocalWipe({ targets, idb })
+    // The replica pass deletes through the global factory, by each client's
+    // replica prefix. It holds the sibling's replica databases and another
+    // client's, which no target names.
+    const siblingWalletDb = `${deriveSpaceId(siblingDid)}-wallet-db`
+    const strangerWalletDb = `${deriveSpaceId(
+      'did:key:z6MkStrangerStrangerStrangerS'
+    )}-wallet-db`
+    const replicaNames = new Set([
+      `rxdb-dexie-${siblingWalletDb}--0--private-credentials`,
+      `rxdb-dexie-${siblingWalletDb}--0--_rxdb_internal`,
+      `rxdb-dexie-${strangerWalletDb}--0--private-credentials`
+    ])
+    vi.stubGlobal('indexedDB', {
+      async databases() {
+        return [...replicaNames].map(name => ({ name, version: 1 }))
+      },
+      deleteDatabase(name: string) {
+        const request: { onsuccess?: () => void } = {}
+        queueMicrotask(() => {
+          replicaNames.delete(name)
+          request.onsuccess?.()
+        })
+        return request
+      }
+    })
 
+    const { failed, unverified } = await executeLocalWipe({ targets, idb })
+
+    expect(failed).toEqual([])
+    expect(unverified).toEqual([])
+    // Direct enumeration: the sibling's replica is gone, the stranger's
+    // stays.
+    expect([...replicaNames]).toEqual([
+      `rxdb-dexie-${strangerWalletDb}--0--private-credentials`
+    ])
     expect(sessionStore.has(`unlock-methods/${siblingDid}`)).toBe(false)
     expect(sessionStore.has(`passkey-safety/${siblingDid}`)).toBe(false)
     expect(

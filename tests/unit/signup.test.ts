@@ -83,8 +83,12 @@ vi.mock('@/lib/passkey', () => ({
   assertPasskeyPrf: vi.fn()
 }))
 
-import { assertPasskeyPrf, registerPasskey } from '@/lib/passkey'
-import { bindPassphrase, fetchTransientKeyring } from '@/session/keyring'
+import { registerPasskey } from '@/lib/passkey'
+import {
+  bindPassphrase,
+  deriveUnlockCredential,
+  fetchTransientKeyring
+} from '@/session/keyring'
 import { loginWithPassphrase, loginWithPasskey } from '@/session/initSession'
 import { establishCredentialAnchoredAccount } from '@/session/credentialAnchoredGenesis'
 import { transientSessionFromKeyringHit } from '@/session/transientLogin'
@@ -177,6 +181,13 @@ describe('signUpWithPassphrase on a WAS deployment', () => {
 
 describe('signUpWithPasskey on a WAS deployment', () => {
   it('runs the fold with exactly one WebAuthn ceremony', async () => {
+    // A distinct credential object, so the login half can be checked to take
+    // the very credential the registration's PRF output derived.
+    const derived = {
+      unlock: { spaceId: 'unlock-space-1' },
+      standing: {}
+    }
+    vi.mocked(deriveUnlockCredential).mockResolvedValueOnce(derived as never)
     const { session } = await signUpWithPasskey({
       locale: 'en',
       userName: 'someone',
@@ -185,18 +196,28 @@ describe('signUpWithPasskey on a WAS deployment', () => {
 
     expect(session).toBeTruthy()
     // One ceremony: the registration. The login half takes the derived
-    // credential, so no PRF assertion ever fires in the signup.
+    // credential, and `loginWithPasskey` asserts the PRF only when it is
+    // handed none, so no second ceremony fires in the signup.
     expect(registerPasskey).toHaveBeenCalledOnce()
-    expect(assertPasskeyPrf).not.toHaveBeenCalled()
+    const registration = await vi.mocked(registerPasskey).mock.results[0]!.value
+    expect(deriveUnlockCredential).toHaveBeenCalledOnce()
+    expect(deriveUnlockCredential).toHaveBeenCalledWith(
+      expect.objectContaining({ secret: registration.prfOutput })
+    )
     const establishCall = vi.mocked(establishCredentialAnchoredAccount).mock
       .calls[0]![0]
+    expect(establishCall.credential).toBe(derived)
     // The PRF key is high-entropy and publishes verbatim.
     expect(establishCall.lowEntropy).toBe(false)
+    expect(loginWithPasskey).toHaveBeenCalledOnce()
     expect(loginWithPasskey).toHaveBeenCalledWith(
       expect.objectContaining({
         rememberBrowser: true,
-        credential: expect.anything()
+        credential: derived
       })
+    )
+    expect(vi.mocked(loginWithPasskey).mock.calls[0]![0]!.credential).toBe(
+      derived
     )
     // Never the transient composition.
     expect(transientSessionFromKeyringHit).not.toHaveBeenCalled()

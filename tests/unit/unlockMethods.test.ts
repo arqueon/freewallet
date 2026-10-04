@@ -1516,12 +1516,28 @@ describe('updateUnlockMethodsWithClient re-sealing to a write key', () => {
   it('refuses a record neither key opens with the read key error', async () => {
     const oldUserKey = await mintUserKey()
     const newUserKey = await mintUserKey()
+    // Sealed and signed under the read key, then tampered: the read key's
+    // failure is a proof refusal, while the write key, which never signed
+    // it, fails as an envelope it cannot open. The two errors differ, so
+    // the rejection shows which one the fallback rethrows.
     await updateUnlockMethodsWithClient({
       zcapClient: {} as never,
       spaceId: DATA_SPACE_ID,
-      userKey: await mintUserKey(),
+      userKey: oldUserKey,
       mutate: () => seedRecord()
     })
+    const stored = wasState.records.get(DATA_SPACE_ID) as {
+      wrapped: { jwe: { ciphertext: string } }
+    }
+    stored.wrapped.jwe.ciphertext = 'dGFtcGVyZWQ'
+    await expect(
+      getUnlockMethodsWithClient({
+        zcapClient: {} as never,
+        spaceId: DATA_SPACE_ID,
+        userKey: newUserKey
+      })
+    ).rejects.toMatchObject({ name: 'RecordEnvelopeDecryptError' })
+    vi.clearAllMocks()
 
     await expect(
       updateUnlockMethodsWithClient({
@@ -1531,7 +1547,8 @@ describe('updateUnlockMethodsWithClient re-sealing to a write key', () => {
         writeUserKey: newUserKey,
         mutate: existing => existing
       })
-    ).rejects.toThrow()
+    ).rejects.toBeInstanceOf(UnlockRegistryProofError)
+    expect(putUnlockMethodsRecord).not.toHaveBeenCalled()
   })
 
   it('does not fall back without a write key', async () => {
@@ -2143,7 +2160,7 @@ describe('backfillPassphraseUnlockMethod', () => {
     expect(putUnlockMethodsRecord).not.toHaveBeenCalled()
   })
 
-  it('refreshes an expiring passphrase entry with the standing PUT action set', async () => {
+  it('refreshes an expiring passphrase entry whose action set equals the fresh mint', async () => {
     const idb = createFakeIdb()
     const fresh = capExpiringIn({
       msFromNow: ONE_YEAR_MS,
@@ -2180,10 +2197,6 @@ describe('backfillPassphraseUnlockMethod', () => {
       (method): method is PassphraseUnlockMethod => method.type === 'passphrase'
     )
     expect(entry!.manageCapability).toEqual(fresh)
-    expect(
-      (entry!.manageCapability as unknown as { allowedAction: string[] })
-        .allowedAction
-    ).toContain('PUT')
     expect(putUnlockMethodsRecord).toHaveBeenCalledOnce()
   })
 
@@ -2348,7 +2361,7 @@ describe('backfillPassphraseUnlockMethod', () => {
     expect(putUnlockMethodsRecord).not.toHaveBeenCalled()
   })
 
-  it('refreshes an expiring passkey entry with the standing PUT action set', async () => {
+  it('refreshes an expiring passkey entry whose action set equals the fresh mint', async () => {
     const idb = createFakeIdb()
     const fresh = capExpiringIn({
       msFromNow: ONE_YEAR_MS,
@@ -2382,10 +2395,6 @@ describe('backfillPassphraseUnlockMethod', () => {
       (method): method is PasskeyUnlockMethod => method.type === 'passkey'
     )
     expect(entry!.manageCapability).toEqual(fresh)
-    expect(
-      (entry!.manageCapability as unknown as { allowedAction: string[] })
-        .allowedAction
-    ).toContain('PUT')
     expect(putUnlockMethodsRecord).toHaveBeenCalledOnce()
   })
 

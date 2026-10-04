@@ -503,6 +503,28 @@ function makeFakeRemote(): {
   }
 }
 
+/**
+ * Installs an empty in-memory `localStorage` for one test, so a residue check
+ * runs in the node environment too. The caller removes it with
+ * `vi.unstubAllGlobals()`.
+ *
+ * @returns {{ keys: () => string[] }}
+ */
+function stubLocalStorage(): { keys: () => string[] } {
+  const map = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    get length() {
+      return map.size
+    },
+    key: (index: number) => [...map.keys()][index] ?? null,
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => void map.set(key, value),
+    removeItem: (key: string) => void map.delete(key),
+    clear: () => map.clear()
+  })
+  return { keys: () => [...map.keys()] }
+}
+
 describe('replica-less remote-direct StorageManager', () => {
   it('serves credential and history reads/writes with no local replica and no browser-local residue', async () => {
     const owner = await generateKey()
@@ -527,8 +549,9 @@ describe('replica-less remote-direct StorageManager', () => {
       .spyOn(WASRemoteStore, 'initClient')
       .mockResolvedValue({ remoteStore })
     const browserStoreSpy = vi.spyOn(BrowserStore, 'initClient')
-    const localStorageBefore =
-      typeof localStorage !== 'undefined' ? localStorage.length : undefined
+    // Production reads the global at call time, so a cache write that leaked
+    // past the in-memory strategy would land in this stub.
+    const residue = stubLocalStorage()
     try {
       const { storage, userExists } = await StorageManager.initStorageClients({
         user,
@@ -564,14 +587,12 @@ describe('replica-less remote-direct StorageManager', () => {
         .descriptorCache({ scope: remoteStore.spaceId })
         .readDescriptor({ collectionId: 'private-credentials' })
       expect(cached?.currentEpoch).toBeDefined()
-      // ...and localStorage gained no key at all (guarded for the node
-      // environment, where no localStorage exists to leak into).
-      if (localStorageBefore !== undefined) {
-        expect(localStorage.length).toBe(localStorageBefore)
-      }
+      // ...and localStorage gained no key at all.
+      expect(residue.keys()).toEqual([])
     } finally {
       initClientSpy.mockRestore()
       browserStoreSpy.mockRestore()
+      vi.unstubAllGlobals()
     }
   })
 

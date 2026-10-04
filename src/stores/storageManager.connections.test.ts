@@ -359,6 +359,24 @@ describe('the directory binding', () => {
     )
   })
 
+  it('reports a directory no key epoch of which names the vault KAK as stranded', async () => {
+    // The positive case of the negatives above: a directory sealed only to
+    // a user key this session does not hold is what the cascade converges.
+    const owner = await generateVaultKeys()
+    const retired = await generateVaultKeys({ controller: 'did:key:z6MkOld' })
+    const stores = memoryDescriptorStores()
+    await installDirectory({ stores, owner: retired })
+    const storage = remoteSession({ owner, stores, server: memoryWasServer() })
+    const onStranded = vi.fn()
+    storage.setOnStranded(onStranded)
+
+    await expect(storage.connectionsDirectory()).rejects.toThrow('stranded')
+    await storage.refreshEncryptedDescriptors()
+    await Promise.resolve()
+    expect(onStranded).toHaveBeenCalled()
+    expect(storage.strandedCollectionIds).toContain('connections')
+  })
+
   it('refuses an account with no directory, without reporting it stranded', async () => {
     const owner = await generateVaultKeys()
     const storage = remoteSession({
@@ -634,6 +652,7 @@ describe('a guest or no-WAS session', () => {
   it('keeps its directory locally, its ids derived under the locally minted blinded-index key', async () => {
     const owner = await generateVaultKeys()
     const user: User = { id: 'did:key:z6MkLocalDirectoryUser' }
+    const persistence = browserLocalSessionPersistence({ persistCaches: false })
     const { storage } = await StorageManager.initStorageClients({
       user,
       session: {
@@ -641,7 +660,7 @@ describe('a guest or no-WAS session', () => {
           ...owner,
           keyAgent: { id: 'did:key:z6MkLocalAgent' }
         } as unknown as ControllerProfile,
-        persistence: browserLocalSessionPersistence({ persistCaches: false })
+        persistence
       },
       isGuest: true,
       storage: getRxStorageMemory()
@@ -668,10 +687,20 @@ describe('a guest or no-WAS session', () => {
       grants: []
     })
     // The id is keyed by the blinded-index key the local mint installed on
-    // the directory's descriptor, which the vault KAK unwraps.
+    // the directory's descriptor, which the vault KAK unwraps. The expected
+    // key is resolved here from the minted descriptor, apart from the key
+    // the session handed out.
     expect(storage.strandedCollectionIds).not.toContain('connections')
+    const descriptor = await persistence
+      .descriptorCache({ scope: `local:${user.id}` })
+      .readDescriptor({ collectionId: 'connections' })
+    const mintedKey = await resolveHmacKey({
+      encryption: descriptor!,
+      keyAgreementKey: owner.keyAgreementKey,
+      required: true
+    })
     expect(listing?.entries[0]?.resourceId).toBe(
-      await connectionResourceId({ hmacKey: directory.hmacKey, did: AGENT })
+      await connectionResourceId({ hmacKey: mintedKey!, did: AGENT })
     )
   })
 

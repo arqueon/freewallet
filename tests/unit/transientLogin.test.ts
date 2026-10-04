@@ -390,11 +390,24 @@ describe('routeUnlockLogin -- the post-KDF login-route decision', () => {
   })
 
   it('routes a popup transient when Storage Access is denied (decisions/0009)', async () => {
-    // A denied grant resolves no handle, so the probe runs against the
-    // partitioned bucket, where no client-key record can exist.
-    const routed = await routeUnlockLogin({ kdf: KDF, credential: CREDENTIAL })
-    expect(routed.login).toBe('transient')
-    expect(hasClientKeyRecord).toHaveBeenCalledWith({
+    // A remembered browser: the client-key record lives in the first-party
+    // store, which only the granted unpartitioned handle reaches. The
+    // partitioned bucket the default factory opens holds none.
+    const unpartitioned = {} as IDBFactory
+    vi.mocked(hasClientKeyRecord).mockImplementation(
+      async ({ idb }) => idb === unpartitioned
+    )
+    const granted = await routeUnlockLogin({
+      kdf: KDF,
+      credential: CREDENTIAL,
+      idb: unpartitioned
+    })
+    expect(granted.login).toBe('remembered')
+    // A denied grant resolves no handle, so the same browser's probe runs
+    // against the partitioned bucket and the login falls back to transient.
+    const denied = await routeUnlockLogin({ kdf: KDF, credential: CREDENTIAL })
+    expect(denied.login).toBe('transient')
+    expect(hasClientKeyRecord).toHaveBeenLastCalledWith({
       spaceId: 'unlock-space-1',
       idb: undefined
     })
@@ -1266,9 +1279,19 @@ describe('transientSessionFromKeyringHit -- the client-annex generation-readines
     expect(typeof ensureCall.idStoreFor).toBe('function')
     // The factory builds the account-log store over whichever bridge it is
     // handed, not over the one the record happened to carry.
-    const store = ensureCall.idStoreFor({ delegation: FRESH_BRIDGE as never })
-    expect(typeof store.getIdResourceRaw).toBe('function')
-    expect(typeof store.putIdResource).toBe('function')
+    vi.mocked(delegatedWebvhLogStore).mockClear()
+    ensureCall.idStoreFor({ delegation: FRESH_BRIDGE as never })
+    expect(delegatedWebvhLogStore).toHaveBeenCalledTimes(1)
+    expect(delegatedWebvhLogStore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delegation: FRESH_BRIDGE,
+        spaceId: POINTER.spaceId,
+        collectionId: ID_COLLECTION.id
+      })
+    )
+    expect(delegatedWebvhLogStore).not.toHaveBeenCalledWith(
+      expect.objectContaining({ delegation: RECORD_BRIDGE })
+    )
   })
 
   it('re-seals a renewed bridge and carries it into the session', async () => {

@@ -1159,7 +1159,8 @@ const { GenerationDelegationRenewalError } =
   await import('@/session/annexReach')
 const { deleteUnlockLocalState } = await import('@/lib/sessionKey')
 const { sessionDisposalSignal } = await import('@/session/sessionLifecycle')
-const { invalidateVerifiedLog } = await import('@/session/verifiedLog')
+const { invalidateVerifiedLog, verifiedAccountLog } =
+  await import('@/session/verifiedLog')
 const { resealRegistryFromEscrow } = await import('@/session/registryReseal')
 const { preflightCredentialRetirement, rotateOffUnlockCredential } =
   await import('@/session/credentialRotation')
@@ -1705,8 +1706,12 @@ describe('deleteAccount (the transient walk)', () => {
     )
     // Nothing was probed or deleted remotely for it, but its local state goes.
     expect(state.calls).not.toContain(`probe:${PASSKEY_SPACE}`)
-    // Its browser-local state is the local wipe's to remove, past the pivot.
-    expect(state.calls).not.toContain(`deleteUnlockLocalState:${PASSKEY_SPACE}`)
+    // Its browser-local state is the local wipe's to remove, past the pivot:
+    // (b6) deletes the acting credential's local state alone.
+    expect(vi.mocked(deleteUnlockLocalState)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(deleteUnlockLocalState)).toHaveBeenCalledWith(
+      expect.objectContaining({ spaceId: ACTING_SPACE })
+    )
   })
 
   it("asserts against this session's own passkey credential id", async () => {
@@ -1972,12 +1977,11 @@ describe('deleteAccount (the (a2) refusals)', () => {
       registry: null,
       registryUnread: true
     })
-    const targets = vi.mocked(snapshotWipeTargets).mock.results[0]?.value as {
-      unlockSpaceIds: string[]
-    }
-    expect(targets.unlockSpaceIds).not.toContain(PASSKEY_SPACE)
-    expect(vi.mocked(deleteUnlockLocalState)).not.toHaveBeenCalledWith(
-      expect.objectContaining({ spaceId: PASSKEY_SPACE })
+    // (b6) deletes the acting credential's local state alone; the sibling's
+    // stands, since only the unread registry could have named it.
+    expect(vi.mocked(deleteUnlockLocalState)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(deleteUnlockLocalState)).toHaveBeenCalledWith(
+      expect.objectContaining({ spaceId: ACTING_SPACE })
     )
     expect(outcome.localWipeNarrowed).toBe(true)
     expect(outcome.result).toBe('deleted-unverified')
@@ -1993,6 +1997,10 @@ describe('deleteAccount (the (a2) refusals)', () => {
       passphrase: PASSPHRASE
     })
     expect(vi.mocked(invalidateVerifiedLog)).toHaveBeenCalled()
+    const [invalidate] = vi.mocked(invalidateVerifiedLog).mock
+      .invocationCallOrder
+    const [read] = vi.mocked(verifiedAccountLog).mock.invocationCallOrder
+    expect(invalidate).toBeLessThan(read!)
   })
 
   it('refuses a wrong passphrase without touching any data', async () => {
@@ -2103,7 +2111,9 @@ describe('deleteAccount (the visit authority and the enumeration)', () => {
     })
     expect(outcome.result).toBe('deleted')
     expect(outcome.spaces.filter(space => space.kind === 'annex')).toEqual([])
-    expect(state.calls).not.toContain('spaceDelete:annex-alien')
+    expect(
+      state.calls.filter(call => call.startsWith('spaceDelete:annex-alien'))
+    ).toEqual([])
   })
 
   it('takes the annex id from the sibling delegation the deployment addresses', async () => {
@@ -2218,7 +2228,7 @@ describe('deleteAccount (the pre-pivot local state)', () => {
     })
     expect(outcome.result).toBe('refused')
     expect(state.calls).toContain('deleteUnlockMethodSpace:passkey')
-    expect(state.calls).not.toContain(`deleteUnlockLocalState:${PASSKEY_SPACE}`)
+    expect(vi.mocked(deleteUnlockLocalState)).not.toHaveBeenCalled()
     expect(state.calls).not.toContain('executeLocalWipe')
   })
 })
@@ -2352,7 +2362,7 @@ describe('deleteAccount (an unpromoted account)', () => {
     expect(state.calls).not.toContain('wipeRemoteStorage')
   })
 
-  it('never reaches (b6) when (b5) was skipped', async () => {
+  it('leaves the acting unlock Space on the server when (b5) was skipped', async () => {
     const outcome = await deleteAccount({
       session: makeSession({ noSpace: true }),
       passphrase: PASSPHRASE
@@ -3905,7 +3915,7 @@ describe('addAccountPasskey', () => {
     )
   })
 
-  it('rejects when the establishment rejects, with no plain bind anywhere', async () => {
+  it('rejects when the establishment rejects', async () => {
     state.registry = registryWithConcurrentEntry()
     state.standingEstablished = false
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})

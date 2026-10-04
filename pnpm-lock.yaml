@@ -249,6 +249,9 @@ importers:
       vitest:
         specifier: ^4.1.10
         version: 4.1.11(@types/node@26.6.3)(jsdom@30.1.1(@noble/hashes@2.4.0))(vite@8.3.1(@types/node@26.6.3)(yaml@2.9.1))
+      was-teaching-server:
+        specifier: link:../was-teaching-server
+        version: link:../was-teaching-server
 
 packages:
 

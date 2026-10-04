@@ -30,6 +30,7 @@ import {
   EDV_SCHEME_VERSION
 } from '@interop/was-client/edv/core'
 import type { RecipientPublicKey } from '@interop/was-client/edv/core'
+import { cidFrom } from '@interop/was-client/sync'
 import {
   collectBytes,
   fileNameFor,
@@ -335,10 +336,15 @@ describe('migrateContent', () => {
 
   it('brings every archived Create activity across on the re-run after an abort', async () => {
     const session = await memorySession()
+    const first = credentialResource('first')
+    const second = credentialResource('second')
+    // The archived Create activities name the archived credentials' own
+    // content cids, so the aborted run's credential writes are the very
+    // credentials a drop rule would have to ignore.
     const { bundle, secret } = await makeBundle([
       {
         collectionId: PRIVATE_CREDENTIALS_COLLECTION,
-        resources: [credentialResource('first'), credentialResource('second')]
+        resources: [first, second]
       },
       {
         collectionId: WALLET_ACTIVITY_COLLECTION,
@@ -346,12 +352,12 @@ describe('migrateContent', () => {
           credentialActivityResource({
             id: 'act-1',
             type: 'Create',
-            cid: 'cid-1'
+            cid: await cidFrom({ doc: first })
           }),
           credentialActivityResource({
             id: 'act-2',
             type: 'Create',
-            cid: 'cid-2'
+            cid: await cidFrom({ doc: second })
           })
         ]
       }

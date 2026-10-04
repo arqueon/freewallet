@@ -281,12 +281,17 @@ describe('runEncounter', () => {
 
   it('hands the converger the session', async () => {
     const session = sessionOf()
+    // Captured and asserted after the run: an assertion thrown inside the
+    // converger would be swallowed by the runner as a failed run.
+    let handed: { session: Session } | undefined
     const registration = registrationOf(async deps => {
-      expect(deps).toEqual({ session })
+      handed = deps
       return [{ invariant: INVARIANT, outcome: 'noop' }]
     })
     await runEncounter({ session, registration })
     expect(registration.converge).toHaveBeenCalledTimes(1)
+    expect(handed).toEqual({ session })
+    expect(handed?.session).toBe(session)
   })
 
   it('writes nothing once the session is disposed while it waits at the gate', async () => {

@@ -469,9 +469,40 @@ describe('unlock derivation', () => {
   })
 
   it('is passphrase-sensitive (different passphrase -> different Space)', async () => {
-    const first = await unlockFor('passphrase one')
-    const second = await unlockFor('passphrase two')
-    expect(second.spaceId).not.toBe(first.spaceId)
+    const idb = createFakeIdb()
+    await bindPassphrase({
+      clientSeed: randomSeed(),
+      controller: DATA_CONTROLLER,
+      passphrase: 'passphrase one',
+      idb,
+      kdf: KDF
+    })
+    const boundSpaceId = vi.mocked(ensureUnlockSpace).mock.calls[0][0].spaceId
+    expect([...wasState.spaces.keys()]).toEqual([boundSpaceId])
+
+    // A different passphrase addresses a different unlock Space, which holds
+    // no record, so the fetch misses rather than opening the bound one.
+    const miss = await fetchKeyring({
+      accountLogPinStore: logPins,
+      secret: 'passphrase two',
+      idb,
+      kdf: KDF
+    })
+    expect(miss).toBeNull()
+    const probed = vi
+      .mocked(getUnlockKeyring)
+      .mock.calls.map(([options]) => options.spaceId)
+    expect(probed.length).toBeGreaterThan(0)
+    expect(probed).not.toContain(boundSpaceId)
+
+    // The bound passphrase still finds its record.
+    const hit = await fetchKeyring({
+      accountLogPinStore: logPins,
+      secret: 'passphrase one',
+      idb,
+      kdf: KDF
+    })
+    expect(hit!.controller).toBe(DATA_CONTROLLER)
   })
 })
 

@@ -45,7 +45,11 @@ const account = vi.hoisted(() => ({
     webAuthnUserId: string
     methods: unknown[]
   },
-  registryCapabilities: [] as (unknown | undefined)[],
+  /**
+   * every registry write's arguments as the ceremony passed them: the
+   * session object, and whether an explicit capability override was given
+   */
+  registryCalls: [] as { session: unknown; capabilityOverride: boolean }[],
   spaceDeletions: [] as unknown[],
   projections: 0,
   /** every did:web projection body PUT through the supplied store */
@@ -223,17 +227,20 @@ vi.mock('@/session/unlockMethods', async importOriginal => ({
   ...(await importOriginal<typeof import('@/session/unlockMethods')>()),
   getUnlockMethods: vi.fn(async () => account.registry),
   updateUnlockMethods: vi.fn(
-    async ({
-      mutate,
-      session
-    }: {
+    async (options: {
       mutate: (current: never) => never | null | Promise<never | null>
-      session: { profile: { invocationCapability?: unknown } }
+      session: unknown
+      capability?: unknown
     }) => {
-      // The registry entry resolves the visit's authority itself, off the
-      // live profile stamp, so what is recorded is the stamp the write was
-      // made under rather than a threaded argument.
-      account.registryCapabilities.push(session.profile.invocationCapability)
+      // The real `updateUnlockMethods` resolves the visit's authority itself
+      // off the live session at each request (`registryRides`, covered in
+      // registryDelegation.test.ts), so what the ceremony decides is which
+      // session it hands over and whether it overrides that resolution.
+      const { mutate, session } = options
+      account.registryCalls.push({
+        session,
+        capabilityOverride: 'capability' in options
+      })
       account.trace.push('registry')
       const next = await mutate(account.registry as never)
       if (next !== null) {
@@ -375,7 +382,7 @@ beforeEach(() => {
   account.failAt = null
   account.ladderVmClaimable = true
   account.registry = null
-  account.registryCapabilities.length = 0
+  account.registryCalls.length = 0
   account.spaceDeletions.length = 0
   account.projections = 0
   account.projectionPuts.length = 0
@@ -493,24 +500,30 @@ describe('recovery-code issuance on the ladder branch', () => {
     expect(entry.updateKeyMultibase).toBe(client.updateKeyMultibase)
   })
 
-  it('rides the generation delegation for the registry write, and nothing on the enrolled kind', async () => {
+  it('writes the registry entry under the live session, with no capability override, on both kinds', async () => {
+    const ladderSession = sessionFixture()
     await issueRecoveryCode({
-      session: sessionFixture(),
+      session: ladderSession,
       code: generateRecoveryCode(),
       label: 'One'
     })
-    expect(account.registryCapabilities).toEqual([GENERATION_DELEGATION])
+    expect(account.registryCalls).toHaveLength(1)
+    expect(account.registryCalls[0]!.session).toBe(ladderSession)
+    expect(account.registryCalls[0]!.capabilityOverride).toBe(false)
 
     contextKind = 'enrolled'
     account.published.clear()
     account.escrowed.clear()
-    account.registryCapabilities.length = 0
+    account.registryCalls.length = 0
+    const enrolledSession = sessionFixture()
     await issueRecoveryCode({
-      session: sessionFixture(),
+      session: enrolledSession,
       code: generateRecoveryCode(),
       label: 'Two'
     })
-    expect(account.registryCapabilities).toEqual([undefined])
+    expect(account.registryCalls).toHaveLength(1)
+    expect(account.registryCalls[0]!.session).toBe(enrolledSession)
+    expect(account.registryCalls[0]!.capabilityOverride).toBe(false)
   })
 })
 
@@ -532,7 +545,7 @@ describe('recovery-code revocation on the ladder branch', () => {
       label: 'One'
     })
     account.trace.length = 0
-    account.registryCapabilities.length = 0
+    account.registryCalls.length = 0
     return { session, entry }
   }
 
@@ -580,13 +593,17 @@ describe('recovery-code revocation on the ladder branch', () => {
     await revokeRecoveryCode({ session, entry })
     expect(account.spaceDeletions).toEqual([undefined])
     expect(account.projections).toBe(0)
-    expect(account.registryCapabilities).toEqual([undefined])
+    expect(account.registryCalls).toHaveLength(1)
+    expect(account.registryCalls[0]!.session).toBe(session)
+    expect(account.registryCalls[0]!.capabilityOverride).toBe(false)
   })
 
-  it('rides the generation delegation for the registry drop', async () => {
+  it('drops the registry entry under the live session, with no capability override', async () => {
     const { session, entry } = await issued()
     await revokeRecoveryCode({ session, entry })
-    expect(account.registryCapabilities).toEqual([GENERATION_DELEGATION])
+    expect(account.registryCalls).toHaveLength(1)
+    expect(account.registryCalls[0]!.session).toBe(session)
+    expect(account.registryCalls[0]!.capabilityOverride).toBe(false)
   })
 })
 

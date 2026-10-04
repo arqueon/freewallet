@@ -27,8 +27,8 @@ const state = vi.hoisted(() => ({
   /** the account's unlock-methods registry, or a read that throws */
   registry: null as unknown,
   registryFails: false,
-  /** every capability the registry read rode, in order */
-  registryCapabilities: [] as unknown[],
+  /** the session each registry read was handed, in order */
+  registrySessions: [] as unknown[],
   /** whether the pre-pivot detector refuses */
   pendingEntry: false,
   /**
@@ -50,12 +50,24 @@ const state = vi.hoisted(() => ({
   invocationCapability: null as unknown,
   /** whether the renewal swaps that capability, as a real renewal does */
   renewSwaps: false,
-  /** every capability the adoption stages rode, in order */
-  adoptedCapabilities: [] as unknown[],
-  /** the arguments the did:web projection store was built with */
-  projectionStoreArgs: null as unknown,
+  /**
+   * every capability the real adoptions' registry re-seal rode, as it
+   * reached the re-wrap seam, in order
+   */
+  resealCapabilities: [] as unknown[],
+  /** the session each adoption stage was handed, in order */
+  adoptedSessions: [] as unknown[],
   /** every body PUT through that store, in order */
   projectionPuts: [] as unknown[]
+}))
+
+type UnlockMethodsModule = typeof import('@/session/unlockMethods')
+
+/**
+ * The real unlock-methods module, loaded after the mocks are in place.
+ */
+const actualUnlockMethods = vi.hoisted(() => ({
+  module: undefined as UnlockMethodsModule | undefined
 }))
 
 vi.mock('@/app.config', async importOriginal => ({
@@ -77,33 +89,32 @@ vi.mock('@interop/wallet-core/keys', async importOriginal => ({
   }))
 }))
 
-vi.mock('@/session/unlockMethods', async () => ({
-  // The real helper: the latent-hash hand-off reads it.
+vi.mock('@/session/unlockMethods', () => ({
+  // The real helper: the latent-hash hand-off reads it. Bound lazily, since
+  // loading the real module inside this factory would hand the real
+  // adoptions below the real re-wrap rather than this mock's.
   latentUpdateKeyMultibasesOf: (
-    await vi.importActual<typeof import('@/session/unlockMethods')>(
-      '@/session/unlockMethods'
-    )
-  ).latentUpdateKeyMultibasesOf,
-  // The registry entries resolve the visit's authority themselves, off the
-  // live profile stamp, so what is recorded here is the stamp the read was
-  // made under rather than an argument the caller threaded.
-  getUnlockMethods: vi.fn(
-    async ({
-      session
-    }: {
-      session: { profile: { invocationCapability?: unknown } }
-    }) => {
-      state.calls.push('getUnlockMethods')
-      state.registryCapabilities.push(session.profile.invocationCapability)
-      if (state.registryFails) {
-        throw new Error('registry unreadable')
-      }
-      return state.registry
+    options: Parameters<UnlockMethodsModule['latentUpdateKeyMultibasesOf']>[0]
+  ) => actualUnlockMethods.module!.latentUpdateKeyMultibasesOf(options),
+  // The real read resolves the visit's authority itself, off the session it
+  // is handed (`registryRides`, covered in registryDelegation.test.ts), so
+  // what is recorded here is the session the branch handed over.
+  getUnlockMethods: vi.fn(async ({ session }: { session: unknown }) => {
+    state.calls.push('getUnlockMethods')
+    state.registrySessions.push(session)
+    if (state.registryFails) {
+      throw new Error('registry unreadable')
     }
-  ),
-  rewrapUnlockMethodsRecord: vi.fn(async () => {
-    state.calls.push('rewrapUnlockMethodsRecord')
-  })
+    return state.registry
+  }),
+  // The seam under the real adoptions' re-seal: it records the capability
+  // the adoption resolved off the live session when it ran.
+  rewrapUnlockMethodsRecord: vi.fn(
+    async (options: { capability?: unknown }) => {
+      state.calls.push('rewrapUnlockMethodsRecord')
+      state.resealCapabilities.push(options.capability)
+    }
+  )
 }))
 
 vi.mock('@/session/forget', async importOriginal => {
@@ -160,9 +171,8 @@ vi.mock('@/session/annexReach', async importOriginal => ({
     }
     return { delegation: fresh }
   }),
-  didWebProjectionStore: vi.fn((args: unknown) => {
+  didWebProjectionStore: vi.fn(() => {
     state.calls.push('didWebProjectionStore')
-    state.projectionStoreArgs = args
     return {
       getIdResourceRaw: vi.fn(async () => undefined),
       putIdResource: vi.fn(async ({ content }: { content: string }) => {
@@ -173,38 +183,28 @@ vi.mock('@/session/annexReach', async importOriginal => ({
   })
 }))
 
-vi.mock('@/session/userKeyAdoption', () => {
-  const withOwnUserKeyRotation = vi.fn(
-    async ({ run }: { run: () => Promise<unknown> }) => await run()
-  )
+vi.mock('@/session/userKeyAdoption', async importOriginal => {
+  const actual =
+    await importOriginal<typeof import('@/session/userKeyAdoption')>()
+  // The real adoptions, wrapped only to trace when each ran and which session
+  // it was handed. Each resolves the visit's authority off that session at
+  // its own re-seal, which reaches the re-wrap seam above.
   return {
-    withOwnUserKeyRotation,
-    heldAsOwnUserKeyRotation:
-      (body: (options: { session: unknown }) => Promise<unknown>) =>
-      async (options: { session: unknown }) =>
-        await withOwnUserKeyRotation({
-          run: () => body(options)
-        }),
-    // Both adoptions resolve the visit's authority off the live profile stamp,
-    // so the recorded value is that stamp at the moment each ran.
+    ...actual,
     adoptRotatedUserKey: vi.fn(
-      async ({
-        session
-      }: {
-        session: { profile: { invocationCapability?: unknown } }
-      }) => {
+      async (options: Parameters<typeof actual.adoptRotatedUserKey>[0]) => {
         state.calls.push('adoptRotatedUserKey')
-        state.adoptedCapabilities.push(session.profile.invocationCapability)
+        state.adoptedSessions.push(options.session)
+        await actual.adoptRotatedUserKey(options)
       }
     ),
     adoptRotatedUserKeyInBand: vi.fn(
-      async ({
-        session
-      }: {
-        session: { profile: { invocationCapability?: unknown } }
-      }) => {
+      async (
+        options: Parameters<typeof actual.adoptRotatedUserKeyInBand>[0]
+      ) => {
         state.calls.push('adoptRotatedUserKeyInBand')
-        state.adoptedCapabilities.push(session.profile.invocationCapability)
+        state.adoptedSessions.push(options.session)
+        await actual.adoptRotatedUserKeyInBand(options)
       }
     )
   }
@@ -236,13 +236,22 @@ import {
   GenerationDelegationRenewalError,
   tryRenewTransientGenerationDelegation
 } from '@/session/annexReach'
+import { accountCeremonyContext } from '@/session/accountCeremonyContext'
 import { assertNoPendingPassphraseEntry } from '@/session/forget'
+import {
+  adoptRotatedUserKey,
+  adoptRotatedUserKeyInBand
+} from '@/session/userKeyAdoption'
 import { reprimeVerifiedAccountLog } from '@/session/verifiedLog'
 import {
   revokeEnrolledClient,
   type RevokedClientKeys
 } from '@/session/revocation'
 import type { Session } from '@/types/auth'
+
+actualUnlockMethods.module = await vi.importActual<UnlockMethodsModule>(
+  '@/session/unlockMethods'
+)
 
 const POINTER = {
   did: 'did:webvh:QmScidForTests:was.example.test:space:space-123:id',
@@ -396,6 +405,7 @@ function transientSession(): Session {
     storage: {
       remoteStore: { webvhIdStore: vi.fn(() => ({ isWebvhIdStore: true })) },
       adoptRotatedVaultKeys: vi.fn(async () => {}),
+      holdRotatedVaultKeys: vi.fn(),
       addHistoryClientRevoked: vi.fn(async () => {
         state.calls.push('addHistoryClientRevoked')
       })
@@ -469,13 +479,13 @@ beforeEach(() => {
   state.calls = []
   state.registry = null
   state.registryFails = false
-  state.registryCapabilities = []
+  state.registrySessions = []
   state.pendingEntry = false
   state.renewInstalls = 'fresh'
   state.renewSwaps = false
   state.invocationCapability = GENERATION_DELEGATION
-  state.adoptedCapabilities = []
-  state.projectionStoreArgs = null
+  state.resealCapabilities = []
+  state.adoptedSessions = []
   state.projectionPuts = []
   vi.clearAllMocks()
   vi.mocked(revokeAccountClient).mockImplementation(orchestratorDriving())
@@ -502,7 +512,10 @@ describe('the pre-pivot stage order', () => {
       'didWebProjectionStore',
       'putDidWebProjection',
       'revokeAccountClient',
+      // The in-band adoption re-seals the registry; the post-ceremony one
+      // finds the session already on the rotated key and re-seals nothing.
       'adoptRotatedUserKeyInBand',
+      'rewrapUnlockMethodsRecord',
       'adoptRotatedUserKey',
       'reprimeVerifiedAccountLog',
       'addHistoryClientRevoked'
@@ -523,12 +536,17 @@ describe('the pre-pivot stage order', () => {
     )
   })
 
-  it('rides the generation delegation on the registry read', async () => {
-    await revokeEnrolledClient({
-      session: transientSession(),
-      client: REVOKED
-    })
-    expect(state.registryCapabilities).toEqual([GENERATION_DELEGATION])
+  it('reads the registry once, under the live session, before the renewal', async () => {
+    const session = transientSession()
+    await revokeEnrolledClient({ session, client: REVOKED })
+    // The read resolves its capability off the session it is handed, so it
+    // must be handed the live session itself, and run while the visit still
+    // rides the delegation it arrived on.
+    expect(state.registrySessions).toHaveLength(1)
+    expect(state.registrySessions[0]).toBe(session)
+    expect(state.calls.indexOf('getUnlockMethods')).toBeLessThan(
+      state.calls.indexOf('tryRenewTransientGenerationDelegation')
+    )
   })
 
   it.each(['no-pointer', 'no-ladder-seed'] as const)(
@@ -739,34 +757,28 @@ describe('the options the ladder branch hands over, and the ones it withholds', 
 })
 
 describe('the post-entry stages', () => {
-  it('publishes the did:web projection before the removal entry', async () => {
+  it("hands the context's projection store to the removal entry, then re-primes the log", async () => {
     const session = transientSession()
     await revokeEnrolledClient({ session, client: REVOKED })
 
-    // The store: the account Space's `id` collection, reached under whatever
-    // capability the visit holds when the PUT runs -- the renewal above may
-    // have replaced the one the context resolved on.
-    expect(vi.mocked(didWebProjectionStore)).toHaveBeenCalledWith(
-      expect.objectContaining({
-        host: POINTER.host,
-        spaceId: POINTER.spaceId,
-        invoker: expect.any(Function)
-      })
-    )
-    const { invoker } = state.projectionStoreArgs as {
-      invoker: () => { capability?: unknown }
-    }
-    expect(invoker().capability).toBe(state.invocationCapability)
-    // The body reaches the store before the entry, and no longer names the
-    // struck client's verification method.
+    // The store the cascade PUTs the post-removal projection through is the
+    // context's own, which resolves the visit's capability at each PUT. When
+    // the PUT lands relative to the entry is wallet-core's, reproduced by the
+    // stand-in orchestrator.
+    const context = (await vi.mocked(accountCeremonyContext).mock.results[0]!
+      .value) as { projectionStore: unknown }
+    const options = vi.mocked(revokeAccountClient).mock.calls[0]![0]
+    expect(options.projectionStore).toBe(context.projectionStore)
     expect(state.projectionPuts).toEqual([POST_STRIKE_WEB_DOC])
-    expect(state.calls.indexOf('putDidWebProjection')).toBeLessThan(
-      state.calls.indexOf('revokeAccountClient')
-    )
+    // The memo is re-settled once the cascade has published its entry.
+    expect(vi.mocked(reprimeVerifiedAccountLog)).toHaveBeenCalledOnce()
     expect(vi.mocked(reprimeVerifiedAccountLog)).toHaveBeenCalledWith({
       session,
       pointer: POINTER
     })
+    expect(state.calls.indexOf('reprimeVerifiedAccountLog')).toBeGreaterThan(
+      state.calls.indexOf('revokeAccountClient')
+    )
   })
 
   it('records the audit history with the per-collection tallies', async () => {
@@ -791,44 +803,44 @@ describe('the delegation the post-pivot stages ride', () => {
    * convergence append, the fan-out, the in-band re-seal, the projection PUT
    * and the registry write would all be refused.
    */
-  it('rides the renewed delegation, not the one the context resolved on', async () => {
+  it('re-seals the registry under the renewed delegation, past the renewal', async () => {
     state.renewSwaps = true
     state.registry = registryWithSiblings()
+    const session = transientSession()
 
-    await revokeEnrolledClient({
-      session: transientSession(),
-      client: REVOKED
-    })
+    await revokeEnrolledClient({ session, client: REVOKED })
 
-    const fresh = { id: 'urn:zcap:generation-fresh' }
-    // The in-band re-seal and the re-seal retry, both past the pivot.
-    expect(state.adoptedCapabilities).toEqual([fresh, fresh])
-    // The projection store resolves its capability at each use, so the PUT
-    // rides the replacement rather than the one the context resolved on.
-    const { invoker } = state.projectionStoreArgs as {
-      invoker: () => { capability?: unknown }
-    }
-    expect(invoker().capability).toEqual(fresh)
-    // The pre-pivot registry read still rode the delegation the visit
-    // arrived on: the renewal had not run yet.
-    expect(state.registryCapabilities).toEqual([GENERATION_DELEGATION])
+    // Both adoptions run after the renewal, on the live session, so the real
+    // in-band re-seal reads the replacement off it. The post-ceremony
+    // adoption finds the session already on the rotated key.
+    const renewedAt = state.calls.indexOf(
+      'tryRenewTransientGenerationDelegation'
+    )
+    expect(state.calls.indexOf('adoptRotatedUserKeyInBand')).toBeGreaterThan(
+      renewedAt
+    )
+    expect(state.calls.indexOf('adoptRotatedUserKey')).toBeGreaterThan(
+      renewedAt
+    )
+    expect(state.adoptedSessions).toHaveLength(2)
+    expect(state.adoptedSessions[0]).toBe(session)
+    expect(state.adoptedSessions[1]).toBe(session)
+    expect(state.resealCapabilities).toEqual([
+      { id: 'urn:zcap:generation-fresh' }
+    ])
   })
 
-  it('keeps riding the standing delegation when no renewal was needed', async () => {
+  it('re-seals under the standing delegation when the policy left it standing', async () => {
+    state.renewInstalls = 'healthy'
     state.registry = registryWithSiblings()
+    const session = transientSession()
 
-    await revokeEnrolledClient({
-      session: transientSession(),
-      client: REVOKED
-    })
+    await revokeEnrolledClient({ session, client: REVOKED })
 
-    expect(state.adoptedCapabilities).toEqual([
-      GENERATION_DELEGATION,
-      GENERATION_DELEGATION
-    ])
-    const { invoker } = state.projectionStoreArgs as {
-      invoker: () => { capability?: unknown }
-    }
-    expect(invoker().capability).toBe(GENERATION_DELEGATION)
+    expect(vi.mocked(adoptRotatedUserKeyInBand)).toHaveBeenCalledOnce()
+    expect(vi.mocked(adoptRotatedUserKey)).toHaveBeenCalledOnce()
+    expect(state.adoptedSessions[0]).toBe(session)
+    expect(state.adoptedSessions[1]).toBe(session)
+    expect(state.resealCapabilities).toEqual([GENERATION_DELEGATION])
   })
 })

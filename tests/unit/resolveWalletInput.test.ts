@@ -71,13 +71,9 @@ describe('resolveWalletInput', () => {
 
     const thrown = await resolveWalletInput(message).catch(err => err)
 
-    if (thrown instanceof WalletInputUnsupportedError) {
-      expect(thrown.code).toBe('unsupported')
-    } else {
-      // Classified as credentials (the fallback), which the resolver then
-      // refuses on its own terms -- either way the input never silently
-      // becomes a stored credential.
-      expect(thrown).toBeInstanceOf(Error)
-    }
+    // The dispatcher's unhandled-kind refusal arrives translated into this
+    // screen's own coded error.
+    expect(thrown).toBeInstanceOf(WalletInputUnsupportedError)
+    expect(thrown.code).toBe('unsupported')
   })
 })

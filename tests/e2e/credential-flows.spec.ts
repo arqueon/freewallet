@@ -45,6 +45,35 @@ const remoteCredential = {
  */
 const WELCOME_TITLE = 'Your First Credential'
 
+/**
+ * The welcome credential issuer's did:web document, where a did:web resolver
+ * fetches it, and a copy of the published document. Its one key is the
+ * welcome credential proof's verification method.
+ */
+const WELCOME_ISSUER_DID_URL =
+  'https://interopalliance.org/.well-known/did.json'
+const WELCOME_ISSUER_KEY = 'z6Mkk1sCE6ve9wFJzaYeWZhhmW5Mke37N8ahhbovdkofUuEs'
+const WELCOME_ISSUER_VM = `did:web:interopalliance.org#${WELCOME_ISSUER_KEY}`
+const WELCOME_ISSUER_DID_DOCUMENT = {
+  '@context': [
+    'https://www.w3.org/ns/did/v1',
+    'https://w3id.org/security/multikey/v1'
+  ],
+  id: 'did:web:interopalliance.org',
+  verificationMethod: [
+    {
+      type: 'Multikey',
+      publicKeyMultibase: WELCOME_ISSUER_KEY,
+      id: WELCOME_ISSUER_VM,
+      controller: 'did:web:interopalliance.org'
+    }
+  ],
+  authentication: [WELCOME_ISSUER_VM],
+  assertionMethod: [WELCOME_ISSUER_VM],
+  capabilityDelegation: [WELCOME_ISSUER_VM],
+  capabilityInvocation: [WELCOME_ISSUER_VM]
+}
+
 const ADD_PLACEHOLDER = 'Paste a URL or full credential JSON.'
 
 /**
@@ -152,15 +181,32 @@ test.describe('Credential flows', () => {
   test('verify: opening a credential runs verification to a terminal state', async ({
     page
   }) => {
+    // The welcome credential's issuer is a did:web, which resolves over the
+    // network. Serve its DID document locally, so the signature check runs
+    // offline instead of failing on an unreachable issuer. Registered after
+    // the beforeEach block, so this route takes precedence over it.
+    await page.route(WELCOME_ISSUER_DID_URL, route =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(WELCOME_ISSUER_DID_DOCUMENT)
+      })
+    )
     await page.getByText(WELCOME_TITLE).click()
     await expect(page).toHaveURL(/#\/credential\//)
 
-    // Verification runs automatically on the detail page. With the network
-    // blocked it always reaches a terminal summary; assert that any terminal
-    // outcome is reached rather than a specific (network-dependent) status.
+    // Verification runs automatically on the detail page. With the rest of
+    // the network blocked it always reaches a terminal summary; assert that
+    // one of the passing outcomes (ok, warning, or expired) is reached
+    // rather than a specific (network-dependent) one. The pattern is
+    // anchored, since the failure summary ("... was not verified
+    // successfully.") contains the ok summary's wording.
     const summary = page.getByText(
-      /verified successfully|verification warnings|cryptographic proof is still valid/
+      /^This credential (was verified successfully|has verification warnings|has expired but its cryptographic proof is still valid)\.$/
     )
     await expect(summary).toBeVisible({ timeout: 20000 })
+    await expect(
+      page.getByText('This credential was not verified successfully.')
+    ).toHaveCount(0)
   })
 })

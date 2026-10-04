@@ -292,22 +292,30 @@ describe('StorageManager.importContactRevision', () => {
     ).toHaveLength(1)
   })
 
-  it('reports a failed write and keeps the archived row out', async () => {
+  it('reports a failed write and leaves the revision out of the snapshot, so a retry accepts it', async () => {
     const { storage } = await memoryStorageManager()
     const held = await storage.snapshotHeldContent()
-    vi.spyOn(BrowserStore.prototype, 'addContactRevision').mockRejectedValue(
-      new Error('the write did not land')
+    const revision = revisionResource({
+      contactId: 'contact-1',
+      displayName: 'Ada'
+    })
+    const write = vi
+      .spyOn(BrowserStore.prototype, 'addContactRevision')
+      .mockRejectedValue(new Error('the write did not land'))
+
+    expect(await storage.importContactRevision({ revision, held })).toBe(
+      'failed'
     )
 
+    // The same run's snapshot does not count the failed revision as held, so
+    // the retry writes it rather than skipping it.
+    write.mockRestore()
+    expect(await storage.importContactRevision({ revision, held })).toBe(
+      'accepted'
+    )
     expect(
-      await storage.importContactRevision({
-        held,
-        revision: revisionResource({
-          contactId: 'contact-1',
-          displayName: 'Ada'
-        })
-      })
-    ).toBe('failed')
+      await storage.listContactRevisions({ contactId: 'contact-1' })
+    ).toHaveLength(1)
   })
 
   it('propagates a QuotaExceededError so the walk stops', async () => {

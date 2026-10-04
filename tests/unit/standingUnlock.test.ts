@@ -9,8 +9,8 @@
  * retirement. The annex-generation establishment
  * (`establishClientAnnexGeneration`) is covered for its adoption of the
  * shared stage-3 fold: the pointer entry signs with this enrolled client's
- * own update keys, and a generation the fold just minted skips the separate
- * delegation renewal.
+ * own update keys, a generation the fold just minted skips the separate
+ * delegation renewal, and an already-pointed generation runs it.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -228,7 +228,11 @@ describe('establishStandingUnlock', () => {
 })
 
 describe('establishClientAnnexGeneration', () => {
-  it('adopts the shared fold under this client and skips the renewal on a fresh mint', async () => {
+  /**
+   * A standing credential's keyring hit and the annex reach the
+   * establishment resolves.
+   */
+  function stubStandingCredential() {
     vi.mocked(fetchKeyring).mockResolvedValue({
       unlockSpaceId: 'space-cred',
       standing: {
@@ -244,6 +248,10 @@ describe('establishClientAnnexGeneration', () => {
     vi.mocked(clientAnnexReachOf).mockReturnValue({
       spaceId: 'space-annex'
     } as never)
+  }
+
+  it('adopts the shared fold under this client and skips the renewal on a fresh mint', async () => {
+    stubStandingCredential()
 
     await establishClientAnnexGeneration({
       session: makeSession(),
@@ -275,6 +283,40 @@ describe('establishClientAnnexGeneration', () => {
     )
     expect(clientAnnexReachOf).toHaveBeenCalledWith(
       expect.objectContaining({ clientAnnexDid: ANNEX_DID })
+    )
+  })
+
+  it('renews the delegation on an already-pointed generation', async () => {
+    stubStandingCredential()
+    vi.mocked(ensurePointedClientAnnexGeneration).mockResolvedValueOnce({
+      clientAnnexDid: ANNEX_DID,
+      generationDelegation: { id: 'urn:zcap:generation' },
+      generationMinted: false,
+      spaceMinted: false
+    } as never)
+
+    await establishClientAnnexGeneration({
+      session: makeSession(),
+      secret: 'pass',
+      kdf: KEYRING_KDF
+    })
+
+    // The shared stage reused the pointed generation, so its embedded
+    // delegation is installed or renewed on the annex reach, under the
+    // credential's ladder.
+    expect(ensureGenerationDelegation).toHaveBeenCalledOnce()
+    expect(ensureGenerationDelegation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pointer: POINTER,
+        reach: { spaceId: 'space-annex' },
+        ladderSeed: new Uint8Array(32).fill(3)
+      })
+    )
+    // The renewal precedes the sibling delegation's mint.
+    expect(
+      vi.mocked(ensureGenerationDelegation).mock.invocationCallOrder[0]!
+    ).toBeLessThan(
+      vi.mocked(mintDelegatedClientsDelegation).mock.invocationCallOrder[0]!
     )
   })
 })

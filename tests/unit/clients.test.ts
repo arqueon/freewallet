@@ -18,6 +18,27 @@ const REVOKED_KEYS = {
   updateKeyMultibase: 'z6MkRevokedUpdate'
 }
 
+const ACCOUNT_DID = 'did:webvh:QmScid:was.example:space:s:id'
+
+/**
+ * A one-entry verified account log whose document lists the revoked client
+ * and a second one as enrolled clients, for the real listing to read.
+ */
+const ACCOUNT_LOG = [
+  {
+    versionId: '1-QmEntry',
+    versionTime: '2026-01-01T00:00:00Z',
+    parameters: {},
+    state: {
+      id: ACCOUNT_DID,
+      capabilityInvocation: [
+        `${ACCOUNT_DID}#${REVOKED_KEYS.signingKeyMultibase}`,
+        `${ACCOUNT_DID}#z6MkSecond`
+      ]
+    }
+  }
+]
+
 const MENDED = [
   {
     invariant: 'generation-delegation-is-current',
@@ -43,33 +64,6 @@ vi.mock('@interop/wallet-core/clients', async importOriginal => ({
   // rows, so the directory may create an entry for any of them.
   currentAccountSigningKeys: vi.fn(
     async () => new Set([REVOKED_KEYS.signingKeyMultibase, 'z6MkSecond'])
-  ),
-  // The shared listing over the verified log, reduced to the join under
-  // test: two document clients, named from the directory's entries.
-  listAccountClients: vi.fn(
-    async ({
-      readDirectoryEntries
-    }: {
-      readDirectoryEntries: () => Promise<
-        ReadonlyArray<{ kind: string; id?: string; label?: string }>
-      >
-    }) => {
-      const entries = await readDirectoryEntries()
-      return [REVOKED_KEYS.signingKeyMultibase, 'z6MkSecond'].map(
-        signingKeyMultibase => {
-          const entry = entries.find(
-            item =>
-              item.kind === 'wallet-client' &&
-              item.id === `did:key:${signingKeyMultibase}`
-          )
-          return {
-            signingKeyMultibase,
-            ...(entry?.label !== undefined && { label: entry.label }),
-            isCurrent: false
-          }
-        }
-      )
-    }
   )
 }))
 
@@ -91,7 +85,10 @@ vi.mock('@/session/accountCeremonyContext', () => ({
 }))
 
 vi.mock('@/session/verifiedLog', () => ({
-  verifiedAccountLog: vi.fn(async () => ({ doc: {} }))
+  verifiedAccountLog: vi.fn(async () => ({
+    doc: ACCOUNT_LOG[0]!.state,
+    log: ACCOUNT_LOG
+  }))
 }))
 
 vi.mock('@/session/revocation', () => ({

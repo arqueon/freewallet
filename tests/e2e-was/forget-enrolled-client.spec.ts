@@ -102,6 +102,12 @@ test.describe('The ordinary forget ceremony', () => {
         timeout: 30_000
       })
       await second.page.getByTestId('forget-this-browser-button').click()
+      // The confirm dialog is mounted with the ordinary forget copy, so the
+      // absence of the transition copy below is read off a rendered dialog.
+      const forgetDialog = second.page.getByRole('dialog')
+      await expect(
+        forgetDialog.getByRole('heading', { name: 'Forget this browser?' })
+      ).toBeVisible()
       await expect(
         second.page.getByTestId('forget-last-client-copy')
       ).toHaveCount(0)

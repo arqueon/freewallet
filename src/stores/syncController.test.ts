@@ -7,6 +7,7 @@
  * and which reachability signal the poll tick reads.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { addSink, captureSink } from '@interop/logger'
 import type { SyncStatus } from '@interop/was-client/sync'
 import type { Session } from '@/types/auth'
 
@@ -196,11 +197,25 @@ describe('sync binding: the port handed to the core', () => {
 
 describe('sync binding: start failure and teardown', () => {
   it('logs a failed start rather than rejecting (the login path is fire-and-forget)', async () => {
-    cores.startRejection = new Error('bring-up failed')
+    const startRejection = new Error('bring-up failed')
+    cores.startRejection = startRejection
 
-    await expect(
-      syncController.restart({ session: fakeSession() })
-    ).resolves.toBeUndefined()
+    const capture = captureSink()
+    const removeSink = addSink(capture.sink)
+    try {
+      await expect(
+        syncController.restart({ session: fakeSession() })
+      ).resolves.toBeUndefined()
+    } finally {
+      removeSink()
+    }
+
+    const failure = capture.events.find(
+      event => event.msg === 'Failed to start sync controller'
+    )
+    expect(failure?.ns).toBe('fw:sync:controller')
+    expect(failure?.level).toBe('error')
+    expect(failure?.err).toBe(startRejection)
   })
 
   it('resets the status store when replication stops', async () => {

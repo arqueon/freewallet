@@ -26,8 +26,10 @@ import {
   awaitLoginChain,
   coldTerminal,
   fillSettled,
+  sessionSpaceId,
   signupViaWizard
 } from './helpers'
+import { readAccountLogVersions } from './storedLogs'
 import {
   captureFrameLocalStorageKeys,
   expectNoFrameStorageResidue
@@ -454,6 +456,18 @@ test.describe.serial('the CHAPI popup on a transient session', () => {
       // races it, so the fixture waits; the wait stands in for the product
       // gap rather than closing it.
       await awaitLoginChain(page)
+      // The enrolled client's did:key, off the account document: its one
+      // `capabilityInvocation` key. A remembered session's App Connect
+      // response holds and signs as exactly this did:key.
+      const accountKeys = await readAccountLogVersions({
+        spaceId: await sessionSpaceId(page)
+      })
+      const latestKeys = accountKeys[accountKeys.length - 1]!
+      expect(
+        [...latestKeys.invocationKeys],
+        'the account document lists this browser as its one enrolled client'
+      ).toHaveLength(1)
+      const enrolledClientDid = `did:key:${[...latestKeys.invocationKeys][0]}`
 
       await withoutUnpartitionedStorageAccess({ page })
       const { frame, baseline } = await popupToConsent(page, {
@@ -465,8 +479,20 @@ test.describe.serial('the CHAPI popup on a transient session', () => {
 
       // It connected -- no refusal screen, on any engine -- and it answered
       // as a per-visit key rather than as the enrolled client standing on
-      // the same browser.
+      // the same browser: the holder and its signing method are a did:key
+      // the account document does not list at all.
       expect(response.data.holder).toMatch(/^did:key:z6Mk/)
+      expect(response.data.holder).not.toBe(enrolledClientDid)
+      expect(response.data.proof.verificationMethod).toMatch(
+        new RegExp(`^${response.data.holder}#`)
+      )
+      const holderKey = response.data.holder.slice('did:key:'.length)
+      for (const { versionId, assertionKeys, invocationKeys } of accountKeys) {
+        expect(
+          assertionKeys.has(holderKey) || invocationKeys.has(holderKey),
+          `account version ${versionId} does not list the holder key`
+        ).toBe(false)
+      }
       expect(response.data.appConnect.firstRun).toBe(true)
 
       // The enrolled client's own first-party database is untouched by any

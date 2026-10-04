@@ -20,7 +20,7 @@ vi.mock('./composeVP', async importOriginal => {
   const actual = await importOriginal<typeof import('./composeVP')>()
   return { ...actual, composeVP: vi.fn(actual.composeVP) }
 })
-import { requestingOriginOf } from './classify'
+import { attestedRequestOrigin } from './getRequest'
 import { composeVP } from './composeVP'
 import { processZcaps } from './processZcaps'
 
@@ -315,10 +315,12 @@ describe('processAppConnect', () => {
     ] as StoredAppKey[]
     const { session, added } = await fakeSession({ appKeys: stored })
 
+    // The raw value goes through the get popup's intake, the one place an
+    // origin is canonicalized; the match itself compares exact strings.
     const response = await processAppConnect({
       appConnect: { app: APP, capabilityQueries: [] },
       session,
-      origin: requestingOriginOf(`${ORIGIN}/`)!,
+      origin: attestedRequestOrigin(`${ORIGIN}/`),
       didAuthRequested: false
     })
 
@@ -396,10 +398,10 @@ describe('processAppConnect', () => {
   })
 
   it('never finds an app key left in the credential store', async () => {
-    // A key from before app keys got their own collection, in the shape the
-    // dropped re-issue path used to recover: same origin, no
-    // `credentialSubject.appUrl` claim, sitting among the ordinary
-    // credentials. The match path reads `app-connections` only, so it is
+    // A key sitting among the ordinary credentials rather than in
+    // `app-connections`, in the exact shape that would match this request:
+    // marker type, this `appUrl`, this origin, and a seed that binds its
+    // subject. The match path reads `app-connections` only, so it is
     // invisible -- the connect is a genuine first run under a fresh identity,
     // and the stranded Resource is the login-time sweep's business, not this
     // path's.
@@ -407,12 +409,9 @@ describe('processAppConnect', () => {
       app: APP,
       origin: ORIGIN
     })
-    const legacy = {
-      ...credential,
-      credentialSubject: { ...credential.credentialSubject }
-    } as typeof credential
-    delete (legacy.credentialSubject as { appUrl?: unknown }).appUrl
-    const stranded = [{ cid: 'cid-legacy', vc: legacy }] as StoredCredential[]
+    const stranded = [
+      { cid: 'cid-stranded', vc: credential }
+    ] as StoredCredential[]
     const { session, added, deleted } = await fakeSession({
       credentials: stranded
     })
@@ -425,16 +424,20 @@ describe('processAppConnect', () => {
     })
 
     expect(response.appConnect?.firstRun).toBe(true)
+    expect(response.appConnect?.subjectDid).toMatch(/^did:key:/)
     expect(response.appConnect?.subjectDid).not.toBe(subjectDid)
     // Minted through the mint store method, and nothing was deleted from the
     // credential store on this path.
     expect(added).toHaveLength(1)
+    expect(added[0]).not.toEqual({ credential })
     expect(deleted).toEqual([])
     const presentation = response.verifiablePresentation as {
       verifiableCredential?: Array<{
+        id?: string
         credentialSubject: { id: string; appUrl?: string }
       }>
     }
+    expect(presentation.verifiableCredential?.[0].id).not.toBe(credential.id)
     expect(presentation.verifiableCredential?.[0].credentialSubject).toEqual(
       expect.objectContaining({
         id: response.appConnect?.subjectDid,

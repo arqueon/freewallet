@@ -64,6 +64,18 @@ describe('completeAppLogin', () => {
     expect(checkRecoveryHealth).toHaveBeenCalledWith({ session })
     expect(navigate).toHaveBeenCalledWith('/dashboard', { replace: true })
     expect(showToast).not.toHaveBeenCalled()
+    // The sequence runs in order: the store adopts the session before the
+    // Login activity, the registration, the health check, and the navigation.
+    const callOrder = [
+      loginIntoStore,
+      vi.mocked(recordWalletLogin),
+      vi.mocked(registerWallet),
+      vi.mocked(checkRecoveryHealth),
+      navigate
+    ].map(mock => mock.mock.invocationCallOrder[0])
+    expect(callOrder).toEqual(
+      [...callOrder].sort((left, right) => left - right)
+    )
   })
 
   it('waits for storage provisioning before adopting the session', async () => {

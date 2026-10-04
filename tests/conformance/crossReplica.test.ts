@@ -24,15 +24,18 @@
  * Each replica is assembled from its app's REAL parts wherever the part is on
  * the compatibility surface: the engine, the port (`createWasSyncPort`), the
  * EDV cipher (`createEdvDocCipher`), the LWW rule (`remotePayloadWins`), and --
- * for this wallet -- the whole RxDB driver (`createWasReplication`,
- * `syncedDocSchema`, `contactsConflictHandler`). Only the app-local persistence
- * glue is stood in: DCW's SQLite `SyncStore` becomes an in-memory store with
- * the same reconciliation (mirroring `dcw/app/model/syncedDoc.ts`, kept in step
- * with `dcw/test-node/contactsSyncEngine.test.ts`), and this wallet's
- * `BrowserStore` write paths are reproduced verbatim over a memory RxDB. Both
- * replicas build the contacts cipher per the spec (`idDerivation: 'random'`),
- * key the resource replica with the cipher-minted EDV id, and update in place
- * via `encryptUpdate`.
+ * for this wallet -- the whole RxDB driver (`createWasReplication`) and the
+ * real `BrowserStore` over a memory RxDB, which carries its own synced-doc
+ * schema and contacts conflict handler. Every freewallet-authored write goes
+ * through the store's own writers (`addContact`, `updateContact`,
+ * `deleteContact`, `addCredential`, `addContactRevision`), so a change to how
+ * the store keys a resource replica shows up here. Only DCW's app-local
+ * persistence is stood in: its SQLite `SyncStore` becomes an in-memory store
+ * with the same reconciliation (mirroring `dcw/app/model/syncedDoc.ts`, kept in
+ * step with `dcw/test-node/contactsSyncEngine.test.ts`). Both replicas build
+ * the contacts cipher per the spec (`idDerivation: 'random'`), key the
+ * resource replica with the cipher-minted EDV id, and update in place via
+ * `encryptUpdate`.
  *
  * Divergences this exercise pins down (see
  * `wallet-core/docs/cross-replica-sync-compatibility.md` for the written
@@ -44,30 +47,28 @@
  *   pre-existing id verbatim when a `current` envelope is supplied (the id is
  *   already on the server, so the URL-leak guard only covers creates).
  *
- * Needs the sibling `../was-teaching-server` checkout built (override with
- * `WAS_SERVER_DIR`). Run: `pnpm run test:conformance`.
+ * The server comes from the `was-teaching-server` devDependency, booted through
+ * its `was-teaching-server/testing` helper. Run: `pnpm run test:conformance`.
  *
  * @vitest-environment node
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import type { AddressInfo } from 'node:net'
 
-import { createRxDatabase, type RxCollection } from 'rxdb/plugins/core'
+import { openTempBackend, startTestServer } from 'was-teaching-server/testing'
+
+import type { RxCollection } from 'rxdb/plugins/core'
 import { getRxStorageMemory } from 'rxdb/plugins/storage-memory'
 import { uuidv7 } from 'uuidv7'
 
 import { createWasReplication } from '@interop/was-sync/rxdb'
 import {
-  syncedDocSchema,
   type SyncedDoc,
   type WasSyncPort as FwWasSyncPort
 } from '@interop/was-sync'
-import { createContactsConflictHandler } from '../../src/stores/contactsConflictHandler'
+import { BrowserStore } from '../../src/stores/browserStore'
+import { WALLET_STANDARD_COLLECTIONS } from '../../src/app.config'
 
+import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import { WasClient, type CollectionEncryption } from '@interop/was-client'
 import {
   createEdvDocCipher,
@@ -77,6 +78,7 @@ import {
   type DocCipher
 } from '@interop/was-client/edv'
 import {
+  cidFrom,
   createWasSyncPort,
   deriveSpaceId,
   ensureSpaceAndCollection
@@ -105,51 +107,25 @@ import {
   type ContactRevisionPayload
 } from '@interop/social-core'
 
-const dirname = path.dirname(fileURLToPath(import.meta.url))
-
 // --------------------------------------------------------------------------
-// The real WAS server, in process (the teaching server's own test idiom)
+// The real WAS server, in process (the server's shared test boot)
 // --------------------------------------------------------------------------
 
-interface TeachingServer {
-  listen(options: { port: number }): Promise<unknown>
-  close(): Promise<unknown>
-  server: { address(): AddressInfo | string | null }
-  serverUrl?: string
-}
-
-const serverDir =
-  process.env.WAS_SERVER_DIR ??
-  path.resolve(dirname, '../../../was-teaching-server')
-
-type ServerModule = {
-  createApp(options?: { serverUrl?: string; backend?: unknown }): TeachingServer
-  FileSystemBackend: new (options: { dataDir: string }) => unknown
-}
+type TestFastify = Awaited<ReturnType<typeof startTestServer>>['fastify']
 
 /**
- * Starts the teaching server in process: filesystem backend in a temp dir,
- * listen on an ephemeral port, then fix up serverUrl to the actual
- * localhost:port (the teaching server's own test/helpers.ts recipe).
+ * Starts the teaching server in process over a temp-dir backend. Closing the
+ * returned Fastify instance removes the temp dir.
  *
- * @returns {Promise<{ fastify: TeachingServer; serverUrl: string; dataDir: string }>}
+ * @returns {Promise<{ fastify: TestFastify; serverUrl: string }>}
  */
 async function startTeachingServer(): Promise<{
-  fastify: TeachingServer
+  fastify: TestFastify
   serverUrl: string
-  dataDir: string
 }> {
-  const { createApp, FileSystemBackend } = serverModule!
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'was-conformance-'))
-  const fastify = createApp({
-    serverUrl: 'http://localhost',
-    backend: new FileSystemBackend({ dataDir })
-  })
-  await fastify.listen({ port: 0 })
-  const port = (fastify.server.address() as AddressInfo).port
-  const serverUrl = `http://localhost:${port}`
-  fastify.serverUrl = serverUrl
-  return { fastify, serverUrl, dataDir }
+  const backend = await openTempBackend({ prefix: 'was-conformance-' })
+  const { fastify, serverUrl } = await startTestServer({ backend })
+  return { fastify, serverUrl }
 }
 
 /**
@@ -252,13 +228,73 @@ async function replicateFwOnce({
   }
 }
 
-let serverModule: ServerModule | undefined
-try {
-  serverModule = (await import(
-    pathToFileURL(path.join(serverDir, 'dist', 'index.js')).href
-  )) as ServerModule
-} catch {
-  serverModule = undefined
+/**
+ * Opens this wallet's real `BrowserStore` over a memory RxDB for one
+ * controller DID, with the given per-collection ciphers.
+ *
+ * @param options {object}
+ * @param options.controllerDid {string}
+ * @param options.ciphers {Record<string, DocCipher>}   keyed by logical key
+ * @returns {Promise<BrowserStore>}
+ */
+async function openFwStore({
+  controllerDid,
+  ciphers
+}: {
+  controllerDid: string
+  ciphers: Record<string, DocCipher>
+}): Promise<BrowserStore> {
+  const user = { id: controllerDid }
+  const { localStore } = await BrowserStore.initClient({
+    user,
+    storage: getRxStorageMemory(),
+    ciphers
+  })
+  await localStore.ensureUserCollections({ user })
+  return localStore
+}
+
+/**
+ * The logical key `BrowserStore` keeps a WAS collection under.
+ *
+ * @param collectionId {string}
+ * @returns {string}
+ */
+function fwLogicalKey(collectionId: string): string {
+  const entry = WALLET_STANDARD_COLLECTIONS.find(
+    ({ id }) => id === collectionId
+  )
+  if (!entry) {
+    throw new Error(`"${collectionId}" is not a standard wallet collection`)
+  }
+  return entry.key
+}
+
+/**
+ * Runs one `BrowserStore` write whose return value names no resource id, and
+ * returns the id of the one resource replica it added.
+ *
+ * @param options {object}
+ * @param options.rxCollection {RxCollection<SyncedDoc>}
+ * @param options.write {() => Promise<unknown>}
+ * @returns {Promise<string>}
+ */
+async function addedResourceId({
+  rxCollection,
+  write
+}: {
+  rxCollection: RxCollection<SyncedDoc>
+  write: () => Promise<unknown>
+}): Promise<string> {
+  const before = new Set((await rxCollection.find().exec()).map(doc => doc.id))
+  await write()
+  const added = (await rxCollection.find().exec())
+    .map(doc => doc.id)
+    .filter(id => !before.has(id))
+  if (added.length !== 1) {
+    throw new Error(`expected one new resource replica, found ${added.length}`)
+  }
+  return added[0]
 }
 
 // --------------------------------------------------------------------------
@@ -603,17 +639,8 @@ function makeDcwContactResolve({
 // The exercise
 // --------------------------------------------------------------------------
 
-const describeConformance = serverModule ? describe : describe.skip
-if (!serverModule) {
-  console.warn(
-    `cross-replica conformance skipped: no built was-teaching-server at ` +
-      `"${serverDir}" (set WAS_SERVER_DIR or run its build).`
-  )
-}
-
-describeConformance('cross-replica round-trip conformance', () => {
-  let dataDir: string
-  let fastify: TeachingServer
+describe('cross-replica round-trip conformance', () => {
+  let fastify: TestFastify
   let serverUrl: string
   let spaceId: string
 
@@ -639,7 +666,7 @@ describeConformance('cross-replica round-trip conformance', () => {
   const fwCiphers = {} as Record<CollectionId, DocCipher>
   const fwPorts = {} as Record<CollectionId, WasSyncPort>
   let fwCollections: Record<CollectionId, RxCollection<SyncedDoc>>
-  let fwDb: Awaited<ReturnType<typeof createRxDatabase>>
+  let fwStore: BrowserStore
 
   async function dcwSync(collectionId: CollectionId): Promise<void> {
     await syncEngineOnce({
@@ -661,97 +688,82 @@ describeConformance('cross-replica round-trip conformance', () => {
     await fwSync(collectionId)
   }
 
-  // ---- freewallet write paths, verbatim from browserStore ----------------
+  // ---- freewallet write paths: the real BrowserStore -------------------
 
   /**
-   * `browserStore.addContact`: cipher-minted random EDV resource id, version 0.
+   * `BrowserStore.addContact`, which keys the resource replica with the
+   * cipher-minted random EDV id. Returns that id and the head it sealed.
    */
   async function fwAddContact(
     contact: ContactHeadPayload['contact'],
     writerId: string
   ): Promise<{ id: string; head: ContactHeadPayload }> {
+    const stored = await fwStore.addContact({ contact, writerId })
     const head: ContactHeadPayload = {
-      contactId: uuidv7(),
-      updatedAt: new Date().toISOString(),
+      contactId: stored.contactId,
+      updatedAt: stored.updatedAt,
       writerId,
       contact
     }
-    const { id, envelope } = await fwCiphers[CONTACTS_COLLECTION].encrypt({
-      data: head as unknown as Json
-    })
-    await fwCollections[CONTACTS_COLLECTION].insert({
-      id,
-      updatedAt: head.updatedAt,
-      version: 0,
-      data: envelope
-    } as SyncedDoc)
-    return { id, head }
+    return { id: stored.id, head }
   }
 
   /**
-   * `browserStore.updateContact`: decrypt the existing head, preserve its
-   * `contactId`, re-encrypt in place through `encryptUpdate` (the envelope
-   * stays bound to the resource id and its `sequence` advances from the
-   * prior envelope), and patch the resource replica.
+   * `BrowserStore.updateContact`, which decrypts the existing head, keeps its
+   * `contactId`, and re-encrypts in place through `encryptUpdate` (the
+   * envelope stays bound to the resource id and its `sequence` advances from
+   * the prior envelope). The store stamps `updatedAt` with the current time.
    */
   async function fwUpdateContact(
     id: string,
     contact: ContactHeadPayload['contact'],
-    writerId: string,
-    updatedAt = new Date().toISOString()
+    writerId: string
   ): Promise<ContactHeadPayload> {
-    const doc = await fwCollections[CONTACTS_COLLECTION].findOne(id).exec()
-    if (!doc) {
-      throw new Error(`no fw contacts resource replica ${id}`)
-    }
-    const current = doc.toMutableJSON().data as Json
-    const existing = (await fwCiphers[CONTACTS_COLLECTION].decrypt({
-      id,
-      envelope: current
-    })) as unknown as ContactHeadPayload
-    const head: ContactHeadPayload = {
-      contactId: existing.contactId ?? id,
-      updatedAt,
+    const stored = await fwStore.updateContact({ id, contact, writerId })
+    return {
+      contactId: stored.contactId,
+      updatedAt: stored.updatedAt,
       writerId,
       contact
     }
-    const { envelope } = await fwCiphers[CONTACTS_COLLECTION].encryptUpdate!({
-      id,
-      data: head as unknown as Json,
-      current
-    })
-    await doc.incrementalPatch({ updatedAt, data: envelope })
-    return head
-  }
-
-  /** `browserStore.deleteContact`: soft delete; replication pushes the tombstone. */
-  async function fwDeleteContact(id: string): Promise<void> {
-    const doc = await fwCollections[CONTACTS_COLLECTION].findOne(id).exec()
-    if (!doc) {
-      throw new Error(`no fw contacts resource replica ${id}`)
-    }
-    await doc.remove()
   }
 
   /**
-   * `browserStore.#insertEncrypted` with `contentAddressed: true` (the
-   * `private-credentials` / `contacts-history` path): the cipher's minted id
-   * (this wallet's ciphers derive it from content) becomes the resource id.
+   * `BrowserStore.deleteContact`: a soft delete whose tombstone replication
+   * pushes.
+   */
+  async function fwDeleteContact(id: string): Promise<void> {
+    await fwStore.deleteContact({ id })
+  }
+
+  /**
+   * The content-addressed `BrowserStore` writers: `addCredential` for
+   * `private-credentials` and `addContactRevision` for `contacts-history`.
+   * Each keys the resource replica with the cipher's content-derived id and
+   * returns none, so the id is read back as the one replica the write added.
    */
   async function fwAddContentDoc(
     collectionId: CollectionId,
     payload: Json
   ): Promise<string> {
-    const { id, envelope } = await fwCiphers[collectionId].encrypt({
-      data: payload
+    return addedResourceId({
+      rxCollection: fwCollections[collectionId],
+      write: async () => {
+        if (collectionId === PRIVATE_CREDENTIALS_COLLECTION) {
+          const added = await fwStore.addCredential({
+            cid: cidFrom({ doc: payload as object }),
+            credential: payload as unknown as IVerifiableCredential
+          })
+          expect(added).toBe(true)
+        } else if (collectionId === CONTACTS_HISTORY_COLLECTION) {
+          await fwStore.addContactRevision({
+            revision: payload as unknown as ContactRevisionPayload
+          })
+        } else {
+          throw new Error(`no content-addressed writer for "${collectionId}"`)
+        }
+      }
     })
-    await fwCollections[collectionId].insert({
-      id,
-      updatedAt: new Date().toISOString(),
-      version: 0,
-      data: envelope
-    } as SyncedDoc)
-    return id
   }
 
   /**
@@ -844,17 +856,22 @@ describeConformance('cross-replica round-trip conformance', () => {
     return id
   }
 
-  /** The raw server-side envelope for one resource (sequence inspection). */
+  /**
+   * The raw server-side envelope for one resource (id and sequence
+   * inspection).
+   */
   async function serverEnvelope(
     collectionId: CollectionId,
     id: string
-  ): Promise<{ sequence?: number } | null> {
+  ): Promise<{ id?: string; sequence?: number } | null> {
     const master = await dcwPorts[collectionId].get({ id })
-    return (master?.data as { sequence?: number } | undefined) ?? null
+    return (
+      (master?.data as { id?: string; sequence?: number } | undefined) ?? null
+    )
   }
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl, dataDir } = await startTeachingServer())
+    ;({ fastify, serverUrl } = await startTeachingServer())
 
     // Two wallets, one identity: each replica derives its own agents from the
     // shared seed and gets its own WasClient.
@@ -925,33 +942,24 @@ describeConformance('cross-replica round-trip conformance', () => {
         collectionId
       })
     }
-    // Freewallet replica: memory RxDB with the real schema + conflict handler.
-    fwDb = await createRxDatabase({
-      name: 'conformance-wallet-db',
-      storage: getRxStorageMemory(),
-      multiInstance: false
+    // Freewallet replica: the real BrowserStore over a memory RxDB, carrying
+    // its own schema and contacts conflict handler. Replication runs over the
+    // store's own RxDB collections.
+    fwStore = await openFwStore({
+      controllerDid: fwAgents.controllerDid,
+      ciphers: Object.fromEntries(
+        COLLECTIONS.map(collectionId => [
+          fwLogicalKey(collectionId),
+          fwCiphers[collectionId]
+        ])
+      )
     })
-    const added = await fwDb.addCollections({
-      contacts: {
-        schema: syncedDocSchema(),
-        conflictHandler: createContactsConflictHandler({
-          getCipher: () => fwCiphers[CONTACTS_COLLECTION]
-        })
-      },
-      contactsHistory: {
-        schema: syncedDocSchema()
-      },
-      privateCredentials: {
-        schema: syncedDocSchema()
-      }
-    })
-    fwCollections = {
-      [CONTACTS_COLLECTION]: added.contacts as RxCollection<SyncedDoc>,
-      [CONTACTS_HISTORY_COLLECTION]:
-        added.contactsHistory as RxCollection<SyncedDoc>,
-      [PRIVATE_CREDENTIALS_COLLECTION]:
-        added.privateCredentials as RxCollection<SyncedDoc>
-    }
+    fwCollections = Object.fromEntries(
+      COLLECTIONS.map(collectionId => [
+        collectionId,
+        fwStore.rxCollection(fwLogicalKey(collectionId))
+      ])
+    ) as Record<CollectionId, RxCollection<SyncedDoc>>
 
     // DCW replica: SyncEngine per collection over the in-memory store.
     for (const collectionId of COLLECTIONS) {
@@ -983,11 +991,8 @@ describeConformance('cross-replica round-trip conformance', () => {
     for (const engine of Object.values(dcwEngines)) {
       engine.stop()
     }
-    await fwDb?.close()
+    await fwStore?.close()
     await fastify?.close()
-    if (dataDir) {
-      await rm(dataDir, { recursive: true, force: true })
-    }
   })
 
   // ---- contacts: the mutable head --------------------------------------
@@ -1022,6 +1027,10 @@ describeConformance('cross-replica round-trip conformance', () => {
     await dcwSync(CONTACTS_COLLECTION)
 
     expect(dcwStores[CONTACTS_COLLECTION].projection.get(id)).toEqual(head)
+    // BrowserStore keyed the resource replica with the id the cipher minted
+    // and sealed into the envelope, not a uuid of its own.
+    const envelope = await serverEnvelope(CONTACTS_COLLECTION, id)
+    expect(envelope?.id).toBe(id)
   })
 
   it('applies a freewallet edit of the DCW-authored contact in place (sequence advances)', async () => {
@@ -1077,15 +1086,15 @@ describeConformance('cross-replica round-trip conformance', () => {
 
   it('converges an edit collision to the LWW winner on both replicas (DCW newer)', async () => {
     const base = Date.now()
-    // Freewallet edits first (older timestamp) and syncs first, taking the
-    // server; DCW's competing edit (newer) then hits a version conflict.
+    // Freewallet edits first (older timestamp, the store stamps the current
+    // time) and syncs first, taking the server; DCW's competing edit (newer)
+    // then hits a version conflict.
     const fwHead = await fwUpdateContact(
       dcwAuthoredId,
       {
         displayName: 'Ada Lovelace (web edit)'
       } as ContactHeadPayload['contact'],
-      'fw-writer',
-      new Date(base).toISOString()
+      'fw-writer'
     )
     const dcwHead = await dcwUpdateContact(
       dcwAuthoredId,
@@ -1125,6 +1134,8 @@ describeConformance('cross-replica round-trip conformance', () => {
   })
 
   it('converges an edit collision to the LWW winner on both replicas (freewallet newer)', async () => {
+    // The store stamps the web edit with the current time, so the older
+    // mobile edit is dated a minute back.
     const base = Date.now()
     const dcwHead = await dcwUpdateContact(
       dcwAuthoredId,
@@ -1132,15 +1143,14 @@ describeConformance('cross-replica round-trip conformance', () => {
         displayName: 'Ada Lovelace (older mobile edit)'
       } as ContactHeadPayload['contact'],
       'dcw-writer',
-      new Date(base).toISOString()
+      new Date(base - 60_000).toISOString()
     )
     const fwHead = await fwUpdateContact(
       dcwAuthoredId,
       {
         displayName: 'Ada Lovelace (newer web edit)'
       } as ContactHeadPayload['contact'],
-      'fw-writer',
-      new Date(base + 60_000).toISOString()
+      'fw-writer'
     )
     expect(remotePayloadWins(fwHead, dcwHead)).toBe(true)
 
@@ -1167,8 +1177,10 @@ describeConformance('cross-replica round-trip conformance', () => {
     // `encryptUpdate` refused every web-authored contact. Fixed from both ends
     // -- freewallet's contacts resource replicas are now keyed by the
     // cipher-minted EDV id (spec `idDerivation: 'random'`), and was-client's
-    // update path accepts a pre-existing resource id verbatim. This exercises
-    // the edit round trip.
+    // update path accepts a pre-existing resource id verbatim. The contact was
+    // written by the real `BrowserStore.addContact`, whose id choice the
+    // freewallet-authored round trip above asserts; this exercises the edit
+    // round trip.
     const head = await dcwUpdateContact(
       fwAuthoredId,
       {
@@ -1300,14 +1312,13 @@ describeConformance('cross-replica round-trip conformance', () => {
 // Writer attribution: a mixed feed under echo suppression
 // --------------------------------------------------------------------------
 
-describeConformance('cross-replica writer attribution', () => {
+describe('cross-replica writer attribution', () => {
   const DCW_WRITER_ID = 'dcw-writer'
   const FW_WRITER_ID = 'fw-writer'
   const FOREIGN_WRITER_ID = 'foreign-writer'
   const collectionId = PRIVATE_CREDENTIALS_COLLECTION
 
-  let fastify: TeachingServer
-  let dataDir: string
+  let fastify: TestFastify
   let spaceId: string
   let dcwCipher: DocCipher
   let fwCipher: DocCipher
@@ -1315,7 +1326,7 @@ describeConformance('cross-replica writer attribution', () => {
   let thirdPort: WasSyncPort
   let dcwStore: InMemoryStore
   let dcwEngine: SyncEngine
-  let fwDb: Awaited<ReturnType<typeof createRxDatabase>>
+  let fwStore: BrowserStore
   let fwCollection: RxCollection<SyncedDoc>
   // Every id the SyncEngine side's pull handed to its decrypt.
   const dcwDecrypted: string[] = []
@@ -1408,22 +1419,24 @@ describeConformance('cross-replica writer attribution', () => {
   }
 
   /**
-   * `browserStore.#insertEncrypted` with `contentAddressed: true`.
+   * `BrowserStore.addCredential`, which keys the resource replica with the
+   * cipher's content-derived id.
    *
    * @param name {string}
    * @returns {Promise<string>} The resource id.
    */
   async function fwAddCredential(name: string): Promise<string> {
-    const { id, envelope } = await fwCipher.encrypt({
-      data: credential(name)
+    const payload = credential(name)
+    return addedResourceId({
+      rxCollection: fwCollection,
+      write: async () => {
+        const added = await fwStore.addCredential({
+          cid: cidFrom({ doc: payload as object }),
+          credential: payload as unknown as IVerifiableCredential
+        })
+        expect(added).toBe(true)
+      }
     })
-    await fwCollection.insert({
-      id,
-      updatedAt: new Date().toISOString(),
-      version: 0,
-      data: envelope
-    } as SyncedDoc)
-    return id
   }
 
   /**
@@ -1446,7 +1459,7 @@ describeConformance('cross-replica writer attribution', () => {
 
   beforeAll(async () => {
     let serverUrl: string
-    ;({ fastify, serverUrl, dataDir } = await startTeachingServer())
+    ;({ fastify, serverUrl } = await startTeachingServer())
 
     // Each case starts its own server, so a fixed seed still gives each
     // case its own Space and feed.
@@ -1493,15 +1506,11 @@ describeConformance('cross-replica writer attribution', () => {
     // dcw's client.
     thirdPort = createWasSyncPort({ was: dcwWas, spaceId, collectionId })
 
-    fwDb = await createRxDatabase({
-      name: 'conformance-writer-attribution',
-      storage: getRxStorageMemory(),
-      multiInstance: false
+    fwStore = await openFwStore({
+      controllerDid: fwAgents.controllerDid,
+      ciphers: { [fwLogicalKey(collectionId)]: fwCipher }
     })
-    const added = await fwDb.addCollections({
-      privateCredentials: { schema: syncedDocSchema() }
-    })
-    fwCollection = added.privateCredentials as RxCollection<SyncedDoc>
+    fwCollection = fwStore.rxCollection(fwLogicalKey(collectionId))
 
     dcwStore = new InMemoryStore()
     dcwEngine = new SyncEngine({
@@ -1518,11 +1527,8 @@ describeConformance('cross-replica writer attribution', () => {
 
   afterAll(async () => {
     dcwEngine?.stop()
-    await fwDb?.close()
+    await fwStore?.close()
     await fastify?.close()
-    if (dataDir) {
-      await rm(dataDir, { recursive: true, force: true })
-    }
   })
 
   it('converges a mixed feed and echoes each writer label', async () => {
@@ -1548,11 +1554,8 @@ describeConformance('cross-replica writer attribution', () => {
     // Each replica deletes one of the other's credentials: a tombstone per
     // deleting writer.
     dcwStore.localDelete(fwDeleted)
-    const fwDoc = await fwCollection.findOne(dcwDeleted).exec()
-    if (!fwDoc) {
-      throw new Error(`no fw resource replica ${dcwDeleted}`)
-    }
-    await fwDoc.remove()
+    expect(await fwCollection.findOne(dcwDeleted).exec()).not.toBeNull()
+    await fwStore.deleteCredentialByResourceId({ resourceId: dcwDeleted })
 
     await dcwSync()
     await fwSync()

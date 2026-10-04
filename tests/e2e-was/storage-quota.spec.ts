@@ -1,16 +1,20 @@
 import { test, expect } from '@playwright/test'
 import {
   addCredentialViaPaste,
+  collectionRow,
   deleteCredential,
-  expectCollectionUsage,
   expectQuotaCard,
   goToStorage,
-  signupViaWizard
+  readCollectionUsageBytes,
+  sessionSpaceId,
+  signupViaWizard,
+  usageBytesOfRow
 } from './helpers'
+import { listStoredResourceIds } from './storedLogs'
 
-// Rendered usage is an amount immediately followed by its unit, no separating
-// space (e.g. "24.0KB", "200B"); match a non-zero value in any unit.
-const NONZERO_USAGE = /[1-9][\d.]*\s*[KMGT]?B/
+// Background replication pushes a local write a beat after the wallet-side
+// action, so a usage figure is polled until the server's measurement moves.
+const USAGE_POLL = { timeout: 60_000, intervals: [1000, 2000, 5000] }
 
 /**
  * Storage quota UI — requires remote (WAS) mode; see playwright.was.config.ts.
@@ -41,15 +45,25 @@ test.describe('Storage quota', () => {
     // aggregate card. Target each collection by its storage-path href, which is
     // unambiguous (matching display names by text is not: "Verifiable
     // Credentials" is a prefix of "Verifiable Credentials (Publicly Shared)").
-    await expect(
-      page.locator('a[href$="/storage/collections/private-credentials"]')
-    ).toBeVisible()
-    await expect(
-      page.locator('a[href$="/storage/collections/wallet-activity"]')
-    ).toBeVisible()
-    await expect(
-      page.locator('a[href$="/storage/collections/public-credentials"]')
-    ).toBeVisible()
+    for (const collectionId of [
+      'private-credentials',
+      'wallet-activity',
+      'public-credentials'
+    ]) {
+      await expect(collectionRow(page, collectionId)).toBeVisible()
+    }
+
+    // Every listed row carries its usage figure from the quota report's
+    // per-collection breakdown, not only its name. The listing and the quota
+    // report load side by side, so the figures are polled in.
+    const rows = page.locator('a[href*="/storage/collections/"]')
+    await expect(async () => {
+      const rowTexts = await rows.allTextContents()
+      expect(rowTexts.length).toBeGreaterThanOrEqual(3)
+      for (const rowText of rowTexts) {
+        expect(usageBytesOfRow(rowText), `usage on "${rowText}"`).toBeDefined()
+      }
+    }).toPass({ timeout: 15_000 })
   })
 
   test('keeps import enabled when storage is healthy', async ({
@@ -69,23 +83,119 @@ test.describe('Storage quota', () => {
   test('updates verifiable credentials usage after storing a credential', async ({
     page
   }, testInfo) => {
+    test.slow()
     await signupViaWizard(page, testInfo)
-    await addCredentialViaPaste(page)
-    await goToStorage(page)
-    await expectQuotaCard(page)
+    const spaceId = await sessionSpaceId(page)
+    // Signup already stored the welcome credential, so the figure is read
+    // once that one has reached the server, as the baseline the new
+    // credential has to move.
+    await expectStoredResourceCount({
+      spaceId,
+      collectionId: 'private-credentials',
+      count: 1
+    })
+    const before = await readCollectionUsageBytes(page, 'private-credentials')
 
-    await expectCollectionUsage(page, 'private-credentials', NONZERO_USAGE)
+    await page.goto('/#/dashboard')
+    await addCredentialViaPaste(page)
+
+    await expect
+      .poll(
+        async () => await readCollectionUsageBytes(page, 'private-credentials'),
+        USAGE_POLL
+      )
+      .toBeGreaterThan(before)
   })
 
   test('updates wallet activity usage after deleting a credential', async ({
     page
   }, testInfo) => {
+    test.slow()
     await signupViaWizard(page, testInfo)
+    const spaceId = await sessionSpaceId(page)
+    // The signup's own activity rows have reached the server once the
+    // stored count holds still, and the store adds exactly one more.
+    const afterSignup = await settledStoredResourceCount({
+      spaceId,
+      collectionId: 'wallet-activity'
+    })
+    await page.goto('/#/dashboard')
     await addCredentialViaPaste(page)
-    await deleteCredential(page)
-    await goToStorage(page)
-    await expectQuotaCard(page)
+    await expectStoredResourceCount({
+      spaceId,
+      collectionId: 'wallet-activity',
+      count: afterSignup + 1
+    })
+    // The baseline: every activity before the delete is on the server.
+    const before = await readCollectionUsageBytes(page, 'wallet-activity')
 
-    await expectCollectionUsage(page, 'wallet-activity', NONZERO_USAGE)
+    await page.goto('/#/dashboard')
+    await deleteCredential(page)
+
+    await expect
+      .poll(
+        async () => await readCollectionUsageBytes(page, 'wallet-activity'),
+        USAGE_POLL
+      )
+      .toBeGreaterThan(before)
   })
 })
+
+/**
+ * Polls the server's store until one of the account Space's collections
+ * holds exactly `count` resources.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.count {number}
+ * @returns {Promise<void>}
+ */
+async function expectStoredResourceCount({
+  spaceId,
+  collectionId,
+  count
+}: {
+  spaceId: string
+  collectionId: string
+  count: number
+}): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        (await listStoredResourceIds({ spaceId, collectionId })).length,
+      USAGE_POLL
+    )
+    .toBe(count)
+}
+
+/**
+ * The number of resources one of the account Space's collections holds on
+ * the server, once background replication has stopped moving it: two reads
+ * a few seconds apart agree, on a collection that is not empty.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {Promise<number>}
+ */
+async function settledStoredResourceCount({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): Promise<number> {
+  let settled = 0
+  await expect(async () => {
+    const first = (await listStoredResourceIds({ spaceId, collectionId }))
+      .length
+    await new Promise(resolve => setTimeout(resolve, 3_000))
+    const second = (await listStoredResourceIds({ spaceId, collectionId }))
+      .length
+    expect(first).toBeGreaterThan(0)
+    expect(second).toBe(first)
+    settled = second
+  }).toPass({ timeout: 60_000 })
+  return settled
+}

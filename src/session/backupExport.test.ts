@@ -13,7 +13,6 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { base64urlnopad } from '@scure/base'
-import { addSink, captureSink } from '@interop/logger'
 import type { Session } from '@/types/auth'
 import { captureCeremonyEvents } from '../../tests/unit/ceremonyEventCapture'
 
@@ -1026,8 +1025,9 @@ describe('exportBackup', () => {
     vi.mocked(getUnlockMethods).mockResolvedValue({
       methods: credentialEntryOnly()
     } as never)
-    const capture = captureSink()
-    const removeSink = addSink(capture.sink)
+    // The debug filter on, so a `log.debug` leak reaches the sink rather than
+    // being dropped before it.
+    const capture = captureCeremonyEvents()
     try {
       await drain(
         await exportBackup({
@@ -1037,9 +1037,15 @@ describe('exportBackup', () => {
         })
       )
     } finally {
-      removeSink()
+      capture.stop()
     }
 
+    // The capture is live at debug: the module's own debug lines reached it.
+    expect(
+      capture.events.some(
+        event => event.ns === 'fw:session:backup' && event.level === 'debug'
+      )
+    ).toBe(true)
     const logged = JSON.stringify(capture.events)
     expect(logged).not.toContain(base64urlnopad.encode(SECRET))
     expect(logged).not.toContain(Buffer.from(SECRET).toString('hex'))

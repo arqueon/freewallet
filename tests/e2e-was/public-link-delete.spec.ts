@@ -1,9 +1,11 @@
 import { test, expect, type Page } from '@playwright/test'
 import {
   addCredentialViaPaste,
+  sessionSpaceId,
   signupViaWizard,
   E2E_TEST_CREDENTIAL
 } from './helpers'
+import { listStoredResourceIds } from './storedLogs'
 
 /**
  * Deleting a credential that has a live public link. The public copy is
@@ -53,19 +55,31 @@ test.describe('Deleting a credential with a public link', () => {
   test('keeps the public copy when the user chooses to', async ({
     page
   }, testInfo) => {
+    test.slow()
     await signupViaWizard(page, testInfo)
+    const spaceId = await sessionSpaceId(page)
     await addCredentialViaPaste(page)
     const publicUrl = await createPublicLink(page)
     await expectPublicUrlStatus(page, publicUrl, 200)
+    // The private copies have replicated too: the welcome credential and
+    // this one. So the delete below has a stored resource to remove.
+    await expectStoredPrivateCredentialCount({ spaceId, count: 2 })
 
     await page.getByRole('button', { name: 'Delete' }).click()
     await page.getByRole('button', { name: 'Keep public copy' }).click()
     await expect(page).toHaveURL(/#\/dashboard/)
 
+    // The delete has reached the server: the private credential is gone from
+    // the store. Only after that is the public URL's status a verdict, since
+    // a retraction riding the same delete would have been pushed by now.
+    await expectStoredPrivateCredentialCount({ spaceId, count: 1 })
+
     // A deliberate retention, not an accidental orphan: the link stays live.
-    await page.waitForTimeout(2000)
     const response = await page.request.get(publicUrl)
     expect(response.status()).toBe(200)
+    expect(JSON.stringify(await response.json())).toContain(
+      E2E_TEST_CREDENTIAL.name
+    )
   })
 })
 
@@ -86,6 +100,38 @@ async function createPublicLink(page: Page): Promise<string> {
   const url = await link.getAttribute('href')
   expect(url).toBeTruthy()
   return url as string
+}
+
+/**
+ * Polls the server's store until the account Space's `private-credentials`
+ * collection holds exactly `count` resources. Replication pushes a local
+ * write or delete a beat after the wallet-side action, and the store on disk
+ * is where it lands.
+ *
+ * @param options {object}
+ * @param options.spaceId {string}   the account Space id
+ * @param options.count {number}
+ * @returns {Promise<void>}
+ */
+async function expectStoredPrivateCredentialCount({
+  spaceId,
+  count
+}: {
+  spaceId: string
+  count: number
+}): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        (
+          await listStoredResourceIds({
+            spaceId,
+            collectionId: 'private-credentials'
+          })
+        ).length,
+      { timeout: 30_000, intervals: [500, 1000, 2000] }
+    )
+    .toBe(count)
 }
 
 /**

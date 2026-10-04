@@ -9,7 +9,9 @@
  * fixture entry is written through wallet-core's own upsert helpers over an
  * in-memory store and read back through its one listing read. The read rule
  * is checked against the store's spies: every lookup by DID resolves against
- * the listing, and none GETs the id a DID derives to.
+ * the listing, and none GETs the id a DID derives to. The creator lookup and
+ * the known-agent note take the listing alone and hold no store handle, so
+ * their tests check what they answer for a DID no entry carries.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -743,6 +745,24 @@ describe('findKnownAgents', () => {
       }).size
     ).toBe(0)
   })
+
+  it('answers the listed agent alone among the controllers asked about', async () => {
+    await recordConsent({
+      directory,
+      did: AGENT_DID,
+      kind: 'agent',
+      grants: [grantZcap({ id: 'urn:zcap:one', controller: AGENT_DID })]
+    })
+
+    const known = findKnownAgents({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      controllers: [AGENT_DID, OTHER_AGENT_DID]
+    })
+
+    expect([...known.keys()]).toEqual([AGENT_DID])
+    expect(known.has(OTHER_AGENT_DID)).toBe(false)
+  })
 })
 
 describe('lookupCollectionCreators', () => {
@@ -837,28 +857,46 @@ describe('lookupCollectionCreators', () => {
     expect(creators.size).toBe(0)
   })
 
-  it('changes neither the directory nor the Applications order', async () => {
+  it('answers a planted generator id with nothing, beside a listed one', async () => {
+    await connectApp({ appKey: 'r-app-key' })
+
+    const creators = lookupCollectionCreators({
+      connections: await listedConnections(directory),
+      spaceUrl: SPACE_URL,
+      generators: [
+        { id: APP_DID, origin: APP_ORIGIN },
+        // A DID the host planted on a collection, which no entry carries.
+        { id: OTHER_APP_DID, origin: 'https://planted.example' }
+      ]
+    })
+
+    expect([...creators.keys()]).toEqual([APP_DID])
+    expect(creators.get(APP_DID)).toEqual(
+      expect.objectContaining({ name: 'Notes', appUrl: APP_URL })
+    )
+    expect(creators.has(OTHER_APP_DID)).toBe(false)
+  })
+
+  it('leaves its connections input and the Applications order unchanged', async () => {
     await connectApp({ did: APP_DID, appKey: 'r-1', at: FIRST_SEEN })
     await connectApp({ did: OTHER_APP_DID, appKey: 'r-2', at: LAST_SEEN })
-    const before = await listedConnections(directory)
-    const order = listConnectedApps({ connections: before }).map(
-      app => app.subjectDid
-    )
-    const writes = directory.writes.length
+    const connections = await listedConnections(directory)
+    const snapshot = structuredClone(connections)
+    const order = listConnectedApps({ connections }).map(app => app.subjectDid)
 
     lookupCollectionCreators({
-      connections: await listedConnections(directory),
+      connections,
       spaceUrl: SPACE_URL,
       generators: [{ id: APP_DID, origin: APP_ORIGIN }]
     })
 
-    const after = await listedConnections(directory)
-    expect(directory.writes).toHaveLength(writes)
-    expect(after.map(({ entry }) => entry.lastSeen)).toEqual(
-      before.map(({ entry }) => entry.lastSeen)
+    // The same array the caller passed: no entry rewritten, none reordered.
+    expect(connections).toEqual(snapshot)
+    expect(connections.map(({ resourceId }) => resourceId)).toEqual(
+      snapshot.map(({ resourceId }) => resourceId)
     )
     expect(
-      listConnectedApps({ connections: after }).map(app => app.subjectDid)
+      listConnectedApps({ connections }).map(app => app.subjectDid)
     ).toEqual(order)
   })
 })
@@ -988,34 +1026,6 @@ describe('the read rule', () => {
     // The writes above re-read their own ids; the rule covers what follows.
     directory.get.mockClear()
     directory.list.mockClear()
-  })
-
-  it('resolves a creator lookup on a planted generator id against the listing', async () => {
-    const creators = lookupCollectionCreators({
-      connections: await listedConnections(directory),
-      spaceUrl: SPACE_URL,
-      generators: [
-        { id: APP_DID, origin: APP_ORIGIN },
-        // A DID the host planted on a collection, which no entry carries.
-        { id: OTHER_APP_DID, origin: 'https://planted.example' }
-      ]
-    })
-
-    expect(creators.has(APP_DID)).toBe(true)
-    expect(directory.list).toHaveBeenCalledTimes(1)
-    expect(directory.get).not.toHaveBeenCalled()
-  })
-
-  it('resolves the known-agent note against the listing', async () => {
-    const known = findKnownAgents({
-      connections: await listedConnections(directory),
-      spaceUrl: SPACE_URL,
-      controllers: [AGENT_DID, OTHER_AGENT_DID]
-    })
-
-    expect(known.has(AGENT_DID)).toBe(true)
-    expect(directory.list).toHaveBeenCalledTimes(1)
-    expect(directory.get).not.toHaveBeenCalled()
   })
 
   it('resolves both Applications listings against the listing', async () => {

@@ -672,7 +672,29 @@ function transientPersistence(): ReturnType<typeof inMemorySessionPersistence> {
   })
 }
 
+/**
+ * Installs an empty in-memory `localStorage` for one test, so a residue check
+ * runs in the node environment too. The `afterEach` below removes it.
+ *
+ * @returns {{ keys: () => string[] }}
+ */
+function stubLocalStorage(): { keys: () => string[] } {
+  const map = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    get length() {
+      return map.size
+    },
+    key: (index: number) => [...map.keys()][index] ?? null,
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => void map.set(key, value),
+    removeItem: (key: string) => void map.delete(key),
+    clear: () => map.clear()
+  })
+  return { keys: () => [...map.keys()] }
+}
+
 afterEach(async () => {
+  vi.unstubAllGlobals()
   for (const store of openStores) {
     await store.wipeStorage()
   }
@@ -2485,6 +2507,11 @@ describe('StorageManager.provisionEncryptedCollection', () => {
       revoke: [],
       resolveRecipientKey: vouchFor(owner)
     })
+    const revokedDescriptor = stores.descriptorOf('app-docs')!
+    expect(revokedDescriptor.currentEpoch).not.toEqual(descriptor1.currentEpoch)
+    expect(currentEpochKids(revokedDescriptor)).toEqual([
+      owner.keyAgreementKey.id
+    ])
     // Reconnect: the app is escrowed back in (add, not a rotation, so the
     // roster grows but the current epoch is the post-revoke one).
     const descriptor2 = await storage.provisionEncryptedCollection({
@@ -2492,7 +2519,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
       recipient
     })
 
-    expect(descriptor1.currentEpoch).toBeDefined()
+    expect(descriptor2.currentEpoch).toEqual(revokedDescriptor.currentEpoch)
+    expect(descriptor2.epochs).toHaveLength(revokedDescriptor.epochs!.length)
     expect(currentEpochKids(descriptor2)).toEqual(
       expect.arrayContaining([owner.keyAgreementKey.id, app.keyAgreementKey.id])
     )
@@ -3035,14 +3063,42 @@ describe('StorageManager.revokeCollectionRecipients (an app)', () => {
 
   it('is a no-op for a DID no recipient key derives from', async () => {
     const { storage } = await directorySession()
+    const did = 'did:web:app.example'
+    // A recorded grant and a collection stamped with the DID as its
+    // generator: either would name a candidate collection, so only the
+    // missing recipient key leaves the result empty.
+    await recordPartyGrants({
+      storage,
+      did,
+      zcaps: [
+        collectionGrant({
+          id: 'z-web-docs',
+          collectionId: 'app-docs',
+          controller: did
+        })
+      ]
+    })
 
-    expect(
-      await storage.revokeCollectionRecipients({
-        did: 'did:web:app.example',
-        grants: [],
-        collections: []
-      })
-    ).toEqual({ collections: 0, rotated: 0, failed: 0, revokedIds: [] })
+    const { rotation, grants } = await rotateParty({
+      storage,
+      did,
+      collections: [
+        {
+          id: 'app-docs',
+          url: `${SPACE_URL}app-docs/`,
+          isPublic: false,
+          generator: { id: did }
+        }
+      ]
+    })
+
+    expect(grants).toHaveLength(1)
+    expect(rotation).toEqual({
+      collections: 0,
+      rotated: 0,
+      failed: 0,
+      revokedIds: []
+    })
   })
 })
 
@@ -3197,12 +3253,25 @@ describe('StorageManager.revokeCollectionRecipients (an agent)', () => {
   it('is a no-op for a controller no recipient key derives from', async () => {
     const agent = await generateAppIdentity()
     const { storage } = await agentGrantStorage(agent)
-
-    const { rotation } = await rotateParty({
+    const did = 'did:web:agent.example'
+    // A recorded grant on the agent's collection would name it a candidate,
+    // so only the missing recipient key leaves the result empty.
+    await recordPartyGrants({
       storage,
-      did: 'did:web:agent.example'
+      did,
+      kind: 'agent',
+      zcaps: [
+        collectionGrant({
+          id: 'z-web-notes',
+          collectionId: 'agent-notes',
+          controller: did
+        })
+      ]
     })
 
+    const { rotation, grants } = await rotateParty({ storage, did })
+
+    expect(grants).toHaveLength(1)
     expect(rotation).toEqual({
       collections: 0,
       rotated: 0,
@@ -4229,6 +4298,9 @@ describe('StorageManager unknown-epoch refresh', () => {
   })
 
   it('transient session: the refresh still runs, with zero localStorage residue', async () => {
+    // Production reads the global at call time, so a cache write that leaked
+    // past the in-memory strategy would land in this stub.
+    const residue = stubLocalStorage()
     const owner = await generateKey()
     const extra = await generateKey()
     const stores = memoryDescriptorStores()
@@ -4306,15 +4378,13 @@ describe('StorageManager unknown-epoch refresh', () => {
       .descriptorCache({ scope: remoteStore.spaceId })
       .readDescriptor({ collectionId: 'private-credentials' })
     expect(cached?.currentEpoch).toBe(descriptor2.currentEpoch)
-    // This file runs in the node environment; guard the residue check for a
-    // jsdom run, where a localStorage cache write would have landed here.
-    if (typeof localStorage !== 'undefined') {
-      expect(
-        localStorage.getItem(
-          `freewallet:collection-encryption:${remoteStore.spaceId}:private-credentials`
-        )
-      ).toBeNull()
-    }
+    // No localStorage key at all, the descriptor cache's included.
+    expect(
+      localStorage.getItem(
+        `freewallet:collection-encryption:${remoteStore.spaceId}:private-credentials`
+      )
+    ).toBeNull()
+    expect(residue.keys()).toEqual([])
   })
 
   it('remote-direct: refreshes the descriptor and returns a fresh-epoch credential', async () => {

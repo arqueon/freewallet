@@ -4,10 +4,10 @@
  * (`src/session/collectionLogStore.ts`): what the live session's binding
  * hands wallet-core's `collectionDescriptorStores` (the remote store's
  * collection handle, the session pins, the signer, the verified-log
- * controller), the address each store is aimed at (the collection's own
- * `meta/log`, whose pin slot the library names), and which agent a live
- * session's appends sign with. The bare-parts builder's own behavior is
- * wallet-core's to test.
+ * controller), the collection handle each store is aimed at (the library
+ * derives the `meta/log` address and its pin slot from it), and which agent
+ * a live session's appends sign with. The bare-parts builder's own behavior
+ * is wallet-core's to test.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -40,10 +40,7 @@ import {
   collectionDescriptorStores,
   userKeyRosterLogSigner
 } from '@interop/wallet-core/keys'
-import {
-  collectionDescriptorLogPinId,
-  logGovernedDescriptorSource
-} from '@interop/wallet-core/descriptors'
+import { logGovernedDescriptorSource } from '@interop/wallet-core/descriptors'
 import { ladderVmAgent } from '@interop/wallet-core/clientAnnex'
 import { verifiedAccountLog } from '@/session/verifiedLog'
 import {
@@ -113,11 +110,11 @@ function sessionFixture({ did }: { did?: string } = {}): Pick<
 function remoteStoreStub(): WASRemoteStore {
   return {
     spaceId: POINTER.spaceId,
-    collectionHandle: ({ collectionId }: { collectionId: string }) => ({
+    collectionHandle: vi.fn(({ collectionId }: { collectionId: string }) => ({
       spaceId: POINTER.spaceId,
       id: collectionId,
       isRemoteHandle: true
-    })
+    }))
   } as never as WASRemoteStore
 }
 
@@ -128,28 +125,33 @@ afterEach(() => {
 describe('sessionCollectionStores', () => {
   it('reaches each collection through the remote store, under the session pins', () => {
     const session = sessionFixture({ did: POINTER.did })
+    const remoteStore = remoteStoreStub()
     sessionCollectionStores({
       session,
-      remoteStore: remoteStoreStub(),
+      remoteStore,
       keyAgent: KEY_AGENT
     })
 
     const { collectionFor, pinStore, signer } = capturedBuilderOptions()
-    const contacts = collectionFor('contacts')
-    expect(contacts).toMatchObject({
+    // Each collection id reaches the remote store's handle for that same
+    // collection, so a store aimed at another collection's log goes red.
+    expect(collectionFor('contacts')).toEqual({
       spaceId: POINTER.spaceId,
       id: 'contacts',
       isRemoteHandle: true
     })
+    expect(collectionFor('private-credentials')).toEqual({
+      spaceId: POINTER.spaceId,
+      id: 'private-credentials',
+      isRemoteHandle: true
+    })
+    expect(vi.mocked(remoteStore.collectionHandle).mock.calls).toEqual([
+      [{ collectionId: 'contacts' }],
+      [{ collectionId: 'private-credentials' }]
+    ])
     expect(pinStore).toBe(session.persistence.logPins)
     expect(userKeyRosterLogSigner).toHaveBeenCalledWith({ keyAgent: KEY_AGENT })
     expect(signer).toEqual({ isDescriptorLogSigner: true })
-    expect(
-      collectionDescriptorLogPinId({
-        spaceId: contacts.spaceId,
-        collectionId: contacts.id
-      })
-    ).toBe('space/space-123/contacts/meta/log')
   })
 
   it("resolves the controller through the session's verified-log memo", async () => {

@@ -505,9 +505,10 @@ describe('the DIDAuth holder dispatch', () => {
     expect(holder).toBe(session.user.id)
   })
 
-  it('pins the App Connect response VP to the client did:key', async () => {
-    // App Connect passes an explicit holder override, so the dispatch never
-    // runs there whatever the app's `acceptedMethods` says.
+  it('holds as the holder override over a request accepting webvh', async () => {
+    // App Connect's caller passes an explicit holder override. This checks
+    // only that composeVP lets the override win over the dispatch, which
+    // would otherwise present the account did:webvh here.
     const presentation = (await composeVP({
       session: promotedSession,
       queries: didAuthQuery(['webvh']),
@@ -525,6 +526,37 @@ describe('the DIDAuth holder dispatch', () => {
     expect(presentation.proof?.verificationMethod).toBe(
       `${promotedSession.user.id}#${clientMultibase}`
     )
+  })
+
+  it('judges an App Connect request against the client did:key alone', () => {
+    // A session whose account form is presentable: without the App Connect
+    // marker a webvh-only request is admitted, and with it the same request
+    // is judged against the did:key alone, since an App Connect response VP
+    // holds as the client did:key by construction.
+    expect(presentableDidMethods({ session: promotedSession })).toContain(
+      'webvh'
+    )
+    expect(
+      didAuthHolderPresentable({
+        session: promotedSession,
+        queries: didAuthQuery(['webvh']),
+        appConnect: false
+      })
+    ).toBe(true)
+    expect(
+      didAuthHolderPresentable({
+        session: promotedSession,
+        queries: didAuthQuery(['webvh']),
+        appConnect: true
+      })
+    ).toBe(false)
+    expect(
+      didAuthHolderPresentable({
+        session: promotedSession,
+        queries: didAuthQuery(['key']),
+        appConnect: true
+      })
+    ).toBe(true)
   })
 })
 
@@ -550,7 +582,9 @@ describe('presentableDidMethods', () => {
 /**
  * The CHAPI get page's post-login gate, as the pure decision the page
  * renders. A false answer is what puts the block screen where the consent
- * panel would go, with no step added between the login and the block.
+ * panel would go, with no step added between the login and the block. The App
+ * Connect case sits in the holder dispatch block above, which has a session
+ * whose account form is presentable.
  */
 describe('didAuthHolderPresentable', () => {
   let kmsLessSession: Session
@@ -606,24 +640,5 @@ describe('didAuthHolderPresentable', () => {
         appConnect: false
       })
     ).toBe(true)
-  })
-
-  it('judges an App Connect request against the client did:key alone', () => {
-    // Whatever the account publishes: an App Connect response VP holds as
-    // the client did:key by construction.
-    expect(
-      didAuthHolderPresentable({
-        session: kmsLessSession,
-        queries: query(['key']),
-        appConnect: true
-      })
-    ).toBe(true)
-    expect(
-      didAuthHolderPresentable({
-        session: kmsLessSession,
-        queries: query(['webvh']),
-        appConnect: true
-      })
-    ).toBe(false)
   })
 })

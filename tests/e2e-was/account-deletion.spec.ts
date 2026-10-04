@@ -68,6 +68,10 @@ interface DeletableAccount {
   logUrl: string
   /** every Space the store gained while this account was built */
   spaceIds: string[]
+  /** the passphrase's unlock Space, the one the deletions below act from */
+  actingUnlockSpaceId: string
+  /** the recovery code's unlock Space */
+  siblingUnlockSpaceId: string
 }
 
 /**
@@ -117,6 +121,9 @@ async function buildLadderAnchoredAccount(
   } finally {
     await first.context.close()
   }
+  // The Spaces the signup created: the account Space, the annex Space, and
+  // the passphrase's unlock Space. Terminal B adds the recovery code's.
+  const signupSpaceIds = await storedSpaceIdsSince({ baseline })
 
   // --- Terminal B: the remembered self-enrollment and the second unlock
   // method, the one step the tier refusals keep off a transient session. ---
@@ -177,7 +184,34 @@ async function buildLadderAnchoredAccount(
   // account + annex + the passphrase's and the recovery code's unlock Spaces.
   expect(spaceIds.length).toBeGreaterThanOrEqual(4)
 
-  return { passphrase, accountSpaceId, annexSpaceIds, logUrl, spaceIds }
+  // The unlock Spaces, named by difference. The signup's own Spaces, less
+  // the account and annex Spaces, are the passphrase's; the Spaces terminal
+  // B added, less any annex Space, are the recovery code's.
+  const notUnlock = new Set([accountSpaceId, ...annexSpaceIds])
+  const passphraseSpaceIds = signupSpaceIds.filter(
+    spaceId => !notUnlock.has(spaceId)
+  )
+  const recoverySpaceIds = spaceIds.filter(
+    spaceId => !signupSpaceIds.includes(spaceId) && !notUnlock.has(spaceId)
+  )
+  expect(
+    passphraseSpaceIds,
+    'the signup created one unlock Space, the passphrase'
+  ).toHaveLength(1)
+  expect(
+    recoverySpaceIds,
+    'the recovery code issuance created one unlock Space'
+  ).toHaveLength(1)
+
+  return {
+    passphrase,
+    accountSpaceId,
+    annexSpaceIds,
+    logUrl,
+    spaceIds,
+    actingUnlockSpaceId: passphraseSpaceIds[0]!,
+    siblingUnlockSpaceId: recoverySpaceIds[0]!
+  }
 }
 
 /**
@@ -442,8 +476,9 @@ test.describe.serial('Account deletion torn after the pivot', () => {
         .click()
       await expect(page).toHaveURL(/\/#?\/?$/, { timeout: 60_000 })
 
-      // The account Space and everything before the pivot are gone; exactly
-      // one Space stands, the acting credential's own unlock Space.
+      // The account Space and everything before the pivot are gone, the
+      // recovery code's unlock Space among them; exactly one Space stands,
+      // the acting credential's (the passphrase's) own unlock Space.
       const surviving = await survivingSpaceIds({ spaceIds: account.spaceIds })
       expect(surviving).not.toContain(account.accountSpaceId)
       for (const annexSpaceId of account.annexSpaceIds) {
@@ -451,8 +486,12 @@ test.describe.serial('Account deletion torn after the pivot', () => {
       }
       expect(
         surviving,
+        "the recovery code's unlock Space is gone"
+      ).not.toContain(account.siblingUnlockSpaceId)
+      expect(
+        surviving,
         "only the acting credential's unlock Space stands"
-      ).toHaveLength(1)
+      ).toEqual([account.actingUnlockSpaceId])
 
       // The browser still holds nothing: the local half runs past the pivot
       // too.
@@ -466,13 +505,9 @@ test.describe.serial('Account deletion torn after the pivot', () => {
   })
 })
 
-// The annex re-point variant (an account whose log carries two
-// `#DelegatedClients` pointer entries) needs a generation swap forced from a
-// test, which only the remembered-login GC chain performs today; there is no
-// seam to drive it.
-test.skip('deletes a superseded auxiliary annex Space too', () => {})
-
-// The expired-sibling-zcap variant needs a registry entry whose
-// `manageCapability` has lapsed, which is a year-long TTL with no clock seam
-// in the app; the unit suite covers the reported-residue path instead.
-test.skip('names an unlock Space whose management zcap has expired', () => {})
+// Two variants have no e2e coverage. Deleting a superseded auxiliary annex
+// Space needs a generation swap forced from a test, which only the
+// remembered-login GC chain performs, with no seam to drive it. Naming an
+// unlock Space whose management zcap has expired needs a year-long TTL to
+// lapse, with no clock seam in the app; the unit suite covers that
+// reported-residue path instead.

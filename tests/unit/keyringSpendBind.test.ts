@@ -437,6 +437,8 @@ describe('the bind under the spend obligations', () => {
       controller: 'did:key:z6MkSomeoneElse',
       pointer: OTHER_POINTER
     })
+    const foreign = state.records.get(credential.unlock.spaceId)
+    expect(foreign).toBeDefined()
 
     await expect(
       bindPassphrase({
@@ -453,8 +455,7 @@ describe('the bind under the spend obligations', () => {
         idb
       })
     ).rejects.toThrow(UnlockSpaceCollisionError)
-    // Nothing overwritten: the foreign record still stands.
-    const served = state.records.get(credential.unlock.spaceId)
-    expect(served).toBeDefined()
+    // Nothing overwritten: the foreign record still stands verbatim.
+    expect(state.records.get(credential.unlock.spaceId)).toBe(foreign)
   })
 })

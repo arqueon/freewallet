@@ -114,20 +114,76 @@ export function quotaCard(page: Page): Locator {
     .filter({ has: page.getByRole('heading', { name: 'Storage usage' }) })
 }
 
-export async function expectCollectionUsage(
+/**
+ * A usage figure as `formatBytes` renders it: an amount, a space, and a
+ * base-1024 unit (e.g. "24.0 KB", "200 B").
+ */
+const USAGE_FIGURE = /(\d+(?:\.\d+)?)\s?(B|KB|MB|GB|TB)(?![A-Za-z])/
+
+const USAGE_UNIT_BYTES: Record<string, number> = {
+  B: 1,
+  KB: 1024,
+  MB: 1024 ** 2,
+  GB: 1024 ** 3,
+  TB: 1024 ** 4
+}
+
+/**
+ * The usage figure one collection row in the storage page's collections
+ * browser shows, parsed back into bytes, or undefined when the row shows
+ * none. The figure is the last one in the row's text, after the name, the
+ * item count, and any chips.
+ *
+ * @param rowText {string}   the row link's text content
+ * @returns {number | undefined}
+ */
+export function usageBytesOfRow(rowText: string): number | undefined {
+  const figures = [...rowText.matchAll(new RegExp(USAGE_FIGURE.source, 'g'))]
+  const last = figures[figures.length - 1]
+  if (last === undefined) {
+    return undefined
+  }
+  return Number(last[1]) * USAGE_UNIT_BYTES[last[2]!]!
+}
+
+/**
+ * A collection's row in the storage page's collections browser. Per-collection
+ * usage renders on each row (the "Wallet Contents" / "Wallet System
+ * Collections" lists), not in the aggregate "Storage usage" card. The row is
+ * found by its storage-path href, which is deterministic and sidesteps the
+ * "Verifiable Credentials" / "Verifiable Credentials (Publicly Shared)"
+ * name-prefix clash.
+ *
+ * @param page {Page}
+ * @param collectionId {string}
+ * @returns {Locator}
+ */
+export function collectionRow(page: Page, collectionId: string): Locator {
+  return page.locator(`a[href$="/storage/collections/${collectionId}"]`)
+}
+
+/**
+ * Opens the storage page fresh and reads one collection's usage figure, in
+ * bytes. The page measures usage when it mounts, so navigating away and back
+ * takes a new reading without a reload, which would end the in-memory
+ * session.
+ *
+ * @param page {Page}   a page holding a logged-in session
+ * @param collectionId {string}
+ * @returns {Promise<number>}
+ */
+export async function readCollectionUsageBytes(
   page: Page,
-  collectionId: string,
-  usagePattern: RegExp
-) {
-  // Per-collection usage renders on each collection's row in the collections
-  // browser (the "Wallet Contents" / "Wallet System Collections" lists), not in
-  // the aggregate "Storage usage" card. Target the row by its storage-path href
-  // -- deterministic, and it sidesteps the "Verifiable Credentials" /
-  // "Verifiable Credentials (Publicly Shared)" name-prefix clash. The row link
-  // carries the usage amount (amount and unit render as adjacent spans with no
-  // separating space, e.g. "24.0KB").
-  const row = page.locator(`a[href$="/storage/collections/${collectionId}"]`)
-  await expect(row).toContainText(usagePattern)
+  collectionId: string
+): Promise<number> {
+  await page.goto('/#/dashboard')
+  await goToStorage(page)
+  await expectQuotaCard(page)
+  const row = collectionRow(page, collectionId)
+  await expect(row).toContainText(USAGE_FIGURE, { timeout: 15_000 })
+  const bytes = usageBytesOfRow((await row.textContent()) ?? '')
+  expect(bytes, `${collectionId} shows a usage figure`).toBeDefined()
+  return bytes!
 }
 
 export async function expectHistoryEntry(page: Page, summary: string | RegExp) {

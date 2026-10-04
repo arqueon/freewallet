@@ -1087,13 +1087,19 @@ describe('WASRemoteStore.keyedCollectionHandle', () => {
   })
 
   it('reads the capability at each build, so a renewal reaches the next one', async () => {
-    const { store, space } = storeWithCapability({
-      id: 'urn:zcap:generation'
-    } as unknown as IZcap)
+    const original = { id: 'urn:zcap:generation' } as unknown as IZcap
+    const { store, space } = storeWithCapability(original)
+    await openHandle(store)
     const renewed = { id: 'urn:zcap:generation-fresh' } as unknown as IZcap
     store.adoptInvocationCapability({ capability: renewed })
     await openHandle(store)
-    expect(space).toHaveBeenLastCalledWith('space-id', { capability: renewed })
+    expect(space).toHaveBeenCalledTimes(2)
+    expect(space).toHaveBeenNthCalledWith(1, 'space-id', {
+      capability: original
+    })
+    expect(space).toHaveBeenNthCalledWith(2, 'space-id', {
+      capability: renewed
+    })
   })
 
   it('carries the descriptor and the reader keys as the handle override', async () => {

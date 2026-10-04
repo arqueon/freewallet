@@ -559,15 +559,6 @@ describe('the ceremony hand-off', () => {
     expect(session.profile.persistClientKeys).not.toHaveBeenCalled()
   })
 
-  it('reports the annex stage as a no-op when it reports nothing', async () => {
-    const outcome = await rotateOffUnlockCredential({
-      session: sessionWith(),
-      method: PASSPHRASE_METHOD,
-      verb: 'changing the passphrase'
-    })
-    expect(outcome?.mended).toEqual(annexMend({ outcome: 'noop' }))
-  })
-
   it('propagates a failed ceremony, memo dropped either way', async () => {
     vi.mocked(retireUnlockCredential).mockImplementation(async () => {
       state.calls.push('retireUnlockCredential')
@@ -1098,8 +1089,27 @@ describe('the annex strike-or-swap stage', () => {
           standingClient: { agents: { zcapClient: ACTING_ZCAP_CLIENT } }
         }
       })
+      // This module reaches no unlock-record writer of its own, so the one
+      // way a sibling record could be rewritten is an option handed to the
+      // ceremony. The option sets are written out in full: a new member (a
+      // record re-mint hook among them) goes red here.
       const onLadder = vi.mocked(retireUnlockCredential).mock.calls[0]![0]
-      expect(onLadder).not.toHaveProperty('remintDependentRecords')
+      expect(Object.keys(onLadder).sort()).toEqual([
+        'clientKeyAgreementKey',
+        'collections',
+        'expectedDid',
+        'idStore',
+        'ladderSeed',
+        'onUserKeyAdopted',
+        'pinnedEpochId',
+        'projectionStore',
+        'retireClientAnnexInventory',
+        'rosterStore',
+        'signer',
+        'unlockKeys',
+        'userKey',
+        'verb'
+      ])
 
       vi.mocked(retireUnlockCredential).mockImplementation(ceremonyDriving())
       await rotateOffUnlockCredential({
@@ -1108,7 +1118,20 @@ describe('the annex strike-or-swap stage', () => {
         verb: 'changing the passphrase'
       })
       const enrolled = vi.mocked(retireUnlockCredential).mock.calls[1]![0]
-      expect(enrolled).not.toHaveProperty('remintDependentRecords')
+      expect(Object.keys(enrolled).sort()).toEqual([
+        'clientKeyAgreementKey',
+        'collections',
+        'expectedDid',
+        'idStore',
+        'onUserKeyAdopted',
+        'pinnedEpochId',
+        'retireClientAnnexInventory',
+        'rosterStore',
+        'signer',
+        'unlockKeys',
+        'userKey',
+        'verb'
+      ])
     })
 
     it('skips rather than root-invoking with no sibling to reach through', async () => {

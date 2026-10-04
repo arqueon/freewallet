@@ -1,5 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { fillSettled, goToStorage, signupViaWizard } from './helpers'
+import { accountSpaceIdFrom, spaceExistsInStore } from './storeOracle'
 
 /**
  * WAS (remote storage) smoke tests. These run against the app in remote mode
@@ -8,6 +9,26 @@ import { fillSettled, goToStorage, signupViaWizard } from './helpers'
  * signing up creates a real Space + collections on the WAS server via
  * ZCap-signed HTTP.
  */
+
+/**
+ * Asserts the session's account Space exists in the server's store, and that
+ * the storage page names it as the connected Space. The "Space (connected):"
+ * label renders with or without a remote Space, so the Space URL beneath it
+ * is what tells the two apart.
+ *
+ * @param page {Page}   a page holding a logged-in session
+ * @returns {Promise<void>}
+ */
+async function expectConnectedSpace(page: Page): Promise<void> {
+  const spaceId = await accountSpaceIdFrom(page)
+  expect(
+    await spaceExistsInStore({ spaceId }),
+    'the account Space exists on the server'
+  ).toBe(true)
+  await goToStorage(page)
+  await expect(page.getByText(new RegExp(`/space/${spaceId}/?$`))).toBeVisible()
+}
+
 test.describe('WAS remote storage', () => {
   test('signing up provisions a remote Space and reaches the dashboard', async ({
     page
@@ -30,12 +51,14 @@ test.describe('WAS remote storage', () => {
     // the KMS keystore and did:web/did:webvh provisioning, so the redirect to
     // the dashboard can run past the default 5s assertion timeout.
     await expect(page).toHaveURL(/#\/dashboard/, { timeout: 30_000 })
+
+    await expectConnectedSpace(page)
   })
 
   test('storage page shows the connected remote Space', async ({
     page
   }, testInfo) => {
     await signupViaWizard(page, testInfo)
-    await goToStorage(page)
+    await expectConnectedSpace(page)
   })
 })

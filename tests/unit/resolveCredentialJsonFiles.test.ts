@@ -4,9 +4,9 @@ import {
   CredentialJsonFileTooLargeError,
   isJsonCredentialFile,
   resolveCredentialsFromJsonFiles
-} from '../src/lib/resolveCredentialJsonFiles'
-import { ResolveCredentialsInputError } from '../src/lib/resolveCredentialsInput'
-import { MAX_CREDENTIAL_JSON_FILE_BYTES } from '../src/app.config'
+} from '@/lib/resolveCredentialJsonFiles'
+import { ResolveCredentialsInputError } from '@/lib/resolveCredentialsInput'
+import { MAX_CREDENTIAL_JSON_FILE_BYTES } from '@/app.config'
 
 const minimalVc = {
   '@context': ['https://www.w3.org/2018/credentials/v1'],
@@ -55,7 +55,7 @@ describe('resolveCredentialsFromJsonFiles', () => {
   })
 
   it('uses resolveCredentialsInput for each file', async () => {
-    const resolveModule = await import('../src/lib/resolveCredentialsInput')
+    const resolveModule = await import('@/lib/resolveCredentialsInput')
     const spy = vi
       .spyOn(resolveModule, 'resolveCredentialsInput')
       .mockResolvedValue([minimalVc as never])

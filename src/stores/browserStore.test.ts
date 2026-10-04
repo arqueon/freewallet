@@ -2351,7 +2351,7 @@ describe('RemoteDirectStore contacts', () => {
   })
 
   it('appends contact revisions content-addressed and idempotent', async () => {
-    const { store, collections, epochs } = makeContactsStore()
+    const { store, collections } = makeContactsStore()
     const revision = {
       contactId: 'c-1',
       action: 'create',
@@ -2366,8 +2366,11 @@ describe('RemoteDirectStore contacts', () => {
     await store.addContactRevision({ revision })
 
     expect(collections.get('contactsHistory')!.size).toBe(1)
-    const [resourceId] = [...collections.get('contactsHistory')!.keys()]
-    expect(epochs.get('contactsHistory')!.has(resourceId)).toBe(true)
+    // Keyed by the cipher's content-derived id, not the plaintext-store uuid.
+    const { id: contentId } = await makeFakeContentCipher().encrypt({
+      data: revision as unknown as Json
+    })
+    expect([...collections.get('contactsHistory')!.keys()]).toEqual([contentId])
   })
 
   it("lists one contact's revisions newest first, filtering and tolerating bad rows", async () => {
@@ -2587,23 +2590,35 @@ describe('wipeStorage (cross-tab teardown and verified completion)', () => {
         close() {}
       }
     )
-    const deleted: string[] = []
+    // A wallet database holding one document, then closed: the memory
+    // storage keeps a closed database's documents, as IndexedDB would.
+    const storage = getRxStorageMemory()
+    const user: User = { id: 'did:key:z6MkWipeByName' }
+    const { localStore: writer } = await BrowserStore.initClient({
+      user,
+      storage
+    })
+    await writer.ensureUserCollections({ user })
+    const credential = makeCredential('Wiped')
+    const cid = await cidFrom({ doc: credential })
+    await writer.addPublicCredential({ cid, credential })
+    await writer.close()
+
     // A factory carrying no `databases` member: nothing can be discovered
     // or re-probed, so the wipe removes the wallet database by name and
     // says the deletion is unconfirmed rather than claiming a clean wipe.
-    vi.stubGlobal('indexedDB', {
-      deleteDatabase(name: string) {
-        deleted.push(name)
-        const request: { onsuccess?: () => void } = {}
-        queueMicrotask(() => request.onsuccess?.())
-        return request
-      }
-    })
-    const store = new BrowserStore({
-      dbPrefix: 'prefix-c',
-      storage: getRxStorageMemory()
-    })
+    vi.stubGlobal('indexedDB', {})
+    const store = new BrowserStore({ dbPrefix: writer.dbPrefix, storage })
     await expect(store.wipeStorage()).resolves.toEqual({ verified: false })
+
+    // The by-name removal really happened: a fresh open finds no document.
+    const fresh = new BrowserStore({ dbPrefix: writer.dbPrefix, storage })
+    await fresh.ensureUserCollections({ user })
+    try {
+      expect(await fresh.hasPublicCredential({ cid })).toBe(false)
+    } finally {
+      await fresh.wipeStorage()
+    }
   })
 
   it('closes a sibling store when its prefix is torn down from another tab', async () => {

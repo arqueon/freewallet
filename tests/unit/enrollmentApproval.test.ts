@@ -418,20 +418,20 @@ describe('the best-effort ClientConnect activity', () => {
   })
 })
 
-describe('re-run convergence', () => {
-  it('re-runs with the same connect code on the same arguments', async () => {
-    // Every stage of the ceremony is idempotent and resumes from stored
-    // state alone, so the approving half re-offers exactly what it offered
-    // the first time; the one-request window the ladder branch leaves (the
-    // new client standing with no roster wrap yet) is mended by this re-run.
+describe('a re-run with the same connect code', () => {
+  it('hands the ceremony the same arguments on each run', async () => {
+    // The ceremony's own stages are idempotent and resume from stored state
+    // alone, which is wallet-core's to test (the one-request window the
+    // ladder branch leaves is mended by such a re-run). The binding's half is
+    // that it keeps no state across calls: a re-run re-offers exactly what
+    // the first run offered.
     const session = approvingSession()
     await approveEnrollment({ request: REQUEST, session })
-    const first = vi.mocked(approveEnrollmentCore).mock.calls[0]?.[0]
+    await approveEnrollment({ request: REQUEST, session })
 
-    await expect(
-      approveEnrollment({ request: REQUEST, session })
-    ).resolves.toMatchObject({ signingKeyMultibase: 'z6MkEnrolleeClient' })
-    expect(vi.mocked(approveEnrollmentCore)).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(approveEnrollmentCore).mock.calls[1]?.[0]).toEqual(first)
+    const calls = vi.mocked(approveEnrollmentCore).mock.calls
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.[0]).toBeDefined()
+    expect(calls[1]?.[0]).toEqual(calls[0]?.[0])
   })
 })

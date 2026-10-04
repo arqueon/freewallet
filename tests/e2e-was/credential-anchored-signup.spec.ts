@@ -15,6 +15,8 @@
  */
 import { test, expect, type Browser, type Page } from '@playwright/test'
 import { addCredentialViaPaste, fillSettled, signupViaWizard } from './helpers'
+import { accountSpaceIdFrom } from './storeOracle'
+import { readAccountLogVersions } from './storedLogs'
 import {
   captureLocalStorageKeys,
   expectNoStorageResidue
@@ -52,6 +54,24 @@ test.describe.serial('credential-anchored signup', () => {
         rememberBrowser: false
       })
       passphrase = user.passphrase
+
+      // No enrolled client anywhere: no version of the account document
+      // lists a key under `capabilityInvocation`, the relation an enrolled
+      // client is keyed on. The passphrase's ladder VM publishes under
+      // `assertionMethod` alone, which shows the log read is not empty.
+      const spaceId = await accountSpaceIdFrom(page)
+      const versions = await readAccountLogVersions({ spaceId })
+      expect(versions.length, 'the account log is stored').toBeGreaterThan(0)
+      for (const { versionId, invocationKeys } of versions) {
+        expect(
+          [...invocationKeys],
+          `version ${versionId} lists no enrolled client`
+        ).toEqual([])
+      }
+      expect(
+        versions[versions.length - 1]!.assertionKeys.size,
+        'the latest document lists the ladder VM'
+      ).toBeGreaterThan(0)
 
       // The signup tail seeded the welcome content through the transient
       // session's own storage.

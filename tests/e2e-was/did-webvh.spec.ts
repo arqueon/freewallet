@@ -1,6 +1,13 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test'
 import { readLogFromString, resolveDIDFromLog } from '@interop/did-method-webvh'
-import { fillSettled, forceRememberBrowser } from './helpers'
+import {
+  classifyCollectionFile,
+  parseArchivePath,
+  policyFromFile,
+  readSpaceArchive
+} from '@interop/space-archive'
+import { fillSettled, forceRememberBrowser, sessionSpaceId } from './helpers'
+import { readStoredResource } from './storedLogs'
 
 /**
  * Hosted did:webvh DID log e2e (Track F, Phase 2). Runs against the app in
@@ -15,19 +22,22 @@ import { fillSettled, forceRememberBrowser } from './helpers'
  * 2. The Settings rotation ceremony appends a verifying entry 2: the previously
  *    staged update key becomes active and the committed next-key hash rolls,
  *    while the did:web holder that DIDAuth presents is unchanged (decision 8).
- * 3. A Space export -> import round-trip preserves the hosted `did.jsonl` (and
- *    `did.json`) byte-exact and keeps the `id` collection's collection-level
- *    `PublicCanRead`: the re-imported log still `resolveDIDFromLog`-verifies
- *    (any re-serialization would break the JCS -> sha256 hash chain) and both
- *    stay world-readable.
+ * 3. A Space export carries the hosted `did.jsonl` (and `did.json`)
+ *    byte-exact, with the `id` collection's collection-level `PublicCanRead`:
+ *    the exported log still `resolveDIDFromLog`-verifies (any
+ *    re-serialization would break the JCS -> sha256 hash chain). Importing
+ *    the archive back re-creates an emptied `key-map/keys.json` and leaves
+ *    the standing `id` collection served as it was. The import never
+ *    re-creates `id` itself here: the app imports only into the session's
+ *    own Space, whose `id` collection must stand throughout.
  */
 
 /**
  * The live `StorageManager`, published on `window.__E2E_STORAGE__` by the auth
- * store in non-production builds. Space export / import (and the whole-`id`-
- * collection delete this round-trip needs) are ZCap-signed operations that only
- * the in-memory session can authorize, so the test drives them here
- * rather than through `page.request`.
+ * store in non-production builds. Space export / import (and the whole-
+ * `key-map` collection delete the import check needs) are ZCap-signed
+ * operations that only the in-memory session can authorize, so the test
+ * drives them here rather than through `page.request`.
  */
 type E2EStorage = {
   exportSpace(): Promise<ReadableStream<Uint8Array>>
@@ -239,7 +249,7 @@ test('rotating the update key appends a verifying entry and rolls the staged key
   await expect(page.getByText(docBefore.id)).toBeVisible()
 })
 
-test('a Space export/import round-trip preserves did.jsonl byte-exact and world-readable', async ({
+test('a Space export carries did.jsonl byte-exact and world-readable, and its import re-creates key-map', async ({
   page
 }, testInfo) => {
   // Signup provisioning plus a full export and re-import against one teaching
@@ -250,7 +260,7 @@ test('a Space export/import round-trip preserves did.jsonl byte-exact and world-
   const { didJsonUrl, logUrl } = await readPublishedUrls(page)
 
   // --- Baseline: the published log + doc are world-readable and the log
-  //     self-certifies. Capture the exact bytes to compare after the round-trip.
+  //     self-certifies. Capture the exact bytes to compare the export with.
   const logRes = await page.request.get(logUrl)
   expect(logRes.status()).toBe(200)
   const logBefore = await logRes.text()
@@ -281,14 +291,37 @@ test('a Space export/import round-trip preserves did.jsonl byte-exact and world-
   })
   expect(exportedTar.length).toBeGreaterThan(0)
 
+  // --- The archive carries the `id` collection as served: the log and the
+  //     projection byte-exact (no re-canonicalization, so the hash chain a
+  //     restore would serve is intact), and the collection-level
+  //     `PublicCanRead` policy that keeps both world-readable.
+  const archive = await readIdCollection(new Uint8Array(exportedTar))
+  const exportedLog = archive.resources.get('did.jsonl')
+  const exportedDoc = archive.resources.get('did.json')
+  expect(exportedLog, 'the archive carries id/did.jsonl').toBeDefined()
+  expect(exportedDoc, 'the archive carries id/did.json').toBeDefined()
+  expect(exportedLog).toBe(logBefore)
+  expect(exportedDoc).toBe(docBefore)
+  expect(archive.policyType, 'the id collection policy').toBe('PublicCanRead')
+  // The exported log self-certifies on its own: SCID + chain + proofs
+  // verify, at the version the server serves.
+  const resolvedExported = await resolveDIDFromLog(
+    readLogFromString(exportedLog!)
+  )
+  expect(resolvedExported.meta.error).toBeUndefined()
+  expect(resolvedExported.did).toBe(resolvedBefore.did)
+  expect(resolvedExported.meta.versionId).toBe(resolvedBefore.meta.versionId)
+
   // --- Empty a target collection so the re-import actually rewrites (import
   //     merges and SKIPS ids that already exist). The private `key-map`
   //     collection (holding keys.json) is the one emptied: on a promoted
   //     Space the `id` collection's history log is load-bearing -- the server
   //     resolves the did:webvh controller from it on every request -- so
   //     deleting it would revoke the very authority the import (and every
-  //     request after it) needs. Restoring a Space wholesale is a
-  //     fresh-space flow, not an in-place one.
+  //     request after it) needs. The app imports only into the session's own
+  //     Space, where `id` always stands, so the import half of the `id`
+  //     collection's round-trip is out of this test's reach: restoring a
+  //     Space wholesale is a fresh-space flow, not an in-place one.
   await page.evaluate(async () => {
     const storage = (window as unknown as { __E2E_STORAGE__: E2EStorage })
       .__E2E_STORAGE__
@@ -312,25 +345,72 @@ test('a Space export/import round-trip preserves did.jsonl byte-exact and world-
   }, exportedTar)
   expect(stats.collectionsCreated).toBeGreaterThan(0)
   expect(stats.resourcesCreated).toBeGreaterThan(0)
+  expect(archive.keyMapKeys, 'the archive carries key-map/keys.json').toEqual(
+    expect.any(String)
+  )
+  const spaceId = await sessionSpaceId(page)
+  expect(
+    await readStoredResource({
+      spaceId,
+      collectionId: 'key-map',
+      resourceId: 'keys.json'
+    }),
+    'the import re-created key-map/keys.json from the archive'
+  ).toBe(archive.keyMapKeys)
 
-  // --- Policy round-trip: both DID resources are still world-readable after
-  //     the import (the `id` collection's collection-level `PublicCanRead`
-  //     survives the merge untouched).
+  // --- The merge left the standing `id` collection alone: both DID
+  //     resources are still served, world-readable and unchanged.
   const logAfterRes = await page.request.get(logUrl)
   expect(logAfterRes.status()).toBe(200)
-  const logAfter = await logAfterRes.text()
+  expect(await logAfterRes.text()).toBe(logBefore)
   const didAfterRes = await page.request.get(didJsonUrl)
   expect(didAfterRes.status()).toBe(200)
-
-  // --- Byte-exact: the re-imported bodies are identical to the pre-export
-  //     bytes (no re-canonicalization), so the hash chain is intact.
-  expect(logAfter).toBe(logBefore)
   expect(await didAfterRes.text()).toBe(docBefore)
-
-  // --- The restored log still self-certifies: SCID + chain + proofs verify,
-  //     and it is the same DID at the same version as before the round-trip.
-  const resolvedAfter = await resolveDIDFromLog(readLogFromString(logAfter))
-  expect(resolvedAfter.meta.error).toBeUndefined()
-  expect(resolvedAfter.did).toBe(resolvedBefore.did)
-  expect(resolvedAfter.meta.versionId).toBe(resolvedBefore.meta.versionId)
 })
+
+/**
+ * What one Space export archive holds for the round-trip's assertions: the
+ * `id` collection's resources as text, by resource id, the type of that
+ * collection's own access policy, and the `key-map/keys.json` body. A
+ * resource sits at `space/<spaceId>/<collectionId>/r.<id>.<type>.<ext>`,
+ * and a collection's policy at `.collection.policy.json` beside it.
+ *
+ * @param bytes {Uint8Array}   the exported tar
+ * @returns {Promise<{ resources: Map<string, string>,
+ *   policyType: string | undefined, keyMapKeys: string | undefined }>}
+ */
+async function readIdCollection(bytes: Uint8Array): Promise<{
+  resources: Map<string, string>
+  policyType: string | undefined
+  keyMapKeys: string | undefined
+}> {
+  const archive = await readSpaceArchive(bytes)
+  const decoder = new TextDecoder()
+  const resources = new Map<string, string>()
+  let policyType: string | undefined
+  let keyMapKeys: string | undefined
+  for await (const entry of archive.entries) {
+    if (entry.type !== 'file') {
+      continue
+    }
+    const position = parseArchivePath(entry.name)
+    if (position.area !== 'collection') {
+      continue
+    }
+    const kind = classifyCollectionFile(position.fileName)
+    if (position.collectionId === 'id') {
+      if (kind.kind === 'representation') {
+        resources.set(kind.resourceId, decoder.decode(await entry.bytes()))
+      } else if (kind.kind === 'policy' && kind.scope === 'collection') {
+        policyType = policyFromFile({ bytes: await entry.bytes() }).type
+      }
+    } else if (
+      position.collectionId === 'key-map' &&
+      kind.kind === 'representation' &&
+      kind.resourceId === 'keys.json'
+    ) {
+      keyMapKeys = decoder.decode(await entry.bytes())
+    }
+  }
+  return { resources, policyType, keyMapKeys }
+}

@@ -135,24 +135,29 @@ describe('mapPopupLoginError', () => {
     expect(mapPopupLoginError(new Error('x'))).toBe('chapi.storageUnreachable')
   })
 
-  it('never maps a transient refusal onto the not-enrolled guidance', () => {
+  it('maps each transient refusal to its own copy, never the not-enrolled guidance', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    const reasons: TransientLoginUnavailableReason[] = [
-      'no-was-server',
-      'no-delegated-clients',
-      'unpromoted-account',
-      'no-clientAnnex-generation',
-      'no-generation-delegation',
-      'no-user-key-roster',
-      'no-user-key-wrap',
-      'roster-mint-refused'
-    ]
-    for (const reason of reasons) {
+    // Written out literally rather than read from the production mapping, so
+    // a reason re-pointed at another key (the not-enrolled guidance or the
+    // generic failure included) goes red.
+    const expectedKeys: Record<TransientLoginUnavailableReason, string> = {
+      'no-was-server': 'auth.errors.setupFailed',
+      'no-delegated-clients': 'auth.errors.transientUnavailable',
+      'unpromoted-account': 'auth.errors.transientSetupIncomplete',
+      'credential-not-standing': 'auth.errors.transientCredentialNotStanding',
+      'no-clientAnnex-generation': 'auth.errors.transientUnavailable',
+      'no-generation-delegation': 'auth.errors.transientUnavailable',
+      'no-user-key-roster': 'auth.errors.transientSetupIncomplete',
+      'no-user-key-wrap': 'auth.errors.transientNoUserKeyWrap',
+      'roster-mint-refused': 'auth.errors.transientRosterMintRefused'
+    }
+    for (const [reason, expectedKey] of Object.entries(expectedKeys)) {
       const key = mapPopupLoginError(
-        new TransientLoginUnavailableError({ reason })
+        new TransientLoginUnavailableError({
+          reason: reason as TransientLoginUnavailableReason
+        })
       )
-      expect(key).not.toBe('chapi.clientNotEnrolled')
-      expect(key).not.toBe('chapi.loginFailed')
+      expect([reason, key]).toEqual([reason, expectedKey])
     }
   })
 

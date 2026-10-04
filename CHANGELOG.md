@@ -18,6 +18,9 @@
   is shown shortened.
 - Request consent and grant revocation (app disconnect, agent revoke,
   unshare) are named ceremonies and emit stage and outcome events.
+- The cross-replica conformance suite boots `was-teaching-server` through
+  its `was-teaching-server/testing` export, as a devDependency, in place of a
+  sibling build.
 
 ### Changed
 
