@@ -30,6 +30,11 @@
 - `addAccountPasskey` takes an optional `register` ceremony, and the
   browser-local persistence strategy an optional `replicaStorage`, both for
   tests.
+- Harness tests tear a ceremony at a chosen write through the server's
+  request fault seam (refuse, drop the response, hold) and assert on its
+  ordered request record. The transient recovery spend torn at its roster
+  append is covered there, refused and with its response dropped. A second
+  test interleaves two visits at a held annex enrollment.
 
 ### Changed
 

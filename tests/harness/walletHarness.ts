@@ -165,7 +165,7 @@
  * - the absent `localStorage`, so no actor persists a cache or a `writerId`;
  * - pure memos with no session state: was-client's resolved did:key cache,
  *   the webvh and resource-log `WeakMap` indexes keyed by log or document;
- * - the server, its data dir, and its request recorder.
+ * - the server, its data dir, and its request recorder and armed faults.
  */
 import { vi } from 'vitest'
 import type { LogEvent } from '@interop/logger'
@@ -334,7 +334,13 @@ export interface WalletHarness {
    */
   readonly dataDir: string
   /**
-   * The server's request recorder and fault seam.
+   * The server's request recorder and fault seam, as `startTestServer()`
+   * returns it: `refuse` (a tear before the server applies the request),
+   * `dropResponse` (a tear after it applied it), `hold`, and the ordered
+   * `requests` record. A fault is armed for the whole server, so it fires on
+   * whichever actor's request matches first. `reset()` empties `requests`,
+   * which each actor's `serverRequests()` window indexes into, so call it
+   * only while no actor is live.
    */
   readonly faults: RequestFaults
   /**

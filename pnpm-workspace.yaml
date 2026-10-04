@@ -8,3 +8,4 @@ allowedDeprecatedVersions:
 minimumReleaseAgeExclude:
   - '@interop/*'
   - 'byoe-context*'
+  - was-teaching-server@0.41.1

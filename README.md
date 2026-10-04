@@ -118,9 +118,8 @@ pnpm run test:conformance
 ```
 
 It boots `was-teaching-server` in process, from the devDependency's
-`was-teaching-server/testing` export. The devDependency links the sibling
-`../was-teaching-server` checkout, which must be built (`pnpm run build`
-there). No running server is needed. It is kept out of `npm test`.
+`was-teaching-server/testing` export. No sibling checkout or running server
+is needed. It is kept out of `npm test`.
 
 To run the session harness, which drives real wallet sessions in node as
 scripted actors against the same in-process server and prints per-visit log
@@ -130,7 +129,11 @@ growth tables:
 pnpm run test:harness
 ```
 
-It is kept out of `npm test` too.
+It is kept out of `npm test` too. A harness test can tear a ceremony at a
+chosen server write through `harness.faults`, the server's request fault
+seam. It can refuse the request, apply it and drop the response, or hold it
+while a second actor runs. It also reads the ordered record of every request
+the server saw.
 
 ## Deployment
 

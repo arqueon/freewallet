@@ -9,12 +9,10 @@
  * the recovered passphrase, proving the ceremony's records (bridge, sibling,
  * generation, roster wrap) are coherent.
  *
- * The last cell spends the replacement code with the roster append torn: it
- * pins the write ORDER the ceremony promises -- every annex write lands
- * before the add-and-retire entry, and the mandatory rotation's append is
- * the very next mutating request after it -- so the window in which the
- * typed code is dead and the new credential holds no wrap is the append
- * alone.
+ * The last cell spends the replacement code with the roster append torn, and
+ * pins the recover page's failure alert. The write order the ceremony
+ * promises around that tear is pinned at the session level, in
+ * `tests/harness/tornRecoverySpend.test.ts`.
  *
  * The REMEMBERED recovery cell is pinned in `recovery.spec.ts`.
  */
@@ -302,7 +300,7 @@ test.describe.serial('transient recovery (the login-axis cell)', () => {
     }
   })
 
-  test('the roster append is the first write after the add-and-retire entry', async ({
+  test('a spend torn at its roster append shows the recovery failure alert', async ({
     browser
   }) => {
     test.setTimeout(240_000)
@@ -313,20 +311,6 @@ test.describe.serial('transient recovery (the login-axis cell)', () => {
     const tornPassphrase = `Torn-transient-43!-${Date.now()}`
     const { context, page } = await coldTerminal(browser, APP_URL)
     try {
-      // Every mutating request the ceremony makes, in order (preflights and
-      // reads excluded); aborted requests are recorded too.
-      const writes: Array<{ method: string; pathname: string }> = []
-      page.on('request', request => {
-        const method = request.method()
-        if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
-          return
-        }
-        // The dev-server NDJSON log sink is telemetry, not a wallet write.
-        if (new URL(request.url()).pathname === '/__interop-logger') {
-          return
-        }
-        writes.push({ method, pathname: new URL(request.url()).pathname })
-      })
       // The tear: the roster append itself fails. Reads of the roster log
       // pass through untouched.
       const isRosterLog = (url: URL) =>
@@ -363,38 +347,6 @@ test.describe.serial('transient recovery (the login-axis cell)', () => {
           .getByRole('alert')
           .filter({ hasText: /Recovery failed|could not be reached/ })
       ).toBeVisible({ timeout: 120_000 })
-
-      const accountLogPath = new URL(logUrl).pathname
-      const accountLogWrites = writes
-        .map((write, index) => ({ ...write, index }))
-        .filter(
-          write => write.method === 'PUT' && write.pathname === accountLogPath
-        )
-      // The continuation's two entries: reveal-and-commit, add-and-retire.
-      expect(accountLogWrites).toHaveLength(2)
-      const addAndRetire = accountLogWrites[1]!.index
-      // Every annex write -- the generation genesis, its delegation embed,
-      // the visit key's enrollment -- precedes the add-and-retire entry.
-      const annexLogWrites = writes
-        .map((write, index) => ({ ...write, index }))
-        .filter(
-          write =>
-            write.pathname.endsWith('/did.jsonl') &&
-            write.pathname !== accountLogPath
-        )
-      expect(annexLogWrites.length).toBeGreaterThan(0)
-      for (const write of annexLogWrites) {
-        expect(write.index).toBeLessThan(addAndRetire)
-      }
-      // The roster append is the very next mutating request after the entry
-      // -- the one the tear aborted -- and nothing else is written after
-      // it: every later write is a re-attempt of that same append.
-      const afterEntry = writes.slice(addAndRetire + 1)
-      expect(afterEntry.length).toBeGreaterThan(0)
-      for (const write of afterEntry) {
-        expect(write.method).toBe('PUT')
-        expect(write.pathname.endsWith('/key-map/user-key.jsonl')).toBe(true)
-      }
     } finally {
       await context.close()
     }
