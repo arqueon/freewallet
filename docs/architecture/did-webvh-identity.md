@@ -60,7 +60,8 @@ entry, a revealed rung is reused rather than consumed, and no retired member
 lingers in `updateKeys` or `nextKeyHashes`. Entries are added only by
 ceremonies. A transient login writes the annex log and not this one. Most
 ceremonies add one or two entries; the last-client transition adds three,
-the annex GC's generation swap adds one pointer entry per period, and a
+the annex GC's generation swap adds one pointer entry per period (and one
+per repair of a pointer naming a deleted generation), and a
 backup export adds one entry plus one standing credential that stays until
 the user removes it. An account with two clients and five standing
 credentials pays about 13 KB per entry, so the server's 64 MiB upload limit

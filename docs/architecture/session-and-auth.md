@@ -449,6 +449,28 @@ The sweep is early because its roster convergence may rotate the key and
 re-seal the registry, and a read-modify-write racing that re-seal would undo
 it within one login.
 
+The annex GC in the tail (`sweepClientAnnexGenerations`, over wallet-core's
+`runClientAnnexGc`) swaps the pointed generation once a quarter and collects
+every `gen-` collection the account does not point at. The session hands it
+the document from its verified-log memo, which can be stale: a sibling client
+may have swapped since this login read the log. So the collect fan-out does
+not trust that view. It compares against the pointer it re-reads from the
+account log under the visit's pin just before it deletes. An unpointed
+generation the log never pointed at is kept until it is GC-quiet (24 hours
+plus an hour of grace), since it may be a sibling's fresh generation whose
+re-point has not landed yet. The report lists such a keep as `deferred`, and
+the mend entry reads a pass that only deferred as `noop`.
+
+The pass also reads the pointed generation's log. When that log is gone, the
+pass mints a fresh generation and re-points at it off the cadence (swap
+`repaired`). This is the remembered-login mender of an account left pointing
+at a deleted generation. On a transient visit the readiness stage mints a
+fresh generation for the same state. The repair refuses when the auxiliary
+Space itself is gone, since only the readiness stage replaces a Space. The
+sweep invalidates the verified-log memo after a swap or a repair, and
+whenever the re-read pointer differs from the one it passed in. A `failed`
+swap whose re-point landed, or a sibling's swap, extended the log too.
+
 Navigation to the dashboard waits only on storage provisioning
 (`session.storageReady`). The passes run after navigation as one mender
 block, in registration order: the runner

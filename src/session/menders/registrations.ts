@@ -669,7 +669,10 @@ const GENERATION_DELEGATION_HEAL: Registration<LoginMenderDeps, CeremonyId> = {
 
 /**
  * The annex GC sweep, after the registry-writing entries: a sibling re-mint
- * above lands first.
+ * above lands first. A swap, its off-cadence repair, or a collected
+ * generation reads as a mend. A generation the pass deferred (unpointed, and
+ * not GC-quiet yet) is a healthy keep, so a pass that only deferred is a
+ * `noop`.
  */
 const ANNEX_GC: Registration<LoginMenderDeps, CeremonyId> = {
   trigger: 'remembered-login-chain',
@@ -690,19 +693,21 @@ const ANNEX_GC: Registration<LoginMenderDeps, CeremonyId> = {
         }
       ]
     }
-    const { swap, collected, failed } = swept.report
+    const { swap, collected, deferred, failed } = swept.report
+    const mended =
+      swap === 'replaced' || swap === 'repaired' || collected.length > 0
+    let outcome: MendOutcome['outcome'] = mended ? 'clean' : 'noop'
+    if (failed.length > 0) {
+      outcome = 'partial'
+    }
     return [
       {
         invariant: 'no-annex-generation-outlives-its-pointer',
-        outcome:
-          failed.length > 0
-            ? 'partial'
-            : swap === 'replaced' || collected.length > 0
-              ? 'clean'
-              : 'noop',
+        outcome,
         detail: {
           swap,
           collected: collected.length,
+          deferred: deferred.length,
           failed: failed.length
         }
       }

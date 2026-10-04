@@ -31,6 +31,7 @@ vi.mock('@/session/accountCeremonyContext', () => ({
 
 vi.mock('@/session/verifiedLog', () => ({
   verifiedAccountLog: vi.fn(),
+  refreshVerifiedAccountLog: vi.fn(),
   invalidateVerifiedLog: vi.fn()
 }))
 
@@ -45,6 +46,7 @@ import {
 import type { SessionPersistence } from '@/session/persistence'
 import {
   invalidateVerifiedLog,
+  refreshVerifiedAccountLog,
   verifiedAccountLog
 } from '@/session/verifiedLog'
 import type { Session } from '@/types/auth'
@@ -58,10 +60,13 @@ const CLIENT_ANNEX_DID =
   'did:webvh:QmClientAnnexScid:was.example.test:space:clientAnnex-space-1:gen-Ux3v0kQf9aPmB2hZ'
 const CLIENT_WEBVH_KEYS = { current: { seed: 'current' } }
 const ID_STORE = { isIdStore: true }
+const SIBLING_ANNEX_DID =
+  'did:webvh:QmClientAnnexScid2:was.example.test:space:clientAnnex-space-1:gen-Ps7w1mRt4bNcK8yD'
 const REPORT = {
   swap: 'not-due',
   pointedDid: CLIENT_ANNEX_DID,
   collected: [],
+  deferred: [],
   failed: []
 }
 
@@ -225,6 +230,40 @@ describe('sweepClientAnnexGenerations -- the pass', () => {
     expect(options.ladderSeed).toBe(ladderSeed)
   })
 
+  it('refreshes the verified-log memo before reading the pointer', async () => {
+    // A memo taken before a sibling client's swap names a generation that
+    // sibling collected; the pass would repair off the sibling's live one.
+    const session = makeSession()
+    await sweepClientAnnexGenerations({ session })
+    expect(refreshVerifiedAccountLog).toHaveBeenCalledWith({ session })
+    expect(
+      vi.mocked(refreshVerifiedAccountLog).mock.invocationCallOrder[0]
+    ).toBeLessThan(vi.mocked(verifiedAccountLog).mock.invocationCallOrder[0]!)
+  })
+
+  it('runs no pass when the refresh fails', async () => {
+    vi.mocked(refreshVerifiedAccountLog).mockRejectedValueOnce(
+      new Error('offline')
+    )
+    await expect(
+      sweepClientAnnexGenerations({ session: makeSession() })
+    ).rejects.toThrow('offline')
+    expect(runClientAnnexGc).not.toHaveBeenCalled()
+  })
+
+  it('invalidates the memo when the pass rejects', async () => {
+    // The pass rejects only after its swap stage, so a re-point may have
+    // landed before the re-read or the collection listing failed.
+    vi.mocked(runClientAnnexGc).mockRejectedValue(new Error('listing failed'))
+    const session = makeSession()
+    await expect(sweepClientAnnexGenerations({ session })).rejects.toThrow(
+      'listing failed'
+    )
+    expect(invalidateVerifiedLog).toHaveBeenCalledWith({
+      profile: session.profile
+    })
+  })
+
   it('omits ladderSeed entirely when none is supplied', async () => {
     await sweepClientAnnexGenerations({ session: makeSession() })
     expect('ladderSeed' in gcOptions()).toBe(false)
@@ -260,7 +299,57 @@ describe('sweepClientAnnexGenerations -- the pass', () => {
     })
   })
 
-  it('leaves the memo alone when no swap was due', async () => {
+  it('invalidates the verified-log memo after a repair of a dead pointer', async () => {
+    vi.mocked(runClientAnnexGc).mockResolvedValue({
+      ...REPORT,
+      swap: 'repaired',
+      pointedDid: SIBLING_ANNEX_DID
+    } as never)
+    const session = makeSession()
+    await sweepClientAnnexGenerations({ session })
+    expect(invalidateVerifiedLog).toHaveBeenCalledWith({
+      profile: session.profile
+    })
+  })
+
+  it('invalidates the memo when the re-read pointer moved under a swap that did not land', async () => {
+    // A `failed` swap whose re-point landed, or a sibling client's swap:
+    // either way the log the memo holds is behind the host's.
+    for (const swap of ['failed', 'not-due', 'no-ladder-seed']) {
+      vi.mocked(invalidateVerifiedLog).mockClear()
+      vi.mocked(runClientAnnexGc).mockResolvedValue({
+        ...REPORT,
+        swap,
+        pointedDid: SIBLING_ANNEX_DID
+      } as never)
+      const session = makeSession()
+      await sweepClientAnnexGenerations({ session })
+      expect(invalidateVerifiedLog, swap).toHaveBeenCalledWith({
+        profile: session.profile
+      })
+    }
+  })
+
+  it('invalidates the memo when the re-read log carries no pointer', async () => {
+    vi.mocked(runClientAnnexGc).mockResolvedValue({
+      swap: 'not-due',
+      collected: [],
+      deferred: [],
+      failed: []
+    } as never)
+    const session = makeSession()
+    await sweepClientAnnexGenerations({ session })
+    expect(invalidateVerifiedLog).toHaveBeenCalledWith({
+      profile: session.profile
+    })
+  })
+
+  it('leaves the memo alone when no swap was due and the pointer is unchanged', async () => {
+    vi.mocked(runClientAnnexGc).mockResolvedValue({
+      ...REPORT,
+      collected: ['gen-Ux3v0kQf9aPmB2hY'],
+      deferred: ['gen-Ux3v0kQf9aPmB2hX']
+    } as never)
     await sweepClientAnnexGenerations({ session: makeSession() })
     expect(invalidateVerifiedLog).not.toHaveBeenCalled()
   })

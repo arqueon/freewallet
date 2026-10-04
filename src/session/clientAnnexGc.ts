@@ -1,6 +1,7 @@
 /**
  * The client annex GC sweep: the login-time driver of wallet-core's
- * `runClientAnnexGc` -- the quarterly generation swap plus the predicate-driven
+ * `runClientAnnexGc` -- the quarterly generation swap, its off-cadence repair
+ * of a pointer naming a generation whose log is gone, and the predicate-driven
  * collect fan-out over every non-pointed `gen-` collection (see the module
  * header there for the ceremony's stage order and constraints). This module
  * supplies what only a freewallet session knows: the enrolled-client
@@ -20,7 +21,10 @@ import type { ClientAnnexGcReport } from '@interop/wallet-core/clientAnnex'
 import { pointedClientAnnexReach } from '@/session/annexReach'
 import { enrolledCeremonyContext } from '@/session/accountCeremonyContext'
 import { isBrowserLocalSession } from '@/session/persistence'
-import { invalidateVerifiedLog } from '@/session/verifiedLog'
+import {
+  invalidateVerifiedLog,
+  refreshVerifiedAccountLog
+} from '@/session/verifiedLog'
 import type { Session } from '@/types/auth'
 
 /**
@@ -28,9 +32,14 @@ import type { Session } from '@/types/auth'
  * when the session cannot run it (not on the browser-local strategy, not an
  * enrolled did:webvh account, no annex inventory) -- the same silent-skip
  * policy as the other login-time sweeps -- and otherwise returns
- * wallet-core's per-pass report. A pass that swapped the generation
- * invalidates the session's verified-log memo (the account log gained the
- * pointer-update entry).
+ * wallet-core's per-pass report. The verified-log memo is refreshed first, so
+ * the pass is handed the pointer the host serves now and not the one this
+ * login read. The pass reports the pointer it re-read from the account log
+ * before its collect fan-out. The memo is invalidated when the pass swapped
+ * or repaired the generation, or when the two pointers differ: a `failed`
+ * swap whose re-point landed, or a sibling client's swap, also extended the
+ * log the memo holds. A pass that rejects invalidates it too, since it
+ * rejects only after its swap stage.
  *
  * @param options {object}
  * @param options.session {Session}   a live session
@@ -69,6 +78,11 @@ export async function sweepClientAnnexGenerations({
     return { skipped: 'no-account-did' }
   }
 
+  // The pass decides a dead pointed generation from the pointer it is handed,
+  // and the repair re-points with no quiet gate. A memo taken before a
+  // sibling client's swap names the generation that sibling collected, and
+  // the repair would move the account off the sibling's live one.
+  await refreshVerifiedAccountLog({ session })
   const reach = await pointedClientAnnexReach({ session, pointer })
   if (reach === null) {
     // No annex inventory on this account: nothing to swap, and no
@@ -77,23 +91,35 @@ export async function sweepClientAnnexGenerations({
   }
   const { doc, log, was } = reach
 
-  const report = await runClientAnnexGc({
-    was,
-    wasServerUrl: pointer.host,
-    accountSpaceId: pointer.spaceId,
-    account: { did: pointer.did, doc, log },
-    idStore: remoteStore.webvhIdStore(),
-    updateKeys: clientWebvhKeys,
-    zcapClient: session.profile.zcapClient,
-    ...(ladderSeed !== undefined ? { ladderSeed } : {}),
-    recordDigest: async digest => {
-      await session.storage.addHistoryGenerationCollected({
-        user: session.user,
-        ...digest
-      })
-    }
-  })
-  if (report.swap === 'replaced') {
+  let report: ClientAnnexGcReport
+  try {
+    report = await runClientAnnexGc({
+      was,
+      wasServerUrl: pointer.host,
+      accountSpaceId: pointer.spaceId,
+      account: { did: pointer.did, doc, log },
+      idStore: remoteStore.webvhIdStore(),
+      updateKeys: clientWebvhKeys,
+      zcapClient: session.profile.zcapClient,
+      ...(ladderSeed !== undefined ? { ladderSeed } : {}),
+      recordDigest: async digest => {
+        await session.storage.addHistoryGenerationCollected({
+          user: session.user,
+          ...digest
+        })
+      }
+    })
+  } catch (err) {
+    // The pass rejects only after its swap stage, on the re-read or the
+    // collection listing. A re-point may have landed by then.
+    invalidateVerifiedLog({ profile: session.profile })
+    throw err
+  }
+  if (
+    report.swap === 'replaced' ||
+    report.swap === 'repaired' ||
+    report.pointedDid !== reach.clientAnnexDid
+  ) {
     invalidateVerifiedLog({ profile: session.profile })
   }
   return { report }

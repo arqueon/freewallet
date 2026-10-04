@@ -326,7 +326,12 @@ const DECLARATIONS: ReadonlyArray<
   // 15
   // converger: `ensureClientAnnexGenerationReady`
   // (`src/session/transientLogin.ts`) over wallet-core's
-  // `ensureCredentialClientAnnexGeneration`; not exported.
+  // `ensureCredentialClientAnnexGeneration`, whose fresh-generation arm
+  // mends a pointer naming a generation whose log is gone; not exported.
+  // On a remembered login the annex GC (row 19) mends the same pointer
+  // with its `repaired` swap, inside a live auxiliary Space only. That
+  // pass reports row 19 alone: listing this row there would hold the GC to
+  // the `ladder` authority, which a remembered session does not carry.
   {
     id: 'annex-generation-is-reachable',
     statement:
@@ -396,7 +401,12 @@ const DECLARATIONS: ReadonlyArray<
   },
   // 19
   // converger: `sweepClientAnnexGenerations` (`src/session/clientAnnexGc.ts`)
-  // over wallet-core's `runClientAnnexGc`.
+  // over wallet-core's `runClientAnnexGc`. Its collect fan-out compares the
+  // host's listing against the pointer re-read from the account log under
+  // the visit's pin, and keeps an unpointed generation the log never pointed
+  // at until it is GC-quiet. Its `repaired` swap re-points an account left
+  // naming a deleted generation, the remembered-login twin of row 15's
+  // fresh-generation arm.
   {
     id: 'no-annex-generation-outlives-its-pointer',
     statement:
@@ -405,7 +415,9 @@ const DECLARATIONS: ReadonlyArray<
     authority: 'enrolled',
     triggers: ['remembered-login-chain'],
     ceremonies: [],
-    evidence: ['host-listing'],
+    // The pointer comes off the re-read account log; the candidates are the
+    // host's own listing.
+    evidence: ['verified-log', 'host-listing'],
     // The CHAPI popup stands this pass down: it writes no registry.
     when: (route: { popup: boolean }) => !route.popup
   },

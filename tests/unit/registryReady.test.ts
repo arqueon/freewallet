@@ -622,6 +622,65 @@ describe('the remembered login chain on the event channel', () => {
     expect(warns[0]?.err).toBeInstanceOf(TypeError)
   })
 
+  for (const { name, report, outcome } of [
+    {
+      name: 'a repair of a dead pointer is a mend',
+      report: { swap: 'repaired', collected: [], deferred: [], failed: [] },
+      outcome: 'clean'
+    },
+    {
+      name: 'a pass that only deferred is a healthy keep',
+      report: {
+        swap: 'not-due',
+        collected: [],
+        deferred: ['gen-young'],
+        failed: []
+      },
+      outcome: 'noop'
+    },
+    {
+      name: 'a collected generation is a mend beside a deferred one',
+      report: {
+        swap: 'not-due',
+        collected: ['gen-old'],
+        deferred: ['gen-young'],
+        failed: []
+      },
+      outcome: 'clean'
+    },
+    {
+      name: 'a failed generation makes the pass partial',
+      report: {
+        swap: 'repaired',
+        collected: [],
+        deferred: [],
+        failed: [{ generationId: 'gen-bad', error: new Error('kept') }]
+      },
+      outcome: 'partial'
+    }
+  ]) {
+    it(`grades the annex GC report: ${name}`, async () => {
+      const fake = await arrangeEnrolledLogin()
+      vi.mocked(sweepClientAnnexGenerations).mockResolvedValue({
+        report: report as never
+      })
+
+      const { session } = await loginWithPassphrase({ passphrase: PASSPHRASE })
+      fake.resolveProvisioning()
+      const mends = (await session!.mends)!
+      const entry = mends.find(
+        mend => mend.invariant === 'no-annex-generation-outlives-its-pointer'
+      )
+      expect(entry?.outcome).toBe(outcome)
+      expect(entry?.detail).toMatchObject({
+        swap: report.swap,
+        collected: report.collected.length,
+        deferred: report.deferred.length,
+        failed: report.failed.length
+      })
+    })
+  }
+
   for (const { name, wipeFailed, outcome } of [
     { name: 'a clean wipe', wipeFailed: [], outcome: 'clean' },
     {

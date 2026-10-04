@@ -68,6 +68,15 @@
 
 ### Fixed
 
+- The annex GC on a remembered login no longer deletes the generation the
+  account points at when another client swapped it after this login read the
+  account log. It compares against the pointer wallet-core re-reads before
+  deleting, and keeps a young unpointed generation (reported as `deferred`).
+  A pass over a pointer naming a deleted generation re-points at a fresh one
+  (swap `repaired`). The sweep invalidates the verified-log memo whenever the
+  re-read pointer differs from its own, and the mend report reads a repair as
+  `clean` and a pass that only deferred as `noop`. Requires
+  `@interop/wallet-core` 0.101.1.
 - The transient login's mend report grades the registry backfill
   (`registry-lists-the-passphrase-method`) and the management-zcap refresh
   (`acting-credential-manage-zcap-is-current`) as `noop` on a visit that
