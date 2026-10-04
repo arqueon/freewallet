@@ -41,7 +41,7 @@
  * `wallet-core/docs/cross-replica-sync-compatibility.md` for the written
  * contract):
  * - EDV `sequence` stays advisory on the wire: an updater advances from
- *   whatever it finds rather than trusting a count. The server ETag `version`
+ *   whatever it finds rather than trusting a count. The server's opaque ETag
  *   is the enforced concurrency control.
  * - A resource id is first-class on the update path: was-client accepts a
  *   pre-existing id verbatim when a `current` envelope is supplied (the id is
@@ -303,7 +303,7 @@ async function addedResourceId({
 
 interface ResourceReplica {
   id: string
-  version: number
+  acked: boolean
   etag?: string
   updatedAt: string
   deleted: boolean
@@ -338,7 +338,7 @@ class InMemoryStore implements SyncStore {
   localCreate(id: string, envelope: Json, payload: Json): void {
     this.resources.set(id, {
       id,
-      version: 0,
+      acked: false,
       updatedAt: '',
       deleted: false,
       data: envelope,
@@ -370,10 +370,12 @@ class InMemoryStore implements SyncStore {
     this.projection.delete(id)
   }
 
-  /** The LWW "local newer" settlement: stamp master version, keep dirty. */
+  /**
+   * The LWW "local newer" settlement: record the master's etag as acked
+   * state, keep dirty.
+   */
   overwriteDirty(
     id: string,
-    version: number,
     etag: string | undefined,
     envelope: Json,
     updatedAt: string
@@ -384,7 +386,7 @@ class InMemoryStore implements SyncStore {
     }
     this.resources.set(id, {
       ...resource,
-      version,
+      acked: true,
       etag,
       updatedAt,
       data: envelope,
@@ -400,9 +402,9 @@ class InMemoryStore implements SyncStore {
   async getDirtyResourceReplicas(): Promise<SyncedResourceReplica[]> {
     return [...this.resources.values()]
       .filter(resource => resource.dirty)
-      .map(({ id, version, etag, updatedAt, deleted, data }) => ({
+      .map(({ id, acked, etag, updatedAt, deleted, data }) => ({
         id,
-        version,
+        acked,
         etag,
         updatedAt,
         deleted,
@@ -438,7 +440,7 @@ class InMemoryStore implements SyncStore {
       if (doc._deleted) {
         this.resources.set(doc.id, {
           id: doc.id,
-          version: doc.version,
+          acked: true,
           etag: doc.etag,
           updatedAt: doc.updatedAt,
           deleted: true,
@@ -450,10 +452,10 @@ class InMemoryStore implements SyncStore {
       }
       if (existing?.dirty) {
         // Pending live local write: keep the dirty envelope + projection, only
-        // refresh version/updatedAt (the push half settles the winner).
+        // refresh the acked etag/updatedAt (the push half settles the winner).
         this.resources.set(doc.id, {
           ...existing,
-          version: doc.version,
+          acked: true,
           etag: doc.etag,
           updatedAt: doc.updatedAt
         })
@@ -461,7 +463,7 @@ class InMemoryStore implements SyncStore {
       }
       this.resources.set(doc.id, {
         id: doc.id,
-        version: doc.version,
+        acked: true,
         etag: doc.etag,
         updatedAt: doc.updatedAt,
         deleted: false,
@@ -473,34 +475,24 @@ class InMemoryStore implements SyncStore {
     this.checkpoint = checkpoint
   }
 
-  async markPushed({
-    id,
-    version,
-    etag
-  }: {
-    id: string
-    version?: number
-    etag?: string
-  }): Promise<void> {
+  async markPushed({ id, etag }: { id: string; etag?: string }): Promise<void> {
     const resource = this.resources.get(id)
     if (!resource) {
       return
     }
     this.resources.set(id, {
       ...resource,
+      acked: true,
       dirty: false,
-      ...(version !== undefined && { version }),
       ...(etag !== undefined && { etag })
     })
   }
 
   async markDeletedPushed({
     id,
-    version,
     etag
   }: {
     id: string
-    version?: number
     etag?: string
   }): Promise<void> {
     const resource = this.resources.get(id)
@@ -509,10 +501,10 @@ class InMemoryStore implements SyncStore {
     }
     this.resources.set(id, {
       ...resource,
+      acked: true,
       deleted: true,
       data: null,
       dirty: false,
-      ...(version !== undefined && { version }),
       ...(etag !== undefined && { etag })
     })
   }
@@ -530,7 +522,7 @@ class InMemoryStore implements SyncStore {
     if (latest === null) {
       this.resources.set(id, {
         id,
-        version: resource?.version ?? 0,
+        acked: true,
         etag: resource?.etag,
         updatedAt: resource?.updatedAt ?? '',
         deleted: true,
@@ -540,10 +532,9 @@ class InMemoryStore implements SyncStore {
     } else {
       this.resources.set(id, {
         id,
-        // The sync port leaves `version` absent under an opaque ETag; the
-        // reference server this suite runs against always sends the
-        // `<generation>.<version>` form, and a fresh local row carries 0.
-        version: latest.version ?? 0,
+        // The server has a state for it; its opaque `etag` is what the next
+        // push echoes back as `ifMatch`.
+        acked: true,
         etag: latest.etag,
         updatedAt: latest.updatedAt,
         // A non-null MasterState is never a tombstone (the port folds those
@@ -625,13 +616,7 @@ function makeDcwContactResolve({
       data: local as unknown as Json,
       current: master.data
     })
-    store.overwriteDirty(
-      id,
-      master.version ?? 0,
-      master.etag,
-      envelope,
-      local.updatedAt
-    )
+    store.overwriteDirty(id, master.etag, envelope, local.updatedAt)
   }
 }
 
@@ -1055,8 +1040,8 @@ describe('cross-replica round-trip conformance', () => {
     expect(contactResources).toHaveLength(2) // dcw-authored + fw-authored, no dupes
 
     // Both replicas update through `encryptUpdate`: freewallet advanced the
-    // DCW-authored envelope's EDV sequence from 0 to 1. (The server ETag
-    // `version`, not the sequence, remains the enforced concurrency control.)
+    // DCW-authored envelope's EDV sequence from 0 to 1. (The server's opaque
+    // ETag, not the sequence, remains the enforced concurrency control.)
     const envelope = await serverEnvelope(CONTACTS_COLLECTION, dcwAuthoredId)
     expect(envelope?.sequence).toBe(1)
   })
@@ -1088,7 +1073,7 @@ describe('cross-replica round-trip conformance', () => {
     const base = Date.now()
     // Freewallet edits first (older timestamp, the store stamps the current
     // time) and syncs first, taking the server; DCW's competing edit (newer)
-    // then hits a version conflict.
+    // then hits an ETag conflict.
     const fwHead = await fwUpdateContact(
       dcwAuthoredId,
       {
@@ -1208,9 +1193,9 @@ describe('cross-replica round-trip conformance', () => {
   })
 
   it('propagates a freewallet delete to DCW', async () => {
-    // Pull first so the collision win's acked version has round-tripped:
+    // Pull first so the collision win's acked ETag has round-tripped:
     // `pushWrites` deliberately does not consume the write's ETag, and a
-    // delete pushed against the stale assumed version 412s -- at which point
+    // delete pushed against the stale assumed ETag 412s -- at which point
     // the contacts conflict handler's tombstone fallback keeps the live
     // master and the delete is silently dropped (a real, pinned-down
     // property; see the compatibility contract). The live app's poll loop

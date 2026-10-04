@@ -10,7 +10,11 @@
 
     /* Path alias: paths are relative to this config file (no baseUrl). */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      /* One RxDB type identity while `@interop/was-sync` is a `link:`
+         dependency with its own physical copy. Remove with the link. */
+      "rxdb": ["./node_modules/rxdb"],
+      "rxdb/*": ["./node_modules/rxdb/*"]
     },
 
     /* Bundler mode */

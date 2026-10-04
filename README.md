@@ -111,6 +111,16 @@ To run the e2e Playwright tests:
 npm run test:e2e
 ```
 
+To run the cross-replica sync conformance suite:
+
+```
+pnpm run test:conformance
+```
+
+It boots `was-teaching-server` in process, from the devDependency's
+`was-teaching-server/testing` export. No sibling checkout or running server is
+needed. It is kept out of `npm test`.
+
 ## Deployment
 
 `npm run build` produces a static SPA in `dist/` that can be served by any
