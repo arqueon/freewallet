@@ -95,8 +95,11 @@ vi.mock('@/session/pendingRetirement', async importOriginal => ({
 
 vi.mock('@/session/unlockMethods', async importOriginal => ({
   ...(await importOriginal<typeof import('@/session/unlockMethods')>()),
-  backfillPassphraseUnlockMethod: vi.fn(async () => null),
-  refreshTransientManageCapability: vi.fn(async () => undefined)
+  backfillPassphraseUnlockMethodReport: vi.fn(async () => ({
+    record: null,
+    wrote: false
+  })),
+  refreshTransientManageCapability: vi.fn(async () => 'unchanged' as const)
 }))
 
 import {
@@ -130,7 +133,7 @@ import {
   repairTornPassphraseRetirement
 } from '@/session/pendingRetirement'
 import {
-  backfillPassphraseUnlockMethod,
+  backfillPassphraseUnlockMethodReport,
   refreshTransientManageCapability
 } from '@/session/unlockMethods'
 import { initSessionFromSeed } from '@/session/initSession'
@@ -1849,7 +1852,8 @@ describe('transientSessionFromKeyringHit -- the login-time registry chain', () =
       vi.mocked(repairStaleUnlockRegistrySeal).mock.invocationCallOrder[0]!,
       vi.mocked(repairTornPassphraseRetirement).mock.invocationCallOrder[0]!,
       vi.mocked(rebuildBarePasskeyEntry).mock.invocationCallOrder[0]!,
-      vi.mocked(backfillPassphraseUnlockMethod).mock.invocationCallOrder[0]!,
+      vi.mocked(backfillPassphraseUnlockMethodReport).mock
+        .invocationCallOrder[0]!,
       vi.mocked(refreshTransientManageCapability).mock.invocationCallOrder[0]!
     ]
     expect(order).toEqual([...order].sort((left, right) => left - right))
@@ -1891,7 +1895,7 @@ describe('transientSessionFromKeyringHit -- the login-time registry chain', () =
       persistence: transientSessionStores()
     })
     await plain.session.registryReady
-    expect(backfillPassphraseUnlockMethod).toHaveBeenCalled()
+    expect(backfillPassphraseUnlockMethodReport).toHaveBeenCalled()
     expect(refreshTransientManageCapability).not.toHaveBeenCalled()
 
     vi.clearAllMocks()
@@ -1922,7 +1926,7 @@ describe('transientSessionFromKeyringHit -- the login-time registry chain', () =
         'governed-log-heads-anchor-past-the-membership-change'
       ].sort()
     )
-    expect(backfillPassphraseUnlockMethod).not.toHaveBeenCalled()
+    expect(backfillPassphraseUnlockMethodReport).not.toHaveBeenCalled()
     expect(refreshTransientManageCapability).not.toHaveBeenCalled()
   })
 })

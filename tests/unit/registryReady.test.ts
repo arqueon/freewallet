@@ -83,9 +83,9 @@ vi.mock('@/session/pendingRetirement', async importOriginal => ({
 }))
 vi.mock('@/session/unlockMethods', async importOriginal => ({
   ...(await importOriginal<typeof import('@/session/unlockMethods')>()),
-  backfillPassphraseUnlockMethod: vi.fn(async () => {
+  backfillPassphraseUnlockMethodReport: vi.fn(async () => {
     state.events.push('backfill')
-    return null
+    return { record: null, wrote: false }
   }),
   refreshStandingDelegationFields: vi.fn(async () => null)
 }))
@@ -132,7 +132,7 @@ import {
   convergeUserKeyRosterToAccount
 } from '@interop/wallet-core/clients'
 import { repairStaleUnlockRegistrySeal } from '@/session/registryReseal'
-import { backfillPassphraseUnlockMethod } from '@/session/unlockMethods'
+import { backfillPassphraseUnlockMethodReport } from '@/session/unlockMethods'
 import { fetchKeyring } from '@/session/keyring'
 import { routeUnlockLogin } from '@/session/transientLogin'
 import { StorageManager } from '@/stores/storageManager'
@@ -355,11 +355,11 @@ describe('the FW-300 storageReady / registryReady split', () => {
     // Navigation's gate: provisioning alone.
     await session!.storageReady
     expect(await settled(session!.registryReady)).toBe(false)
-    expect(backfillPassphraseUnlockMethod).not.toHaveBeenCalled()
+    expect(backfillPassphraseUnlockMethodReport).not.toHaveBeenCalled()
 
     releaseReseal()
     await session!.registryReady
-    expect(backfillPassphraseUnlockMethod).toHaveBeenCalledOnce()
+    expect(backfillPassphraseUnlockMethodReport).toHaveBeenCalledOnce()
   })
 
   it('keeps one total order over the whole block, and every registration reports', async () => {
@@ -549,7 +549,7 @@ describe('the FW-300 storageReady / registryReady split', () => {
     // session whose provisioning was refused runs neither.
     await expect(session!.registryReady).resolves.toBeUndefined()
     expect(repairStaleUnlockRegistrySeal).not.toHaveBeenCalled()
-    expect(backfillPassphraseUnlockMethod).not.toHaveBeenCalled()
+    expect(backfillPassphraseUnlockMethodReport).not.toHaveBeenCalled()
     expect(state.events).toEqual([])
     expect((await session!.mends)!.map(entry => entry.outcome)).toEqual([
       // The detector's stand-down, then the seed's failure.

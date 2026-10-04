@@ -1267,7 +1267,7 @@ describe('refreshTransientManageCapability', () => {
    * @param options {object}
    * @param options.userKey {UserKey}
    * @param [options.keyAgreementKeyMultibase] {string}
-   * @returns {Promise<void>}
+   * @returns {Promise<'refreshed' | 'unchanged' | 'failed'>}
    */
   async function refresh({
     userKey,
@@ -1275,8 +1275,8 @@ describe('refreshTransientManageCapability', () => {
   }: {
     userKey: UserKey
     keyAgreementKeyMultibase?: string
-  }): Promise<void> {
-    await refreshTransientManageCapability({
+  }): Promise<'refreshed' | 'unchanged' | 'failed'> {
+    return await refreshTransientManageCapability({
       zcapClient: {} as never,
       spaceId: DATA_SPACE_ID,
       userKey,
@@ -1316,7 +1316,7 @@ describe('refreshTransientManageCapability', () => {
     await seedViaClient({ userKey, record: registryWith() })
     vi.clearAllMocks()
 
-    await refresh({ userKey })
+    expect(await refresh({ userKey })).toBe('refreshed')
 
     expect(putUnlockMethodsRecord).toHaveBeenCalledOnce()
     const after = await getUnlockMethodsWithClient({
@@ -1403,7 +1403,7 @@ describe('refreshTransientManageCapability', () => {
     })
     vi.clearAllMocks()
 
-    await refresh({ userKey })
+    expect(await refresh({ userKey })).toBe('unchanged')
 
     expect(putUnlockMethodsRecord).not.toHaveBeenCalled()
   })
@@ -1439,7 +1439,7 @@ describe('refreshTransientManageCapability', () => {
     const capture = captureSink()
     addSink(capture.sink)
 
-    await refresh({ userKey })
+    expect(await refresh({ userKey })).toBe('failed')
 
     expect(putUnlockMethodsRecord).not.toHaveBeenCalled()
     expect(capture.events).toContainEqual(

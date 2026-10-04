@@ -35,7 +35,7 @@ import {
   repairTornPassphraseRetirement
 } from '@/session/pendingRetirement'
 import {
-  backfillPassphraseUnlockMethod,
+  backfillPassphraseUnlockMethodReport,
   getUnlockMethods,
   type UnlockMethodsRecord
 } from '@/session/unlockMethods'
@@ -267,14 +267,14 @@ export async function backfillRegistryPass({
   session,
   registry
 }: SharedRegistryPassOptions): Promise<MendOutcome> {
-  const record = await backfillPassphraseUnlockMethod({ session })
+  const { wrote } = await backfillPassphraseUnlockMethodReport({ session })
   registry.invalidate()
-  // A null return covers two states. A session holding no user key can read
-  // no registry at all, which is a refusal; a registry needing no change is a
-  // no-op.
-  if (record) {
+  if (wrote) {
     return { outcome: 'clean' }
   }
+  // A run that wrote nothing covers two states. A session holding no user
+  // key can read no registry at all, which is a refusal; a registry needing
+  // no change is a no-op.
   return session.profile.userKey
     ? { outcome: 'noop' }
     : { outcome: 'refused', detail: { reason: 'no-user-key' } }

@@ -2198,124 +2198,163 @@ export async function backfillPassphraseUnlockMethod({
   createIfMissing?: boolean
   capability?: IZcap
 }): Promise<UnlockMethodsRecord | null> {
+  const { record } = await backfillPassphraseUnlockMethodReport({
+    session,
+    createIfMissing,
+    ...(capability ? { capability } : {})
+  })
+  return record
+}
+
+/**
+ * The backfill above, reporting beside the record whether this run wrote
+ * the registry. The login chain's backfill pass grades its mend outcome on
+ * `wrote`, since the record alone comes back on a run that changed nothing.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param [options.createIfMissing] {boolean}   mint the registry when absent;
+ *   default false
+ * @param [options.capability] {IZcap}   an invocation capability override
+ * @returns {Promise<{ record: UnlockMethodsRecord | null, wrote: boolean }>}
+ */
+export async function backfillPassphraseUnlockMethodReport({
+  session,
+  createIfMissing = false,
+  capability
+}: {
+  session: Session
+  createIfMissing?: boolean
+  capability?: IZcap
+}): Promise<{ record: UnlockMethodsRecord | null; wrote: boolean }> {
   const { unlockMethod, userKey } = session.profile
   // The user key is needed to read (let alone write) the registry: it seals
   // the record and signs it.
   if (!userKey) {
-    return null
+    return { record: null, wrote: false }
   }
+  // The mutate may run more than once, and the attempt that settles the
+  // loop is the last one, so each run overwrites the flag.
+  let wrote = false
 
   // The whole decision runs inside the shared compare-and-swap wrapper's
   // mutate, over a FRESH read each attempt, so a concurrent registry write
   // is merged on a re-read rather than reverted.
-  return await updateUnlockMethods({
+  const decide = (
+    record: UnlockMethodsRecord | null
+  ): UnlockMethodsRecord | null => {
+    // A passkey session refreshes only its own entry's management zcap
+    // (matched on unlock Space): the login minted a fresh delegation, and
+    // the stored copy goes stale at the one-year TTL. It never creates
+    // entries.
+    if (unlockMethod?.type === 'passkey') {
+      if (!record || !unlockMethod.manageCapability) {
+        return null
+      }
+      const stored = record.methods.find(
+        (method): method is PasskeyUnlockMethod =>
+          method.type === 'passkey' &&
+          method.unlockSpaceId === unlockMethod.unlockSpaceId
+      )
+      const stale =
+        !!stored &&
+        (!stored.manageCapability ||
+          shouldAdoptFreshCapability({
+            stored: stored.manageCapability,
+            fresh: unlockMethod.manageCapability,
+            label: 'passkey'
+          }))
+      if (!stale) {
+        return null
+      }
+      return {
+        ...record,
+        methods: record.methods.map(method =>
+          method === stored
+            ? { ...stored, manageCapability: unlockMethod.manageCapability }
+            : method
+        )
+      }
+    }
+    // Only a passphrase full session can backfill; any other session just
+    // reports the registry as it stands -- never null when one exists, so a
+    // Settings load through this function cannot mistake an account with
+    // passkeys for one with no registry.
+    if (unlockMethod?.type !== 'passphrase') {
+      return null
+    }
+    let base = record
+    if (!base) {
+      if (!createIfMissing) {
+        return null
+      }
+      base = emptyUnlockMethodsRegistry()
+    }
+
+    const existing = base.methods.find(
+      (method): method is PassphraseUnlockMethod => method.type === 'passphrase'
+    )
+    const { unlockSpaceId, manageCapability } = unlockMethod
+
+    // Write only when the stored entry is missing, points at a stale unlock
+    // Space (a passphrase change happened elsewhere), or lacks a management
+    // capability the profile now carries -- or holds one that is expired or
+    // inside the renewal window (the login minted a fresh one-year
+    // delegation to replace it with) -- or one the fresh capability
+    // strictly widens (an entry a past login narrowed). An in-place refresh
+    // never narrows a capability that is not expiring. An entry naming
+    // another unlock Space is a rebind, whose stored capability belongs to
+    // the retired Space and is replaced wholesale -- unless the entry
+    // names ANOTHER credential's standing members (a pending retirement,
+    // or a change torn before its document entry, whose establishment
+    // marker the entry carries): those members are that credential's, and
+    // a repoint would drop them, and the marker with them, in the same
+    // chain whose repair could not consume them. The identity guard is
+    // the refresh write's (`refreshTransientManageCapability`).
+    const mine =
+      session.profile.standingUnlock?.standingClient.keyAgreementKeyMultibase
+    const namesAnotherCredential =
+      !!existing &&
+      ((existing.keyAgreementKeyMultibase !== undefined &&
+        existing.keyAgreementKeyMultibase !== mine) ||
+        existing.pendingEstablishment !== undefined)
+    if (
+      existing &&
+      existing.unlockSpaceId !== unlockSpaceId &&
+      namesAnotherCredential
+    ) {
+      return null
+    }
+    const changed =
+      !existing ||
+      existing.unlockSpaceId !== unlockSpaceId ||
+      (!!manageCapability &&
+        (!existing.manageCapability ||
+          shouldAdoptFreshCapability({
+            stored: existing.manageCapability,
+            fresh: manageCapability,
+            label: 'passphrase'
+          })))
+    if (!changed) {
+      return null
+    }
+
+    return upsertPassphraseUnlockMethod({
+      record: base,
+      unlockSpaceId,
+      manageCapability
+    })
+  }
+  const record = await updateUnlockMethods({
     session,
     ...(capability ? { capability } : {}),
-    mutate: record => {
-      // A passkey session refreshes only its own entry's management zcap
-      // (matched on unlock Space): the login minted a fresh delegation, and
-      // the stored copy goes stale at the one-year TTL. It never creates
-      // entries.
-      if (unlockMethod?.type === 'passkey') {
-        if (!record || !unlockMethod.manageCapability) {
-          return null
-        }
-        const stored = record.methods.find(
-          (method): method is PasskeyUnlockMethod =>
-            method.type === 'passkey' &&
-            method.unlockSpaceId === unlockMethod.unlockSpaceId
-        )
-        const stale =
-          !!stored &&
-          (!stored.manageCapability ||
-            shouldAdoptFreshCapability({
-              stored: stored.manageCapability,
-              fresh: unlockMethod.manageCapability,
-              label: 'passkey'
-            }))
-        if (!stale) {
-          return null
-        }
-        return {
-          ...record,
-          methods: record.methods.map(method =>
-            method === stored
-              ? { ...stored, manageCapability: unlockMethod.manageCapability }
-              : method
-          )
-        }
-      }
-      // Only a passphrase full session can backfill; any other session just
-      // reports the registry as it stands -- never null when one exists, so a
-      // Settings load through this function cannot mistake an account with
-      // passkeys for one with no registry.
-      if (unlockMethod?.type !== 'passphrase') {
-        return null
-      }
-      let base = record
-      if (!base) {
-        if (!createIfMissing) {
-          return null
-        }
-        base = emptyUnlockMethodsRegistry()
-      }
-
-      const existing = base.methods.find(
-        (method): method is PassphraseUnlockMethod =>
-          method.type === 'passphrase'
-      )
-      const { unlockSpaceId, manageCapability } = unlockMethod
-
-      // Write only when the stored entry is missing, points at a stale unlock
-      // Space (a passphrase change happened elsewhere), or lacks a management
-      // capability the profile now carries -- or holds one that is expired or
-      // inside the renewal window (the login minted a fresh one-year
-      // delegation to replace it with) -- or one the fresh capability
-      // strictly widens (an entry a past login narrowed). An in-place refresh
-      // never narrows a capability that is not expiring. An entry naming
-      // another unlock Space is a rebind, whose stored capability belongs to
-      // the retired Space and is replaced wholesale -- unless the entry
-      // names ANOTHER credential's standing members (a pending retirement,
-      // or a change torn before its document entry, whose establishment
-      // marker the entry carries): those members are that credential's, and
-      // a repoint would drop them, and the marker with them, in the same
-      // chain whose repair could not consume them. The identity guard is
-      // the refresh write's (`refreshTransientManageCapability`).
-      const mine =
-        session.profile.standingUnlock?.standingClient.keyAgreementKeyMultibase
-      const namesAnotherCredential =
-        !!existing &&
-        ((existing.keyAgreementKeyMultibase !== undefined &&
-          existing.keyAgreementKeyMultibase !== mine) ||
-          existing.pendingEstablishment !== undefined)
-      if (
-        existing &&
-        existing.unlockSpaceId !== unlockSpaceId &&
-        namesAnotherCredential
-      ) {
-        return null
-      }
-      const changed =
-        !existing ||
-        existing.unlockSpaceId !== unlockSpaceId ||
-        (!!manageCapability &&
-          (!existing.manageCapability ||
-            shouldAdoptFreshCapability({
-              stored: existing.manageCapability,
-              fresh: manageCapability,
-              label: 'passphrase'
-            })))
-      if (!changed) {
-        return null
-      }
-
-      return upsertPassphraseUnlockMethod({
-        record: base,
-        unlockSpaceId,
-        manageCapability
-      })
+    mutate: current => {
+      const next = decide(current)
+      wrote = next !== null
+      return next
     }
   })
+  return { record, wrote }
 }
 
 /**
@@ -2351,7 +2390,9 @@ export async function backfillPassphraseUnlockMethod({
  * @param [options.keyAgreementKeyMultibase] {string}   the acting
  *   credential's key-agreement multibase; a matched entry recording a
  *   different one is another credential's and is left alone
- * @returns {Promise<void>}
+ * @returns {Promise<'refreshed' | 'unchanged' | 'failed'>}   `refreshed` when
+ *   the registry was written, `unchanged` when nothing needed writing,
+ *   `failed` when the read or the write threw
  */
 export async function refreshTransientManageCapability({
   zcapClient,
@@ -2369,55 +2410,66 @@ export async function refreshTransientManageCapability({
   unlockSpaceId: string
   manageCapability: IZcap
   keyAgreementKeyMultibase?: string
-}): Promise<void> {
+}): Promise<'refreshed' | 'unchanged' | 'failed'> {
+  // The mutate may run more than once; the last run settles the loop.
+  let wrote = false
+  const decide = (
+    record: UnlockMethodsRecord | null
+  ): UnlockMethodsRecord | null => {
+    if (!record) {
+      return null
+    }
+    const stored = record.methods.find(
+      method =>
+        isStandingCredentialEntry(method) &&
+        method.unlockSpaceId === unlockSpaceId
+    )
+    if (!stored) {
+      return null
+    }
+    if (
+      keyAgreementKeyMultibase !== undefined &&
+      stored.keyAgreementKeyMultibase !== undefined &&
+      stored.keyAgreementKeyMultibase !== keyAgreementKeyMultibase
+    ) {
+      return null
+    }
+    const stale =
+      !stored.manageCapability ||
+      shouldAdoptFreshCapability({
+        stored: stored.manageCapability,
+        fresh: manageCapability,
+        label: stored.type
+      })
+    if (!stale) {
+      return null
+    }
+    return {
+      ...record,
+      methods: record.methods.map(method =>
+        method === stored ? { ...stored, manageCapability } : method
+      )
+    }
+  }
   try {
     await updateUnlockMethodsWithClient({
       zcapClient,
       spaceId,
       userKey,
       capability,
-      mutate: record => {
-        if (!record) {
-          return null
-        }
-        const stored = record.methods.find(
-          method =>
-            isStandingCredentialEntry(method) &&
-            method.unlockSpaceId === unlockSpaceId
-        )
-        if (!stored) {
-          return null
-        }
-        if (
-          keyAgreementKeyMultibase !== undefined &&
-          stored.keyAgreementKeyMultibase !== undefined &&
-          stored.keyAgreementKeyMultibase !== keyAgreementKeyMultibase
-        ) {
-          return null
-        }
-        const stale =
-          !stored.manageCapability ||
-          shouldAdoptFreshCapability({
-            stored: stored.manageCapability,
-            fresh: manageCapability,
-            label: stored.type
-          })
-        if (!stale) {
-          return null
-        }
-        return {
-          ...record,
-          methods: record.methods.map(method =>
-            method === stored ? { ...stored, manageCapability } : method
-          )
-        }
+      mutate: current => {
+        const next = decide(current)
+        wrote = next !== null
+        return next
       }
     })
+    return wrote ? 'refreshed' : 'unchanged'
   } catch (err) {
     log.warn('Could not refresh the management zcap from a transient visit', {
       unlockSpaceId,
       err
     })
+    return 'failed'
   }
 }
 

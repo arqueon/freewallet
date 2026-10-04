@@ -68,6 +68,11 @@
 
 ### Fixed
 
+- The transient login's mend report grades the registry backfill
+  (`registry-lists-the-passphrase-method`) and the management-zcap refresh
+  (`acting-credential-manage-zcap-is-current`) as `noop` on a visit that
+  wrote no registry, in place of `clean`. A refresh whose read or write
+  threw reports `failed`.
 - A passphrase change and a passkey or backup-credential removal from a
   transient session now refuse before their strike entry
   (`GenerationDelegationRenewalError`, with retry copy in Settings) when

@@ -738,7 +738,7 @@ const TRANSIENT_MANAGE_ZCAP_REFRESH: Registration<LoginMenderDeps, CeremonyId> =
           }
         ]
       }
-      await refreshTransientManageCapability({
+      const refreshed = await refreshTransientManageCapability({
         zcapClient: session.profile.zcapClient,
         spaceId,
         userKey: rosterRead.userKey,
@@ -752,7 +752,12 @@ const TRANSIENT_MANAGE_ZCAP_REFRESH: Registration<LoginMenderDeps, CeremonyId> =
             }
           : {})
       })
-      return [{ invariant, outcome: 'clean' }]
+      if (refreshed === 'failed') {
+        return [{ invariant, outcome: 'failed' }]
+      }
+      return [
+        { invariant, outcome: refreshed === 'refreshed' ? 'clean' : 'noop' }
+      ]
     }
   }
 
