@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import type { ComponentType } from 'react'
 import { Route, Routes } from 'react-router'
+import { SourceLink } from '@/components/SourceLink'
 import { LandingPage } from '@/pages/LandingPage'
 import { LobbyPage } from '@/pages/auth/LobbyPage'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
@@ -53,6 +54,10 @@ const WalletGetPage = lazyNamed(
 const WalletStorePage = lazyNamed(
   () => import('@/pages/chapi/WalletStorePage'),
   'WalletStorePage'
+)
+const CredentialOfferPage = lazyNamed(
+  () => import('@/pages/external/CredentialOfferPage'),
+  'CredentialOfferPage'
 )
 const ExternalRequestPage = lazyNamed(
   () => import('@/pages/external/ExternalRequestPage'),
@@ -151,6 +156,7 @@ function App() {
         {/* Requests arriving from outside the app (a CLI agent's interaction
             URL), answered without CHAPI; outside ProtectedRoute like the
             popups, with its own in-page login. */}
+        <Route path="/request" element={<CredentialOfferPage />} />
         <Route path="/external/request" element={<ExternalRequestPage />} />
 
         <Route element={<ProtectedRoute />}>
@@ -197,6 +203,7 @@ function App() {
         <Route path="/docs/:fileName" element={<DocsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
+      <SourceLink />
     </Suspense>
   )
 }

@@ -16,6 +16,12 @@ RUN pnpm install --frozen-lockfile
 # Vite bakes these into the bundle at build time (see the README's
 # Environment Variables table). VITE_ALLOWED_HOST is left out: it only
 # affects the dev server.
+ARG VITE_APP_NAME="Cartera UDGPlus"
+ARG VITE_APP_THEME=udg
+ARG VITE_DEFAULT_LANGUAGE=es
+ARG VITE_APP_LOGO_URL=/udg-placeholder.svg
+ARG UDG_SOURCE_URL=/source.html
+ENV VITE_UDG_SOURCE_URL=$UDG_SOURCE_URL
 ARG VITE_WAS_SERVER_URL
 ARG VITE_KMS_SERVER_URL
 ARG VITE_CORS_PROXY_URL
@@ -41,8 +47,14 @@ RUN find dist -type f -size +1k \
     -o -name '*.json' -o -name '*.webmanifest' -o -name '*.md' -o -name '*.wasm' \) \
     -exec gzip -9 -k {} +
 
+# Standalone UDG image, with no WAS upstream requirement.
+FROM nginx:stable-alpine AS udg-static
+COPY deploy/nginx-static.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 8080
+
 # Runtime stage: nginx serving dist/.
-FROM nginx:stable-alpine
+FROM nginx:stable-alpine AS was-proxy
 
 # The image renders /etc/nginx/templates/*.template into /etc/nginx/conf.d/
 # at startup. The filter limits substitution to WAS_UPSTREAM, so nginx's own

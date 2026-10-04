@@ -29,6 +29,7 @@ import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { SearchField } from '@/components/SearchField'
 import { ScanCredentialQrDialog } from '@/components/ScanCredentialQrDialog'
 import type { WalletInputOutcome } from '@/lib/resolveWalletInput'
+import { credentialOfferPath } from '@/lib/walletRequest/credentialOffer'
 import { externalRequestPath } from '@/lib/walletRequest/externalRequest'
 import type { StoredCredential } from '@/types/credential'
 import { createLogger } from '@/lib/log'
@@ -91,6 +92,10 @@ export function DashboardPage() {
   const handleQrResolved = useCallback(
     (outcome: WalletInputOutcome) => {
       setScanQrOpen(false)
+      if (outcome.kind === 'credential-offer') {
+        navigate(credentialOfferPath(outcome.url))
+        return
+      }
       if (outcome.kind === 'interaction-url') {
         navigate(externalRequestPath({ url: outcome.url }))
         return

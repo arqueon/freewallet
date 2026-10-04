@@ -4,6 +4,7 @@ import type { AppThemeId } from '@/themes/appTheme'
 type ThemeMode = 'light' | 'dark'
 
 type ThemePrimary = {
+  contrastText?: string
   main: string
   light?: string
   dark?: string
@@ -15,6 +16,7 @@ export type ThemePaletteValues = {
     paper: string
   }
   primary: ThemePrimary
+  warning?: ThemePrimary
 }
 
 export type ThemeDefinition = {
@@ -30,6 +32,21 @@ const DEFAULT_FONT =
   '"Inter Variable", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
 
 export const THEME_DEFINITIONS: Record<AppThemeId, ThemeDefinition> = {
+  udg: {
+    fontFamily: DEFAULT_FONT,
+    palette: {
+      light: {
+        background: { default: '#f4f7fa', paper: '#ffffff' },
+        primary: { main: '#00427B', contrastText: '#ffffff' },
+        warning: { main: '#9c4500', contrastText: '#ffffff' }
+      },
+      dark: {
+        background: { default: '#101820', paper: '#192734' },
+        primary: { main: '#9ccaff', contrastText: '#102030' },
+        warning: { main: '#ffb74d', contrastText: '#102030' }
+      }
+    }
+  },
   default: {
     fontFamily: DEFAULT_FONT,
     palette: {
@@ -123,7 +140,8 @@ export function buildMuiThemeOptions({
     palette: {
       mode,
       background: palette.background,
-      primary: palette.primary
+      primary: palette.primary,
+      ...(palette.warning && { warning: palette.warning })
     },
     typography: {
       fontFamily: definition.fontFamily

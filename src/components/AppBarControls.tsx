@@ -25,7 +25,16 @@ export function AppBarControls({ children }: { children?: ReactNode }) {
   const { t } = useTranslation()
 
   return (
-    <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+    <Stack
+      direction="row"
+      spacing={2}
+      sx={{
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        rowGap: 1,
+        width: { xs: '100%', md: 'auto' }
+      }}
+    >
       <Stack sx={dashboardStyles.navControlGroup}>
         <Typography component="span" sx={dashboardStyles.navControlLabel}>
           {t('common.language')}:

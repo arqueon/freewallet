@@ -1,3 +1,6 @@
+import { useState } from 'react'
+import { IconButton, useMediaQuery, useTheme } from '@mui/material'
+import { MdMenu } from 'react-icons/md'
 import AppBar from '@mui/material/AppBar'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -12,7 +15,7 @@ import { Toast } from '@/components/Toast'
 import { dashboardStyles } from '@/styles/appStyles'
 import { Link as RouterLink, useLocation, useNavigate } from 'react-router'
 import { useAuthStore } from '@/stores/authStore'
-import walletIcon from '@/assets/wallet.svg'
+import { APP_LOGO_URL } from '@/app.config'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -33,6 +36,9 @@ export function DashboardLayout({
   children?: ReactNode
 }) {
   const { t } = useTranslation()
+  const theme = useTheme()
+  const mobile = useMediaQuery(theme.breakpoints.down('md'))
+  const [menuOpen, setMenuOpen] = useState(false)
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const session = useAuthStore(state => state.session)
@@ -42,17 +48,31 @@ export function DashboardLayout({
   }
 
   return (
-    <Box sx={dashboardStyles.container}>
+    <Box>
       <AppBar
-        position="fixed"
+        position="sticky"
         color="default"
         elevation={1}
         sx={{ zIndex: theme => theme.zIndex.drawer + 1 }}
       >
-        <Toolbar>
+        <Toolbar
+          sx={{
+            flexWrap: { xs: 'wrap', md: 'nowrap' },
+            gap: 1,
+            py: { xs: 1, md: 0 }
+          }}
+        >
+          {mobile && (
+            <IconButton
+              aria-label={t('common.menu')}
+              onClick={() => setMenuOpen(true)}
+            >
+              <MdMenu />
+            </IconButton>
+          )}
           <Box
             component="img"
-            src={walletIcon}
+            src={APP_LOGO_URL}
             alt={t('common.brand')}
             sx={dashboardStyles.walletIcon}
           />
@@ -76,63 +96,82 @@ export function DashboardLayout({
         </Toolbar>
       </AppBar>
 
-      <Drawer variant="permanent" sx={dashboardStyles.drawer}>
-        <Toolbar />
-        <List sx={dashboardStyles.navList}>
-          {primaryNavItems.map(item => (
-            <ListItemButton
-              key={item.to}
-              component={RouterLink}
-              to={item.to}
-              selected={pathname === item.to}
-              sx={dashboardStyles.navItem}
-            >
-              <ListItemText
-                primary={t(item.labelKey)}
-                slotProps={{ primary: { sx: dashboardStyles.navItemText } }}
-              />
-            </ListItemButton>
-          ))}
+      <Box sx={dashboardStyles.container}>
+        <Drawer
+          variant={mobile ? 'temporary' : 'permanent'}
+          open={mobile ? menuOpen : true}
+          onClose={() => setMenuOpen(false)}
+          sx={
+            mobile
+              ? { '& .MuiDrawer-paper': { width: 280 } }
+              : {
+                  ...dashboardStyles.drawer,
+                  '& .MuiDrawer-paper': {
+                    width: 280,
+                    top: 64,
+                    height: 'calc(100% - 64px)'
+                  }
+                }
+          }
+        >
+          <Box component="nav" onClick={() => setMenuOpen(false)}>
+            <List sx={dashboardStyles.navList}>
+              {primaryNavItems.map(item => (
+                <ListItemButton
+                  key={item.to}
+                  component={RouterLink}
+                  to={item.to}
+                  selected={pathname === item.to}
+                  sx={dashboardStyles.navItem}
+                >
+                  <ListItemText
+                    primary={t(item.labelKey)}
+                    slotProps={{ primary: { sx: dashboardStyles.navItemText } }}
+                  />
+                </ListItemButton>
+              ))}
 
-          <ListItemButton
-            component={RouterLink}
-            to="/settings"
-            selected={pathname === '/settings'}
-            sx={dashboardStyles.navSectionTitleButton}
-          >
-            <ListItemText
-              primary={t('nav.settings')}
-              slotProps={{ primary: { sx: dashboardStyles.navSectionTitle } }}
-            />
-          </ListItemButton>
-
-          <List sx={dashboardStyles.navSubList}>
-            {settingsNavItems.map(item => (
               <ListItemButton
-                key={item.to}
                 component={RouterLink}
-                to={item.to}
-                selected={pathname === item.to}
-                sx={dashboardStyles.navSubItem}
+                to="/settings"
+                selected={pathname === '/settings'}
+                sx={dashboardStyles.navSectionTitleButton}
               >
                 <ListItemText
-                  primary={t(item.labelKey)}
-                  sx={dashboardStyles.navItemText}
+                  primary={t('nav.settings')}
+                  slotProps={{
+                    primary: { sx: dashboardStyles.navSectionTitle }
+                  }}
                 />
               </ListItemButton>
-            ))}
-          </List>
-        </List>
-      </Drawer>
 
-      <Box component="main" sx={dashboardStyles.main}>
-        <Toolbar />
-        <Typography variant="h4" component="h1" sx={dashboardStyles.title}>
-          {title}
-        </Typography>
-        {children}
+              <List sx={dashboardStyles.navSubList}>
+                {settingsNavItems.map(item => (
+                  <ListItemButton
+                    key={item.to}
+                    component={RouterLink}
+                    to={item.to}
+                    selected={pathname === item.to}
+                    sx={dashboardStyles.navSubItem}
+                  >
+                    <ListItemText
+                      primary={t(item.labelKey)}
+                      sx={dashboardStyles.navItemText}
+                    />
+                  </ListItemButton>
+                ))}
+              </List>
+            </List>
+          </Box>
+        </Drawer>
+
+        <Box component="main" sx={dashboardStyles.main}>
+          <Typography variant="h4" component="h1" sx={dashboardStyles.title}>
+            {title}
+          </Typography>
+          {children}
+        </Box>
       </Box>
-
       <Toast />
     </Box>
   )

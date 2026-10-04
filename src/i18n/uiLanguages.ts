@@ -55,7 +55,7 @@ export function normalizeToUiLanguageCode(lng: string): UiLanguageCode {
 
 /**
  * The user's persisted language choice, or null when none has been made yet
- * -- in which case the caller should fall back to browser-locale detection.
+ * -- in which case the caller should fall back to the configured deployment language.
  */
 export function readStoredUiLanguage(): UiLanguageCode | null {
   const stored = readPref(UI_LANGUAGE_STORAGE_KEY)

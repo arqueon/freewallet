@@ -1,3 +1,4 @@
+import { DEFAULT_APP_THEME } from '@/app.config'
 import { readPref, writePref } from '@/lib/prefsStorage'
 
 const APP_THEME_STORAGE_KEY = 'fw-theme'
@@ -8,7 +9,7 @@ export type ThemeMode = 'light' | 'dark'
 /**
  * Register new themes here and add a matching src/themes/<id>.css file.
  */
-export const APP_THEME_IDS = ['default', 'west-coast'] as const
+export const APP_THEME_IDS = ['default', 'west-coast', 'udg'] as const
 
 export type AppThemeId = (typeof APP_THEME_IDS)[number]
 
@@ -21,7 +22,7 @@ export function readStoredAppTheme(): AppThemeId {
   if (isAppThemeId(stored)) {
     return stored
   }
-  return APP_THEME_IDS[0]
+  return isAppThemeId(DEFAULT_APP_THEME) ? DEFAULT_APP_THEME : 'udg'
 }
 
 /**

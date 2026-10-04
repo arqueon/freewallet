@@ -1,4 +1,6 @@
 import { defineConfig } from 'vitest/config'
+import { loadEnv } from 'vite'
+import { readFileSync, writeFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import path from 'node:path'
 import { execSync } from 'node:child_process'
@@ -11,85 +13,131 @@ const appVersion =
   execSync('git describe --tags --always --dirty').toString().trim()
 
 // https://vite.dev/config/
-export default defineConfig({
-  define: {
-    __APP_VERSION__: JSON.stringify(appVersion)
-  },
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks(id: string) {
-          if (id.includes('node_modules')) {
-            // Keep react, react-dom, scheduler and the router together — they
-            // share internals and must not be split across chunks.
-            if (
-              /[\\/]node_modules[\\/](react|react-dom|react-router|scheduler)[\\/]/.test(
-                id
-              )
-            ) {
-              return 'react-vendor'
-            }
-            if (id.includes('@mui') || id.includes('@emotion')) {
-              return 'mui-vendor'
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), 'VITE_')
+  const name = env.VITE_APP_NAME || 'Cartera UDGPlus'
+  const logo = env.VITE_APP_LOGO_URL || '/udg-placeholder.svg'
+  const theme = ['udg', 'default', 'west-coast'].includes(env.VITE_APP_THEME)
+    ? env.VITE_APP_THEME
+    : 'udg'
+  const escapedName = name.replace(
+    /[&<>"']/g,
+    char =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
+        char
+      ]!
+  )
+  const manifest = JSON.parse(readFileSync('public/manifest.json', 'utf8'))
+  manifest.name = manifest.short_name = name
+  manifest.icons = [{ src: logo, sizes: 'any' }]
+  return {
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (id.includes('node_modules')) {
+              // Keep react, react-dom, scheduler and the router together — they
+              // share internals and must not be split across chunks.
+              if (
+                /[\\/]node_modules[\\/](react|react-dom|react-router|scheduler)[\\/]/.test(
+                  id
+                )
+              ) {
+                return 'react-vendor'
+              }
+              if (id.includes('@mui') || id.includes('@emotion')) {
+                return 'mui-vendor'
+              }
             }
           }
         }
       }
+    },
+    optimizeDeps: {
+      // Pre-bundle the password-strength engine's (large) zxcvbn dictionaries at
+      // dev-server start instead of on first demand. They are loaded lazily by
+      // PasswordStrengthMeter, so without this the dev server bundles them
+      // on-the-fly the first time the signup page needs a score -- a cold-start
+      // stall that can run to tens of seconds under load (and flakes the
+      // signup-driven e2e tests). Dev-only: production still lazy-loads them.
+      // The sync binding imports `@interop/was-sync/rxdb` dynamically inside
+      // `start`, so RxDB's first discovery under the dev server would otherwise
+      // land at the first login. Vite's lazy re-optimization then fails the
+      // in-flight module fetch, which flakes the e2e login flows the same way
+      // the dictionaries above did.
+      include: [
+        '@interop/was-sync/rxdb',
+        '@zxcvbn-ts/core',
+        '@zxcvbn-ts/language-common',
+        '@zxcvbn-ts/language-en',
+        '@zxcvbn-ts/language-es-es'
+      ]
+    },
+    plugins: [
+      react(),
+      {
+        name: 'deployment-brand',
+        transformIndexHtml(html) {
+          return html
+            .replaceAll('Cartera UDGPlus', escapedName)
+            .replace("? stored : 'udg'", `? stored : '${theme}'`)
+        },
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (
+              !['/manifest.json', '/manifest.webmanifest'].includes(
+                req.url ?? ''
+              )
+            ) {
+              return next()
+            }
+            res.setHeader('Content-Type', 'application/manifest+json')
+            res.end(JSON.stringify(manifest))
+          })
+        },
+        writeBundle() {
+          for (const file of ['manifest.json', 'manifest.webmanifest']) {
+            writeFileSync(path.resolve('dist', file), JSON.stringify(manifest))
+          }
+        }
+      },
+      // Dev-server NDJSON log endpoint (POST /__interop-logger ->
+      // .dev-logs/app.ndjson, rotated on start). The e2e configs start their
+      // own vite servers in this cwd and point INTEROP_LOGGER_FILE at a
+      // scratch path so they never reset a live dev session's file.
+      interopLoggerPlugin({ file: process.env.INTEROP_LOGGER_FILE })
+    ],
+    resolve: {
+      // One RxDB copy in the graph. `@interop/was-sync/rxdb` carries rxdb as an
+      // optional peer, but while the package is consumed from a sibling checkout
+      // it also has its own physical copy; two copies means the leader-election
+      // plugin installed on the wrong prototypes, which breaks only when the tab
+      // is hidden.
+      dedupe: ['rxdb'],
+      alias: {
+        '@': path.resolve(import.meta.dirname, './src')
+      }
+    },
+    test: {
+      environment: 'jsdom',
+      setupFiles: ['./tests/shared/setup.wasService.ts'],
+      include: [
+        'src/**/*.test.ts',
+        'src/**/*.test.tsx',
+        'tests/unit/**/*.test.ts'
+      ]
+    },
+    server: {
+      allowedHosts: [
+        'localhost',
+        '127.0.0.1',
+        ...(process.env.VITE_ALLOWED_HOST
+          ? [process.env.VITE_ALLOWED_HOST]
+          : [])
+      ]
     }
-  },
-  optimizeDeps: {
-    // Pre-bundle the password-strength engine's (large) zxcvbn dictionaries at
-    // dev-server start instead of on first demand. They are loaded lazily by
-    // PasswordStrengthMeter, so without this the dev server bundles them
-    // on-the-fly the first time the signup page needs a score -- a cold-start
-    // stall that can run to tens of seconds under load (and flakes the
-    // signup-driven e2e tests). Dev-only: production still lazy-loads them.
-    // The sync binding imports `@interop/was-sync/rxdb` dynamically inside
-    // `start`, so RxDB's first discovery under the dev server would otherwise
-    // land at the first login. Vite's lazy re-optimization then fails the
-    // in-flight module fetch, which flakes the e2e login flows the same way
-    // the dictionaries above did.
-    include: [
-      '@interop/was-sync/rxdb',
-      '@zxcvbn-ts/core',
-      '@zxcvbn-ts/language-common',
-      '@zxcvbn-ts/language-en',
-      '@zxcvbn-ts/language-es-es'
-    ]
-  },
-  plugins: [
-    react(),
-    // Dev-server NDJSON log endpoint (POST /__interop-logger ->
-    // .dev-logs/app.ndjson, rotated on start). The e2e configs start their
-    // own vite servers in this cwd and point INTEROP_LOGGER_FILE at a
-    // scratch path so they never reset a live dev session's file.
-    interopLoggerPlugin({ file: process.env.INTEROP_LOGGER_FILE })
-  ],
-  resolve: {
-    // One RxDB copy in the graph. `@interop/was-sync/rxdb` carries rxdb as an
-    // optional peer, but while the package is consumed from a sibling checkout
-    // it also has its own physical copy; two copies means the leader-election
-    // plugin installed on the wrong prototypes, which breaks only when the tab
-    // is hidden.
-    dedupe: ['rxdb'],
-    alias: {
-      '@': path.resolve(import.meta.dirname, './src')
-    }
-  },
-  test: {
-    environment: 'jsdom',
-    setupFiles: ['./tests/shared/setup.wasService.ts'],
-    include: [
-      'src/**/*.test.ts',
-      'src/**/*.test.tsx',
-      'tests/unit/**/*.test.ts'
-    ]
-  },
-  server: {
-    allowedHosts: [
-      'localhost',
-      '127.0.0.1',
-      ...(process.env.VITE_ALLOWED_HOST ? [process.env.VITE_ALLOWED_HOST] : [])
-    ]
   }
 })

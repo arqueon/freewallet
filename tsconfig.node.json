@@ -27,6 +27,7 @@
     "vitest.conformance.config.ts",
     "vitest.harness.config.ts",
     "playwright.config.ts",
+    "playwright.udg.config.ts",
     "playwright.was.config.ts"
   ]
 }

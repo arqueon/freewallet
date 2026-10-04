@@ -9,6 +9,13 @@ import { FreewalletThemeProvider } from '@/components/FreewalletThemeProvider'
 import './index.css'
 import '@/themes'
 import App from './App'
+import { APP_NAME } from '@/app.config'
+
+document.title = APP_NAME
+// Canonical hash routing keeps the one-use offer out of subsequent HTTP requests.
+if (['/request', '/request.html', '/exchange'].includes(location.pathname)) {
+  history.replaceState(null, '', `/#/request${location.search}`)
+}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

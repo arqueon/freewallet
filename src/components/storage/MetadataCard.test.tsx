@@ -7,7 +7,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import '@/i18n'
+import i18n from '@/i18n'
 import { MetadataCard } from './MetadataCard'
 
 declare global {
@@ -66,7 +66,8 @@ async function mount({
 }
 
 describe('MetadataCard', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en')
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
   })
   afterEach(() => {

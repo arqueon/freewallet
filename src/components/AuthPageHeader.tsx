@@ -13,7 +13,7 @@ import { useTranslation } from 'react-i18next'
 import { Link as RouterLink } from 'react-router'
 import { AppBarControls } from '@/components/AppBarControls'
 import { dashboardStyles } from '@/styles/appStyles'
-import walletIcon from '@/assets/wallet.svg'
+import { APP_LOGO_URL } from '@/app.config'
 
 export function AuthPageHeader() {
   const { t } = useTranslation()
@@ -25,7 +25,13 @@ export function AuthPageHeader() {
       elevation={1}
       sx={{ position: 'relative', zIndex: 2 }}
     >
-      <Toolbar>
+      <Toolbar
+        sx={{
+          flexWrap: { xs: 'wrap', md: 'nowrap' },
+          gap: 1,
+          py: { xs: 1, md: 0 }
+        }}
+      >
         <Box
           component={RouterLink}
           to="/"
@@ -40,7 +46,7 @@ export function AuthPageHeader() {
         >
           <Box
             component="img"
-            src={walletIcon}
+            src={APP_LOGO_URL}
             alt=""
             sx={dashboardStyles.walletIcon}
           />

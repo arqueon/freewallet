@@ -20,11 +20,14 @@
  * Every other kind is refused by the shared dispatcher and surfaces as the
  * unsupported message.
  *
- * Only the `interaction:` scheme and an http(s) URL carrying `iuv` classify
- * as an interaction URL. A bare exchange URL carries neither and falls to the
- * credential branch, where the fetch fails with the URL-fetch message; the
- * CLI prints the `?iuv=1` form.
+ * The UDG issuance adapter recognizes protocols JSON, wallet request links
+ * and direct /exchanges/:id URLs before the shared classifier. Other
+ * interaction URLs retain the existing capability-grant routing.
  */
+import {
+  credentialOfferUrl,
+  isCredentialOfferInput
+} from '@/lib/walletRequest/credentialOffer'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import { isConnectCode } from '@interop/wallet-core/enrollment'
 import { isWasLinkPayload } from '@interop/wallet-core/space'
@@ -38,6 +41,7 @@ import { resolveCredentialsInput } from '@/lib/resolveCredentialsInput'
  * the callers as "no credentials found", so the two are kept apart by type.
  */
 export type WalletInputOutcome =
+  | { kind: 'credential-offer'; url: string }
   | { kind: 'credentials'; credentials: IVerifiableCredential[] }
   | { kind: 'interaction-url'; url: string }
 
@@ -74,6 +78,9 @@ export class WalletInputUnsupportedError extends Error {
 export async function resolveWalletInput(
   text: string
 ): Promise<WalletInputOutcome> {
+  if (isCredentialOfferInput(text)) {
+    return { kind: 'credential-offer', url: credentialOfferUrl(text) }
+  }
   try {
     return await handleWalletInput<WalletInputOutcome>({
       text,

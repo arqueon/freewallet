@@ -7,7 +7,8 @@
     "switchToLightMode": "Switch to light mode",
     "themes": {
       "default": "Default",
-      "west-coast": "West Coast"
+      "west-coast": "West Coast",
+      "udg": "UdeG"
     },
     "logOut": "Log out",
     "logIn": "Log in",
@@ -29,9 +30,11 @@
     "type": "Type",
     "issuer": "Issuer",
     "noDescription": "No description",
-    "brand": "Freewallet",
+    "brand": "{{appName}}",
     "rosterWrapLostRemembered": "This browser can no longer open your account's keys. It may have been disconnected from another browser. Log out, then sign in again with your passphrase or a passkey.",
-    "rosterWrapLostTransient": "The sign-in method you used can no longer open your account's keys. It may have been changed or removed from another browser. Log out, then sign in with your current passphrase or passkey."
+    "rosterWrapLostTransient": "The sign-in method you used can no longer open your account's keys. It may have been changed or removed from another browser. Log out, then sign in with your current passphrase or passkey.",
+    "sourceCode": "Source code (AGPL-3.0)",
+    "menu": "Open menu"
   },
   "settings": {
     "title": "Settings",
@@ -70,7 +73,7 @@
     "deleteResidue": "Sign-in spaces still on the server: {{count}}. Signing in once with each method removes it.",
     "deleteActingResidue": "Your account is deleted. The sign-in data for this method is still on the server; the next sign-in with it offers to remove it.",
     "about": "About",
-    "version": "Freewallet version {{version}}",
+    "version": "{{appName}} version {{version}}",
     "unpromotedAccount": "This account has not finished setting up its published identity (a setup step failed earlier). Connected wallets and recovery codes are unavailable until it completes; it is retried automatically at each sign-in.",
     "kmsSection": "Key management",
     "kmsNone": "No key management server is configured; keys stay on this device.",
@@ -141,7 +144,7 @@
     "addPasskey": "Add a passkey",
     "passkeyAdded": "Passkey added. You can now unlock this wallet with it.",
     "passkeyDuplicate": "A passkey for this wallet already exists on this device.",
-    "passkeyPrfUnsupported": "This passkey or browser cannot unlock Freewallet. Try a different passkey.",
+    "passkeyPrfUnsupported": "This passkey or browser cannot unlock {{appName}}. Try a different passkey.",
     "passkeyAddFailed": "Could not add the passkey. Please try again.",
     "passkeyNotEstablished": "The passkey could not be connected to your account. It was still created on your device's authenticator, and the wallet cannot remove it from there -- it will not unlock this wallet. Retrying will create a second passkey on the authenticator.",
     "passkeyAddTransientHint": "The new passkey is created in this machine's authenticator and stays there after you sign out.",
@@ -260,7 +263,7 @@
     "deleteRefusalDeleted": "Already deleted before it stopped ({{count}}): {{list}}"
   },
   "landing": {
-    "title": "Freewallet",
+    "title": "{{appName}}",
     "subtitle": "is an open source, open specs web app for managing <vcs>Verifiable Credentials</vcs>, <dids>DIDs</dids>, and <keys>keys</keys>.",
     "logIn": "Log in",
     "signUp": "Sign Up",
@@ -288,7 +291,7 @@
       "storageIncompatible": "This wallet can't create an account on the configured storage server, because the server does not support everything this wallet needs to keep your account safe. Nothing was created. Contact the server's operator, or try <guest>guest mode</guest>.",
       "ladderAttribution": "Your account was found, but this login method's standing on the account could not be confirmed -- it may have been removed, or the account's published history is in an unexpected state. Sign-in was stopped and nothing was changed. Log in from a browser where your wallet is already set up, or use a recovery code.",
       "passkeyNoAccount": "No wallet was found for this passkey. Log in with your passphrase, then add this passkey from Settings.",
-      "passkeyPrfUnsupported": "This passkey or browser cannot unlock Freewallet. Try a different passkey or log in with your passphrase.",
+      "passkeyPrfUnsupported": "This passkey or browser cannot unlock {{appName}}. Try a different passkey or log in with your passphrase.",
       "browserForgotten": "This browser's wallet access was removed from the account, and its leftover local wallet data has now been cleared. Log in again to reconnect this browser.",
       "pendingEnrollment": "This browser holds a partly finished wallet connection that could not be completed this time. Nothing was changed -- log in again to retry finishing it.",
       "pendingEnrollmentDiscarded": "This browser held a partly finished wallet connection that can no longer be completed, so it was dropped. Log in again to continue as a new browser.",
@@ -488,7 +491,7 @@
     "revokeAgentFailed": "Could not revoke agent access. Please try again."
   },
   "dashboard": {
-    "title": "Freewallet Dashboard",
+    "title": "{{appName}} Dashboard",
     "addCredential": "Add Credential",
     "credentialsHeading": "Credentials",
     "searchPlaceholder": "Search credentials...",
@@ -893,7 +896,17 @@
     "alignments": "Alignments",
     "evidence": "Evidence",
     "viewSource": "View source",
-    "hideJson": "Hide JSON"
+    "hideJson": "Hide JSON",
+    "validFrom": "Valid from",
+    "results": "Results by criterion",
+    "resultValue": "Result: {{value}}",
+    "resultStatus": "Declared status: {{status}}",
+    "resultRequired": "Requirement: {{value}}",
+    "resultStatuses": {
+      "Achieved": "Achieved",
+      "NotAchieved": "Not achieved",
+      "InProgress": "In progress"
+    }
   },
   "issuer": {
     "unknown": "Unknown issuer",
@@ -1041,7 +1054,11 @@
         "noDomain": "The issuer's identity request names no domain, so it can't be safely answered.",
         "domainMismatch": "This request's domain doesn't match where it came from, so it can't be safely authenticated.",
         "foreignDelivery": "This request would send your identity proof somewhere other than the issuer's own server, so it was refused."
-      }
+      },
+      "readError": "Could not read the credential offer.",
+      "exchangeError": "Could not receive the credential. The offer may have expired or already been used; request another from the portal. No credential was saved.",
+      "saveError": "Could not finish saving. Keep this page open and try again; the received credential is still here.",
+      "partialSave": "Saved {{stored}} of {{total}} credentials. {{detail}}"
     }
   },
   "externalRequest": {
@@ -1107,5 +1124,23 @@
       "expirationFail": "has expired",
       "noExpiration": "has no expiration date set"
     }
+  },
+  "claim": {
+    "title": "Save your microcredential",
+    "destination": "Exchange with {{origin}}",
+    "invalidLink": "This link does not contain a valid VC API offer. Request a new link from the credential portal.",
+    "intro": "Open the offer to check what the issuer needs. Review the domain before continuing: a link can come from any website.",
+    "open": "Open offer",
+    "openError": "Could not open the offer, or its request is unsupported. It may have expired or already been used. Request a new link from the portal.",
+    "login": "Log in to your wallet. If you do not have one, create it in another tab and return here to log in.",
+    "createWallet": "Create wallet in another tab",
+    "consent": "Continuing sends a signed presentation proving control of your identifier to {{domain}}. Your passphrase and other credentials are not sent.",
+    "claim": "Identify myself and receive credential",
+    "guest": "You are in guest mode. The credential will be lost when you leave this session. To keep it, cancel and log in to your own wallet.",
+    "unsupported": "Your wallet cannot present a DID method accepted by this issuer.",
+    "exchangeError": "Could not receive the credential. The offer may have expired or already been used; request another from the portal. No credential was saved.",
+    "saveNotice": "Review the credential and its verification before saving. An issuer absent from the consulted registries is not accredited by this wallet, even if its signature is valid.",
+    "save": "Save to my wallet",
+    "saveError": "Could not finish saving. Keep this page open and try again; the received credential is still here."
   }
 }

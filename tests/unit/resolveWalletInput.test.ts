@@ -62,18 +62,13 @@ describe('resolveWalletInput', () => {
     })
   })
 
-  it('refuses a kind this screen does not implement', async () => {
-    // A wallet API message classifies positively and has no handler here.
+  it('routes a protocols message to issuance without storing it', async () => {
     const message = JSON.stringify({
-      type: 'VerifiablePresentationRequest',
       protocols: { vcapi: 'https://example.test/exchange' }
     })
-
-    const thrown = await resolveWalletInput(message).catch(err => err)
-
-    // The dispatcher's unhandled-kind refusal arrives translated into this
-    // screen's own coded error.
-    expect(thrown).toBeInstanceOf(WalletInputUnsupportedError)
-    expect(thrown.code).toBe('unsupported')
+    expect(await resolveWalletInput(message)).toEqual({
+      kind: 'credential-offer',
+      url: 'https://example.test/exchange'
+    })
   })
 })

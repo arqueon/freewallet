@@ -20,6 +20,13 @@ import { encryptedWalletCollectionIds } from '@interop/wallet-core/space/collect
 
 const env = import.meta.env
 
+export const APP_NAME = env.VITE_APP_NAME || 'Cartera UDGPlus'
+export const APP_LOGO_URL = env.VITE_APP_LOGO_URL || '/udg-placeholder.svg'
+export const UDG_SOURCE_URL = env.VITE_UDG_SOURCE_URL || '/source.html'
+export const DEFAULT_UI_LANGUAGE =
+  env.VITE_DEFAULT_LANGUAGE === 'en' ? 'en' : 'es'
+export const DEFAULT_APP_THEME = env.VITE_APP_THEME || 'udg'
+
 // The remote WAS server's Spaces Repository URL (`https://host/spaces/`, or
 // `https://host/was/spaces/` on a sub-path mount). When set, a remote WAS
 // Space is available as a sync target: the sync controller replicates the
@@ -268,7 +275,7 @@ export {
 // wallet takes the connect code's suggested name instead. Stored data, not
 // display-time i18n: a name must read the same from every client that
 // lists it.
-export const DEFAULT_CLIENT_LABEL = 'Freewallet'
+export const DEFAULT_CLIENT_LABEL = APP_NAME
 
 /**
  * HKDF parameters for the passkey unlock derivation

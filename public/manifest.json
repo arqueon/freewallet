@@ -1,11 +1,19 @@
 {
-  "name": "Freewallet",
-  "short_name": "Freewallet",
-  "icons": [{ "src": "wallet.svg", "sizes": "192x192", "type": "image/svg+xml" }],
+  "name": "Cartera UDGPlus",
+  "short_name": "Cartera UDGPlus",
+  "icons": [
+    {
+      "src": "wallet.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ],
   "start_url": "/#/",
   "display": "standalone",
   "credential_handler": {
     "url": "/wallet-worker.html",
-    "enabledTypes": ["VerifiablePresentation"]
+    "enabledTypes": [
+      "VerifiablePresentation"
+    ]
   }
 }

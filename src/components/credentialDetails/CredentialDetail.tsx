@@ -19,6 +19,7 @@ import { formatDate } from '@/lib/viewMappers/formatDate'
 import { getProofCreatedIso } from '@/lib/getProofCreatedIso'
 import { useVerification } from '@/hooks/useVerification'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import { AchievementResults } from './AchievementResults'
 import { IssuerInfo } from '@/components/credentialDetails/IssuerInfo'
 import {
   VerificationPanel,
@@ -165,11 +166,13 @@ export function CredentialDetail({
               />
 
               <InfoBlock
-                header={t('credential.createdDate')}
+                header={t('credential.validFrom')}
                 value={
-                  createdDate
+                  vc.validFrom || vc.issuanceDate || createdDate
                     ? formatDate({
-                        isoDate: createdDate,
+                        isoDate: String(
+                          vc.validFrom || vc.issuanceDate || createdDate
+                        ),
                         locale: i18n.language
                       })
                     : t('common.na')
@@ -219,6 +222,8 @@ export function CredentialDetail({
                 </Box>
               </Box>
             )}
+
+            <AchievementResults vc={vc} />
 
             {fields.alignments.length > 0 && (
               <Box>

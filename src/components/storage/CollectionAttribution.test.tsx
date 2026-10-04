@@ -7,7 +7,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import '@/i18n'
+import i18n from '@/i18n'
 import type { StorageCollection } from '@/lib/storage'
 import { CollectionAttribution } from './CollectionAttribution'
 
@@ -43,7 +43,8 @@ async function mount(collection: StorageCollection) {
 }
 
 describe("CollectionAttribution on an agent's stamp", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en')
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
   })
   afterEach(() => {

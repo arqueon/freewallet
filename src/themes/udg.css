@@ -1,0 +1,4 @@
+/* UDG uses the shared neutral layout and accessible MUI palette. */
+html[data-theme='udg'] {
+  --udg-blue: #00427b;
+}

@@ -193,7 +193,7 @@ export const authStyles = {
 export const dashboardStyles = {
   container: {
     display: 'flex',
-    minHeight: '100dvh'
+    minHeight: 'calc(100dvh - 64px)'
   },
   drawer: {
     width: 280,
@@ -254,8 +254,9 @@ export const dashboardStyles = {
     }
   },
   walletIcon: {
-    width: 28,
-    height: 28
+    width: 52,
+    height: 32,
+    objectFit: 'contain'
   },
   /**
    * App bar: labeled language/theme controls
@@ -272,6 +273,8 @@ export const dashboardStyles = {
   },
   main: {
     flexGrow: 1,
+    minWidth: 0,
+    overflowWrap: 'anywhere',
     p: { xs: 3, md: 6 }
   },
   title: {

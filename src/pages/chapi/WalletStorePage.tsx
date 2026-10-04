@@ -218,15 +218,11 @@ export function WalletStorePage() {
       if (err instanceof StoreRequestRefusedError) {
         setRefusal(err.refusal)
       } else {
-        setInitError(
-          err instanceof Error
-            ? err.message
-            : 'Could not read the incoming offer.'
-        )
+        setInitError(t('chapi.store.readError'))
       }
       setPageState('failed')
     })
-  }, [])
+  }, [t])
 
   async function handleLogin(passphrase: string) {
     setLoginError(null)
@@ -305,11 +301,7 @@ export function WalletStorePage() {
       setPageState('confirming')
     } catch (err) {
       log.error('CHAPI store exchange authentication failed', { err })
-      setInitError(
-        err instanceof Error
-          ? err.message
-          : 'Could not authenticate to the issuer.'
-      )
+      setInitError(t('chapi.store.exchangeError'))
       setPageState('failed')
     }
   }
@@ -326,7 +318,7 @@ export function WalletStorePage() {
         ? 'no session is established'
         : 'the offer carried no credential'
       log.error('CHAPI store cannot store', { reason })
-      setStoreError(`Cannot store: ${reason}.`)
+      setStoreError(t('chapi.store.saveError'))
       return
     }
     setStoreError(null)
@@ -347,13 +339,10 @@ export function WalletStorePage() {
       const detail =
         errorNameOf(err) === 'AppKeyRefusedError'
           ? t('common.appKeyRefused')
-          : err instanceof Error
-            ? err.message
-            : 'Could not store the credential.'
+          : t('chapi.store.saveError')
       setStoreError(
         stored > 0
-          ? `Stored ${stored} of ${vcs.length} credentials, then failed: ` +
-              `${detail}`
+          ? t('chapi.store.partialSave', { stored, total: vcs.length, detail })
           : detail
       )
     } finally {

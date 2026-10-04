@@ -80,3 +80,14 @@ describe('getDisplayFields', () => {
     expect(fields.issuedTo).toBe('Ada Lovelace')
   })
 })
+
+it('shows the holder DID instead of the badge title for an unnamed OB3 subject', () => {
+  const fields = getDisplayFields({
+    '@context': ['https://www.w3.org/ns/credentials/v2'],
+    type: ['VerifiableCredential', 'OpenBadgeCredential'],
+    name: 'A badge title',
+    issuer: 'did:key:issuer',
+    credentialSubject: { id: 'did:key:holder', type: 'AchievementSubject' }
+  } as never)
+  expect(fields.issuedTo).toBe('did:key:holder')
+})

@@ -214,6 +214,11 @@ export function VerificationStatusBadge({
       <Chip
         size="small"
         color="warning"
+        sx={{
+          bgcolor: 'warning.main',
+          color: 'warning.contrastText',
+          '& .MuiChip-icon': { color: 'inherit' }
+        }}
         aria-live="polite"
         icon={<MdWarning size={14} />}
         label={t('verification.badgeWarning')}

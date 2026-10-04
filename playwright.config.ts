@@ -10,6 +10,7 @@ process.env.INTEROP_LOGGER_FILE = DEV_LOG_FILE
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: '**/udg-*.spec.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   // Retry once locally too (CI retries twice): the multi-step auth flows have
@@ -37,6 +38,10 @@ export default defineConfig({
       // Pin local (IndexedDB) mode; override any VITE_WAS_SERVER_URL leaked
       // from the surrounding shell or a separately-running dev server.
       VITE_WAS_SERVER_URL: '',
+      // Upstream regression scenarios use the configurable English branding.
+      VITE_DEFAULT_LANGUAGE: 'en',
+      VITE_APP_NAME: 'Freewallet',
+      VITE_APP_THEME: 'default',
       INTEROP_LOGGER_FILE: DEV_LOG_FILE
     }
   }

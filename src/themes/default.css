@@ -2,7 +2,8 @@
  * Default theme -- neutralizes shared .fw-* layout hooks used in JSX.
  * West Coast-specific visuals live in west-coast.css; pages share one markup structure.
  */
-html[data-theme='default'] {
+html[data-theme='default'],
+html[data-theme='udg'] {
   & .fw-page {
     background: inherit;
     color: inherit;
