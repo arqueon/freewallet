@@ -136,6 +136,13 @@ src/fixtures/       Seed data (default contacts, welcome credential)
 src/app.config.ts   Environment variable exports + app-wide constants
 ```
 
+## UDG issuance entry
+
+The UDG fork adds an issuance-only `/request` route over the existing signer,
+VC API client and storage facade. Its input, consent and origin rules are in
+[Credential issuance links](docs/architecture/credential-offer.md). The
+capability-grant route `/external/request` retains its existing refusals.
+
 ## Topic docs
 
 The topic docs under `docs/architecture/` carry the mechanism in full. Open
