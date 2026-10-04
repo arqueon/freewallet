@@ -27,6 +27,10 @@
   transient and remembered actors, a passkey-style second credential, and
   four built account shapes. Its first test records per-visit log growth
   over 20 transient visits.
+- The session harness exposes `@interop/wallet-core/testing`'s account
+  shapes as `buildServerStateAccount`, for a test that only needs an
+  account's server-side state. The four shapes a login enters stay built
+  through the app's session layer.
 - `addAccountPasskey` takes an optional `register` ceremony, and the
   browser-local persistence strategy an optional `replicaStorage`, both for
   tests.

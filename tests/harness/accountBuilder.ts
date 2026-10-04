@@ -24,6 +24,28 @@
  * before it returns. A test continues with the secrets, the Space id, and
  * (for the enrolled client) the profile, through `harness.logIn`.
  *
+ * `@interop/wallet-core/testing` builds the same four shapes through the
+ * package's own ceremonies, and none of the shapes above builds through it.
+ * That builder holds its unlock records in memory, derives a passphrase
+ * under its fast KDF, and writes no registry record and no browser profile.
+ * A login must find all of those, and each shape here exists to be logged
+ * into:
+ *
+ * - The passphrase shape needs the unlock Space and unlock record the
+ *   shipped KDF's unlock identity locates.
+ * - The passkey shape needs a passkey's unlock record and its registry
+ *   entry. The shared builder's second credential is a passphrase.
+ * - The recovery code shape needs the recovery record the `/recover` locate
+ *   step reads, and the registry entry naming the code.
+ * - The enrolled client shape needs a browser profile holding the client-key
+ *   record, and the client's `connections` entry.
+ *
+ * A test that only needs an account to exist on the server in a shape takes
+ * `buildServerStateAccount`, which runs the shared builder against the
+ * harness's server and returns its result. No `harness.logIn` enters such an
+ * account. A test acts on it with what the result carries: the ladder seed,
+ * the standing client, and the bridge and sibling delegations.
+ *
  * Import this module statically: it loads the wallet modules only inside
  * the builders, after the harness has booted.
  */
@@ -245,4 +267,53 @@ export async function buildEnrolledClientAccount({
     enrolledProfile,
     enrolledClientDid: enrollee.session.user.id
   }
+}
+
+type SharedBuilder = typeof import('@interop/wallet-core/testing')
+
+/**
+ * The shared builder's shapes by name, each account existing as server-side
+ * state alone.
+ */
+export interface ServerStateBuilders {
+  passphrase: SharedBuilder['buildPassphraseAccount']
+  'second-credential': SharedBuilder['buildSecondCredentialAccount']
+  'recovery-code': SharedBuilder['buildRecoveryCodeAccount']
+  'enrolled-client': SharedBuilder['buildEnrolledClientAccount']
+}
+
+/**
+ * An account in a named shape, built by `@interop/wallet-core/testing`
+ * against the harness's server. Only its server-side state exists: no unlock
+ * Space, no registry record, and no browser profile, so no login finds it.
+ *
+ * @param options {object}
+ * @param options.harness {WalletHarness}
+ * @param options.shape {keyof ServerStateBuilders}
+ * @param [options.passphrase] {string}   a unique one by default
+ * @returns {Promise<object>}   the shared builder's result for the shape
+ */
+export async function buildServerStateAccount<
+  Shape extends keyof ServerStateBuilders
+>({
+  harness,
+  shape,
+  passphrase
+}: {
+  harness: WalletHarness
+  shape: Shape
+  passphrase?: string
+}): Promise<Awaited<ReturnType<ServerStateBuilders[Shape]>>> {
+  const shared = await import('@interop/wallet-core/testing')
+  const builders: ServerStateBuilders = {
+    passphrase: shared.buildPassphraseAccount,
+    'second-credential': shared.buildSecondCredentialAccount,
+    'recovery-code': shared.buildRecoveryCodeAccount,
+    'enrolled-client': shared.buildEnrolledClientAccount
+  }
+  const account = await builders[shape]({
+    serverUrl: harness.serverUrl,
+    ...(passphrase === undefined ? {} : { passphrase })
+  })
+  return account as Awaited<ReturnType<ServerStateBuilders[Shape]>>
 }
