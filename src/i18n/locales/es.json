@@ -268,7 +268,8 @@
     "logIn": "Iniciar sesión",
     "signUp": "Registrarse",
     "guestMode": "Modo invitado",
-    "wasServerWarning": "Advertencia: la variable de entorno WAS_SERVER_URL no está configurada; no se puede conectar al almacenamiento."
+    "wasServerWarning": "Advertencia: la variable de entorno WAS_SERVER_URL no está configurada; no se puede conectar al almacenamiento.",
+    "localModeNotice": "Modo local: tus credenciales y tus llaves se guardan solo en este navegador. Usa siempre el mismo dispositivo o descarga un respaldo desde Ajustes."
   },
   "auth": {
     "errors": {

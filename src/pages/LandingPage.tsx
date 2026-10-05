@@ -120,7 +120,7 @@ export function LandingPage() {
 
           {!WAS_SERVER_URL && (
             <Typography sx={landingStyles.configWarning}>
-              {t('landing.wasServerWarning')}
+              {t('landing.localModeNotice')}
             </Typography>
           )}
         </Box>

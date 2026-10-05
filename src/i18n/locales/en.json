@@ -268,7 +268,8 @@
     "logIn": "Log in",
     "signUp": "Sign Up",
     "guestMode": "Guest Mode",
-    "wasServerWarning": "Warning: WAS_SERVER_URL environment variable not set, cannot connect to storage."
+    "wasServerWarning": "Warning: WAS_SERVER_URL environment variable not set, cannot connect to storage.",
+    "localModeNotice": "Local mode: your credentials and keys are stored only in this browser. Keep using the same device or download a backup from Settings."
   },
   "auth": {
     "errors": {

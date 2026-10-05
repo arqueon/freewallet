@@ -386,9 +386,13 @@ export const MAX_CREDENTIAL_JSON_FILE_BYTES = 10 * 1024 * 1024
 // `?url=` query parameter (the single
 // proxy path lives in `src/lib/corsProxy.ts`). When a WAS server is
 // configured, its built-in proxy facet at `/api/cors` is the default.
+// `none` disables the proxy entirely (every fetch goes direct), so a
+// deployment without a WAS server does not fall back to a third-party proxy.
 export const CORS_PROXY_URL =
-  env.VITE_CORS_PROXY_URL ||
-  (WAS_SERVER_URL ? `${WAS_SERVER_URL}/api/cors` : 'https://corsproxy.io')
+  env.VITE_CORS_PROXY_URL === 'none'
+    ? ''
+    : env.VITE_CORS_PROXY_URL ||
+      (WAS_SERVER_URL ? `${WAS_SERVER_URL}/api/cors` : 'https://corsproxy.io')
 
 export const PASSWORD_RULES = {
   minlength: 16,
