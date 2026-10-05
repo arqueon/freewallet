@@ -430,6 +430,12 @@ export const credentialCardStyles = {
     bottom: 12,
     right: 12,
     color: 'text.disabled'
+  },
+  badgeImage: {
+    display: 'block',
+    width: 56,
+    height: 56,
+    objectFit: 'contain'
   }
 } as const
 

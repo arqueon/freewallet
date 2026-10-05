@@ -391,6 +391,11 @@ export const MAX_CREDENTIAL_JSON_FILE_BYTES = 10 * 1024 * 1024
 export const SHOW_EXTERNAL_STORAGE_OPTIONS =
   env.VITE_SHOW_EXTERNAL_STORAGE_OPTIONS === 'true'
 
+// Upstream seeds every new wallet with an English sample credential ("Your
+// First Credential"). Cartera UDGPlus starts empty unless explicitly enabled.
+export const SEED_WELCOME_CREDENTIAL =
+  env.VITE_SEED_WELCOME_CREDENTIAL === 'true'
+
 // `none` disables the proxy entirely (every fetch goes direct), so a
 // deployment without a WAS server does not fall back to a third-party proxy.
 export const CORS_PROXY_URL =

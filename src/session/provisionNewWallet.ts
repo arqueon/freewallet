@@ -30,6 +30,7 @@ import { recordOwnWalletClientEntry } from '@/session/clients'
 import { didWebFromSpace } from '@/lib/didWeb'
 import type { ControllerProfile, Session } from '@/types/auth'
 import { welcomeCredential } from '@/fixtures/welcomeCredential'
+import { SEED_WELCOME_CREDENTIAL } from '@/app.config'
 import { interopAllianceTeamContact } from '@/fixtures/defaultContacts'
 import { createLogger } from '@/lib/log'
 
@@ -131,7 +132,9 @@ export async function provisionNewWallet({
 
   // Seed the wallet with a welcome credential. `addCredential` records its own
   // credential-created history entry, so this must not log one separately.
-  await storage.addCredential({ credential: welcomeCredential, user })
+  if (SEED_WELCOME_CREDENTIAL) {
+    await storage.addCredential({ credential: welcomeCredential, user })
+  }
 }
 
 /**
@@ -214,10 +217,12 @@ export async function seedWelcomeContent({
     ])
     // `addCredential` records its own credential-created history entry, so
     // this must not log one separately.
-    await storage.addCredential({
-      credential: welcomeCredential,
-      user: seedUser
-    })
+    if (SEED_WELCOME_CREDENTIAL) {
+      await storage.addCredential({
+        credential: welcomeCredential,
+        user: seedUser
+      })
+    }
   })().catch(err => {
     log.warn('Could not seed the welcome content', { err })
   })

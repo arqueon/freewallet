@@ -19,6 +19,22 @@ describe('formatDate', () => {
     expect(formatted).toMatch(/2025/)
   })
 
+  it('renders a civil day carried as midnight UTC on that same day', () => {
+    // An activity date: 7 September, also for a viewer in Mexico (UTC-6),
+    // where the instant itself falls on the evening of 6 September.
+    const previousTz = process.env.TZ
+    process.env.TZ = 'America/Mexico_City'
+    try {
+      const isoDate = '2026-09-07T00:00:00Z'
+      expect(formatDate({ isoDate, locale: 'es-MX', civil: true })).toMatch(
+        /^7 /
+      )
+      expect(formatDate({ isoDate, locale: 'es-MX' })).toMatch(/^6 /)
+    } finally {
+      process.env.TZ = previousTz
+    }
+  })
+
   it('returns an empty string for falsy input', () => {
     expect(formatDate({ isoDate: '', locale: 'en-US' })).toBe('')
   })

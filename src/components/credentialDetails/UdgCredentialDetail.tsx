@@ -54,8 +54,10 @@ export function UdgCredentialDetail({
 }) {
   const { t, i18n } = useTranslation()
   const label = (key: string) => t(`credential.udg.${key}`)
-  const date = (value: unknown) =>
-    value ? formatDate({ isoDate: String(value), locale: i18n.language }) : ''
+  const date = (value: unknown, civil = false) =>
+    value
+      ? formatDate({ isoDate: String(value), locale: i18n.language, civil })
+      : ''
   const languages = data.languages
     .map(language => {
       try {
@@ -156,6 +158,9 @@ export function UdgCredentialDetail({
         )}
         {data.creator && (
           <Detail label={label('creator')} value={data.creator} />
+        )}
+        {data.program && (
+          <Detail label={label('program')} value={data.program} />
         )}
         {data.tags.length > 0 && (
           <Detail label={label('tags')} value={data.tags.join(' · ')} />
@@ -287,8 +292,8 @@ export function UdgCredentialDetail({
               <Detail key={key} label={label(key)} value={data[key]} />
             ))}
             <Detail label={label('language')} value={languages} />
-            <Detail label={label('start')} value={date(data.start)} />
-            <Detail label={label('end')} value={date(data.end)} />
+            <Detail label={label('start')} value={date(data.start, true)} />
+            <Detail label={label('end')} value={date(data.end, true)} />
           </Box>
           {data.criteriaUrl && (
             <Link

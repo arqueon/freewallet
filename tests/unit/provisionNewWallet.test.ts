@@ -18,6 +18,17 @@ import {
   seedWelcomeContent
 } from '@/session/provisionNewWallet'
 
+// Cartera UDGPlus turns the sample credential off by default; these tests
+// cover the upstream seeding, so they switch it on. The last one checks the
+// default.
+const config = vi.hoisted(() => ({ seedWelcome: true }))
+vi.mock('@/app.config', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/app.config')>()),
+  get SEED_WELCOME_CREDENTIAL() {
+    return config.seedWelcome
+  }
+}))
+
 /**
  * A session stub whose storage records the provisioning calls, plus a shared
  * `order` array capturing the sequence in which they ran.
@@ -305,6 +316,21 @@ describe('seedWelcomeContent', () => {
       ).toBe(true)
     } finally {
       vi.useRealTimers()
+    }
+  })
+})
+
+describe('provisionNewWallet without the sample credential (Cartera UDGPlus)', () => {
+  it('provisions the wallet but seeds no welcome credential', async () => {
+    config.seedWelcome = false
+    try {
+      const { session, storage, order } = sessionStub()
+      await provisionNewWallet({ session })
+      expect(storage.addCredential).not.toHaveBeenCalled()
+      expect(order).not.toContain('addCredential')
+      expect(storage.addHistoryNewAccount).toHaveBeenCalled()
+    } finally {
+      config.seedWelcome = true
     }
   })
 })

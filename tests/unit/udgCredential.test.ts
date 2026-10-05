@@ -5,6 +5,7 @@ import {
   criteriaText,
   getUdgCredential,
   ob3Recipient,
+  programOf,
   rubricLevel,
   webUrl
 } from '@/lib/viewMappers/udgCredential'
@@ -158,5 +159,23 @@ it('translates all 31 OB3 achievement types', () => {
     Diploma: 'Diplomado',
     Certificate: 'Certificado',
     Badge: 'Insignia'
+  })
+})
+
+describe('programOf', () => {
+  it('reads the program from the subject description the console sends', () => {
+    expect(
+      programOf({ description: 'Programa o evento: Curso piloto UDG–ASU.' })
+    ).toBe('Curso piloto UDG–ASU')
+  })
+
+  it('prefers the subject tags when present', () => {
+    expect(
+      programOf({ tag: ['Curso piloto UDG–ASU'], description: 'Otra cosa' })
+    ).toBe('Curso piloto UDG–ASU')
+  })
+
+  it('is empty without a program', () => {
+    expect(programOf({})).toBe('')
   })
 })

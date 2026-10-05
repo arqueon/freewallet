@@ -36,6 +36,24 @@ export function webUrl(value: unknown): string {
   }
 }
 
+/**
+ * The cohort's program or event. The issuing console sends it as the
+ * subject description ("Programa o evento: <name>.") and, when present, in
+ * the subject tags; the label prefix and the closing period are dropped.
+ */
+export function programOf(subject: Record<string, unknown>): string {
+  const tags = (Array.isArray(subject.tag) ? subject.tag : [subject.tag])
+    .map(textOf)
+    .filter(Boolean)
+  if (tags.length > 0) {
+    return tags.join(' · ')
+  }
+  return textOf(subject.description)
+    .replace(/^\s*(programa o evento|program or event)\s*:\s*/i, '')
+    .replace(/\.\s*$/, '')
+    .trim()
+}
+
 function imageUrl(value: unknown): string {
   return webUrl(typeof value === 'string' ? value : recordOf(value).id)
 }
@@ -117,6 +135,7 @@ export function getUdgCredential(vc: IVerifiableCredential) {
           .join(' › ')
       : '',
     term: textOf(subject.term),
+    program: programOf(subject),
     source: typeof source === 'string' ? source : textOf(recordOf(source).name),
     tags: (Array.isArray(achievement.tag) ? achievement.tag : [achievement.tag])
       .map(textOf)

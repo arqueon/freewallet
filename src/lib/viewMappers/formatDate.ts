@@ -11,16 +11,23 @@ import { DATE_FMT } from '@/app.config'
  */
 export function formatDate({
   isoDate,
-  locale
+  locale,
+  civil = false
 }: {
   isoDate: string
   locale: string
+  // A civil day (an activity date) carried as midnight UTC: render it in UTC
+  // so a timezone west of Greenwich does not show the day before.
+  civil?: boolean
 }): string {
   if (!isoDate) {
     return ''
   }
   try {
-    return new Intl.DateTimeFormat(locale, DATE_FMT).format(new Date(isoDate))
+    return new Intl.DateTimeFormat(
+      locale,
+      civil ? { ...DATE_FMT, timeZone: 'UTC' } : DATE_FMT
+    ).format(new Date(isoDate))
   } catch {
     return isoDate
   }

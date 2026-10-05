@@ -9,6 +9,7 @@ import { BsAward } from 'react-icons/bs'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import { getDisplayFields } from '@/lib/viewMappers/credentialDisplayFields'
 import { credentialTitle } from '@/lib/viewMappers/credentialTitle'
+import { getUdgCredential } from '@/lib/viewMappers/udgCredential'
 import { credentialCardStyles } from '@/styles/appStyles'
 import { useVerification } from '@/hooks/useVerification'
 import { VerificationStatusBadge } from '@/components/credentialDetails/VerificationPanel'
@@ -33,6 +34,11 @@ export const CredentialCard = memo(function CredentialCard({
   )
   const description = credentialDescription ?? t('common.noDescription')
   const title = useMemo(() => credentialTitle(credential), [credential])
+  // The badge the issuer embedded in the credential, when it has one.
+  const badgeImage = useMemo(
+    () => getUdgCredential(credential)?.image ?? '',
+    [credential]
+  )
   const { result, loading, error } = useVerification(credential, { cid })
 
   return (
@@ -65,7 +71,17 @@ export const CredentialCard = memo(function CredentialCard({
             />
           </Box>
           <Box sx={credentialCardStyles.badge}>
-            <BsAward size={28} />
+            {badgeImage ? (
+              <Box
+                component="img"
+                src={badgeImage}
+                alt=""
+                loading="lazy"
+                sx={credentialCardStyles.badgeImage}
+              />
+            ) : (
+              <BsAward size={28} />
+            )}
           </Box>
         </CardContent>
       </CardActionArea>
