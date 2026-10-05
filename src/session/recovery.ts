@@ -174,6 +174,7 @@ import {
   getUnlockMethodsWithClient,
   updateUnlockMethods,
   updateUnlockMethodsWithClient,
+  standingUnlockFields,
   upsertPassphraseUnlockMethod,
   type RecoveryCodeUnlockMethod,
   type UnlockMethod,
@@ -1843,9 +1844,6 @@ export async function recoverAccountWithCode({
   // spend resume's backfill or the post-login recovery-entry backfill.
   const recordBind = newRecordBind
   const replacementMethod = replacementEntry
-  const newBridge = bridge
-  const bridgeKeyId = delegationProofKeyId(newBridge)
-  const siblingKeyId = sibling ? delegationProofKeyId(sibling) : undefined
   // The step as a closure: the save confirm below re-runs it when this
   // first write failed. Every input is either durable or fixed for the run,
   // so the re-run re-applies the same mutation to whatever the registry
@@ -1885,39 +1883,15 @@ export async function recoverAccountWithCode({
           manageCapability: recordBind.manageCapability,
           ...(standingEstablished
             ? {
-                standing: {
-                  rosterKid: newCredential.standing.recipientKid,
-                  keyAgreementKeyMultibase:
-                    newCredential.standing.keyAgreementKeyMultibase,
-                  updateKeyMultibase: newRung0.keyMultibase,
-                  unlockClientDid: newCredential.standing.clientDid,
-                  ...(bridgeKeyId ? { delegationKeyId: bridgeKeyId } : {}),
-                  ...(zcapExpires(newBridge)
-                    ? {
-                        delegationExpires: zcapExpires(newBridge)
-                      }
-                    : {}),
-                  ...(siblingKeyId
-                    ? { delegatedClientsKeyId: siblingKeyId }
-                    : {}),
-                  ...(sibling && zcapExpires(sibling)
-                    ? {
-                        delegatedClientsExpires: zcapExpires(sibling)
-                      }
-                    : {}),
-                  ...(recordBind.unlockKeyAgreementKeyId
-                    ? {
-                        unlockKeyAgreementKeyId:
-                          recordBind.unlockKeyAgreementKeyId
-                      }
-                    : {}),
-                  ...(recordBind.unlockKeyAgreementKeyMultibase
-                    ? {
-                        unlockKeyAgreementKeyMultibase:
-                          recordBind.unlockKeyAgreementKeyMultibase
-                      }
-                    : {})
-                }
+                standing: standingUnlockFields({
+                  standing: newCredential.standing,
+                  rung0KeyMultibase: newRung0.keyMultibase,
+                  delegation: bridge,
+                  delegatedClients: sibling,
+                  unlockKeyAgreementKeyId: recordBind.unlockKeyAgreementKeyId,
+                  unlockKeyAgreementKeyMultibase:
+                    recordBind.unlockKeyAgreementKeyMultibase
+                })
               }
             : {})
         })
@@ -3158,8 +3132,6 @@ async function recoverAccountTransient({
   // narrowing of a `let` does not survive into the mutate closure below.
   const recordBind = newRecordBind
   const replacementMethod = replacementEntry
-  const bridgeKeyId = delegationProofKeyId(bridge)
-  const siblingKeyId = delegationProofKeyId(sibling)
   // The step as a closure, so a failed first write is retried once below.
   const retireStep = async () =>
     await retireCredentialsFromRegistry({
@@ -3184,33 +3156,15 @@ async function recoverAccountTransient({
           },
           unlockSpaceId: recordBind.unlockSpaceId,
           manageCapability: recordBind.manageCapability,
-          standing: {
-            rosterKid: standing.recipientKid,
-            keyAgreementKeyMultibase: standing.keyAgreementKeyMultibase,
-            updateKeyMultibase: rung0.keyMultibase,
-            unlockClientDid: standing.clientDid,
-            ...(bridgeKeyId ? { delegationKeyId: bridgeKeyId } : {}),
-            ...(zcapExpires(bridge)
-              ? { delegationExpires: zcapExpires(bridge) }
-              : {}),
-            ...(siblingKeyId ? { delegatedClientsKeyId: siblingKeyId } : {}),
-            ...(zcapExpires(sibling)
-              ? {
-                  delegatedClientsExpires: zcapExpires(sibling)
-                }
-              : {}),
-            ...(recordBind.unlockKeyAgreementKeyId
-              ? {
-                  unlockKeyAgreementKeyId: recordBind.unlockKeyAgreementKeyId
-                }
-              : {}),
-            ...(recordBind.unlockKeyAgreementKeyMultibase
-              ? {
-                  unlockKeyAgreementKeyMultibase:
-                    recordBind.unlockKeyAgreementKeyMultibase
-                }
-              : {})
-          }
+          standing: standingUnlockFields({
+            standing,
+            rung0KeyMultibase: rung0.keyMultibase,
+            delegation: bridge,
+            delegatedClients: sibling,
+            unlockKeyAgreementKeyId: recordBind.unlockKeyAgreementKeyId,
+            unlockKeyAgreementKeyMultibase:
+              recordBind.unlockKeyAgreementKeyMultibase
+          })
         }),
       // Remote only: a transient visit touches no local storage. The fresh
       // ladder VM is the delegator, and its bare did:key -- the bootstrap

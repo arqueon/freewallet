@@ -47,6 +47,22 @@
 
 ### Changed
 
+- The standing unlock fields a registry entry records are built by one
+  helper, `standingUnlockFields`, over wallet-core's
+  `recordedDelegationFields` for the delegation key ids and expiries, in
+  place of hand-built literals. The registry delegation refresh takes the
+  built members as one `fields` object.
+- The standing credential's bridge-and-sibling re-mint, record re-bind, and
+  registry refresh have one home, `remintStandingDelegations`, which the
+  remembered login's refresh and the last-client transition both call. Both
+  take the session's standing unlock members as one object.
+- A log-continuity refusal and an uncommitted annex rung are each matched by
+  one exported predicate (`isResourceLogContinuityError`,
+  `isClientAnnexRungUncommittedError`) in place of inline name compares.
+- The resource replica no longer carries a per-document `version` member.
+  `@interop/was-sync` 0.8.0 replaced it with the server write stamp, and the
+  local writes and tests that still set it are updated to the shape it
+  declares. An existing replica is forgotten and re-pulled at the next login.
 - Three mender declarations now name the authority their standing converger
   needs. `roster-wraps-exactly-the-document-key-set` and
   `standard-collections-are-provisioned` are declared `enrolled`.

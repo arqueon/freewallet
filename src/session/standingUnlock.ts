@@ -85,10 +85,7 @@ import {
   mintGenerationDelegation,
   selfEnrollClientCore
 } from '@interop/wallet-core/clientAnnex'
-import {
-  delegateLogWrite,
-  delegationProofKeyId
-} from '@interop/wallet-core/recovery'
+import { delegateLogWrite } from '@interop/wallet-core/recovery'
 import { addUserKeyRosterRecipient } from '@interop/wallet-core/keys'
 import type { AccountPointer, UnlockKdf } from '@interop/wallet-core/keyring'
 import type { ZcapClient } from '@interop/ezcap'
@@ -114,6 +111,7 @@ import {
 import {
   clientAnnexReachOf,
   ensureGenerationDelegation,
+  isClientAnnexRungUncommittedError,
   standingClientAnnexReachOf
 } from '@/session/annexReach'
 import {
@@ -122,11 +120,11 @@ import {
 } from '@/session/verifiedLog'
 import {
   refreshStandingDelegationFields,
+  standingUnlockFields,
   type StandingUnlockFields
 } from '@/session/unlockMethods'
 import { createLogger } from '@/lib/log'
 import { wasServiceDescription } from '@/lib/wasService'
-import { zcapExpires } from '@/lib/zcap'
 
 const log = createLogger('fw:session:unlock')
 
@@ -546,8 +544,7 @@ export async function establishStandingUnlock({
         log.warn(
           err instanceof ClientAnnexRungCommitSkipped
             ? 'The login credential carries no ladder seed; the bound credential waits for the next generation swap'
-            : (err as { name?: string }).name ===
-                'ClientAnnexRungUncommittedError'
+            : isClientAnnexRungUncommittedError(err)
               ? "The login credential's rung is not committed in the pointed generation; the bound credential waits for the next generation swap"
               : "Could not commit the bound credential's annex rung",
           { err }
@@ -556,14 +553,6 @@ export async function establishStandingUnlock({
     }
   }
 
-  const delegationKeyId = delegationProofKeyId(delegation)
-  const delegationExpires = zcapExpires(delegation)
-  const delegatedClientsKeyId = delegatedClients
-    ? delegationProofKeyId(delegatedClients)
-    : undefined
-  const delegatedClientsExpires = delegatedClients
-    ? zcapExpires(delegatedClients)
-    : undefined
   return {
     unlockSpaceId: bound.unlockSpaceId,
     ...(bound.manageCapability
@@ -578,24 +567,14 @@ export async function establishStandingUnlock({
     // log through this one: its own sibling stops verifying the moment its
     // ladder VM leaves the document.
     ...(delegatedClients ? { delegatedClients } : {}),
-    standingFields: {
-      rosterKid: standing.recipientKid,
-      keyAgreementKeyMultibase: standing.keyAgreementKeyMultibase,
-      updateKeyMultibase: rung0.keyMultibase,
-      unlockClientDid: standing.clientDid,
-      ...(delegationKeyId ? { delegationKeyId } : {}),
-      ...(delegationExpires ? { delegationExpires } : {}),
-      ...(delegatedClientsKeyId ? { delegatedClientsKeyId } : {}),
-      ...(delegatedClientsExpires ? { delegatedClientsExpires } : {}),
-      ...(bound.unlockKeyAgreementKeyId
-        ? { unlockKeyAgreementKeyId: bound.unlockKeyAgreementKeyId }
-        : {}),
-      ...(bound.unlockKeyAgreementKeyMultibase
-        ? {
-            unlockKeyAgreementKeyMultibase: bound.unlockKeyAgreementKeyMultibase
-          }
-        : {})
-    }
+    standingFields: standingUnlockFields({
+      standing,
+      rung0KeyMultibase: rung0.keyMultibase,
+      delegation,
+      delegatedClients,
+      unlockKeyAgreementKeyId: bound.unlockKeyAgreementKeyId,
+      unlockKeyAgreementKeyMultibase: bound.unlockKeyAgreementKeyMultibase
+    })
   }
 }
 
@@ -783,17 +762,11 @@ export async function establishClientAnnexGeneration({
     delegation: foundStanding.delegation,
     delegatedClients
   })
-  const delegatedClientsKeyId = delegationProofKeyId(delegatedClients)
   await refreshStandingDelegationFields({
     session,
     unlockSpaceId: found.unlockSpaceId,
     keyAgreementKeyMultibase: found.standingClient.keyAgreementKeyMultibase,
-    ...(delegatedClientsKeyId ? { delegatedClientsKeyId } : {}),
-    ...(zcapExpires(delegatedClients)
-      ? {
-          delegatedClientsExpires: zcapExpires(delegatedClients)
-        }
-      : {})
+    fields: standingUnlockFields({ delegatedClients })
   })
 }
 
@@ -1056,36 +1029,12 @@ export async function standingFieldsOfKeyringHit({
   const rung0 = ladderSeed
     ? await ladderRung({ ladderSeed, index: 0 })
     : undefined
-  const delegationKeyId = delegation
-    ? delegationProofKeyId(delegation)
-    : undefined
-  const delegationExpires = delegation ? zcapExpires(delegation) : undefined
-  const delegatedClientsKeyId = delegatedClients
-    ? delegationProofKeyId(delegatedClients)
-    : undefined
-  const delegatedClientsExpires = delegatedClients
-    ? zcapExpires(delegatedClients)
-    : undefined
-  return {
-    ...(standingClient
-      ? {
-          rosterKid: standingClient.recipientKid,
-          keyAgreementKeyMultibase: standingClient.keyAgreementKeyMultibase,
-          unlockClientDid: standingClient.clientDid
-        }
-      : {}),
-    ...(rung0 ? { updateKeyMultibase: rung0.keyMultibase } : {}),
-    ...(delegationKeyId ? { delegationKeyId } : {}),
-    ...(delegationExpires ? { delegationExpires } : {}),
-    ...(delegatedClientsKeyId ? { delegatedClientsKeyId } : {}),
-    ...(delegatedClientsExpires ? { delegatedClientsExpires } : {}),
-    ...(found.unlockKeyAgreementKeyId
-      ? { unlockKeyAgreementKeyId: found.unlockKeyAgreementKeyId }
-      : {}),
-    ...(found.unlockKeyAgreementKeyMultibase
-      ? {
-          unlockKeyAgreementKeyMultibase: found.unlockKeyAgreementKeyMultibase
-        }
-      : {})
-  }
+  return standingUnlockFields({
+    standing: standingClient,
+    rung0KeyMultibase: rung0?.keyMultibase,
+    delegation,
+    delegatedClients,
+    unlockKeyAgreementKeyId: found.unlockKeyAgreementKeyId,
+    unlockKeyAgreementKeyMultibase: found.unlockKeyAgreementKeyMultibase
+  })
 }

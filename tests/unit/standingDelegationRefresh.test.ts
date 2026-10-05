@@ -58,8 +58,12 @@ vi.mock('@/lib/zcap', () => ({
 }))
 
 import { delegateLogWrite } from '@interop/wallet-core/recovery'
+import { mintDelegatedClientsDelegation } from '@interop/wallet-core/clientAnnex'
 import { delegationKeyInDocument } from '@interop/wallet-core/webvh'
-import { refreshStandingDelegations } from '@/session/standingDelegationRefresh'
+import {
+  refreshStandingDelegations,
+  type RebindableStandingUnlock
+} from '@/session/standingDelegationRefresh'
 
 const POINTER = {
   did: 'did:webvh:QmScid:was.example.test:space:space-123:id',
@@ -70,12 +74,19 @@ const POINTER = {
 const STANDING_CLIENT_DID = 'did:key:z6MkStandingCredential'
 
 /**
- * The members the acting credential's unlock record carries today.
+ * The standing members the acting credential's unlock record carries today,
+ * with the record re-bind closure the re-mint re-seals through.
  */
-function standingMembers() {
+function standingMembers(): RebindableStandingUnlock {
   return {
     delegation: { id: 'urn:zcap:stale-bridge' } as unknown as IZcap,
-    delegatedClients: { id: 'urn:zcap:stale-sibling' } as unknown as IZcap
+    delegatedClients: { id: 'urn:zcap:stale-sibling' } as unknown as IZcap,
+    standingClient: {
+      clientDid: STANDING_CLIENT_DID,
+      keyAgreementKeyMultibase: 'z6LSStandingKak'
+    } as unknown as RebindableStandingUnlock['standingClient'],
+    unlockSpaceId: 'unlock-space-test',
+    rebindRecord: vi.fn(async members => members)
   }
 }
 
@@ -129,25 +140,33 @@ describe('the standing-delegation self-refresh', () => {
   it('re-mints an expiring pair without reading the account log', async () => {
     state.expiring = true
     const verifiedLog = rejectingLog()
-    const rebindStandingRecord = vi.fn(async () => undefined)
+    const standing = standingMembers()
     const { session, loadRegistry } = fakeSession()
 
     const outcome = await refreshStandingDelegations({
       session,
       pointer: POINTER,
       verifiedLog: verifiedLog as never,
-      rebindStandingRecord,
-      ...standingMembers(),
-      standingClientDid: STANDING_CLIENT_DID,
-      unlockSpaceId: 'unlock-space-test'
+      standing
     })
 
     expect(outcome).toBe('refreshed')
     // The log is the not-expiring branch's question alone.
     expect(verifiedLog).not.toHaveBeenCalled()
     expect(delegationKeyInDocument).not.toHaveBeenCalled()
-    expect(delegateLogWrite).toHaveBeenCalledOnce()
-    expect(rebindStandingRecord).toHaveBeenCalledWith({
+    // Both members are re-minted under the session's own signer.
+    expect(delegateLogWrite).toHaveBeenCalledWith({
+      zcapClient: session.profile.zcapClient,
+      pointer: POINTER,
+      recoveryClientDid: STANDING_CLIENT_DID
+    })
+    expect(mintDelegatedClientsDelegation).toHaveBeenCalledWith({
+      zcapClient: session.profile.zcapClient,
+      wasServerUrl: POINTER.host,
+      clientAnnexSpaceId: 'annex-space-1',
+      controller: STANDING_CLIENT_DID
+    })
+    expect(standing.rebindRecord).toHaveBeenCalledWith({
       delegation: { id: 'urn:zcap:fresh-bridge' },
       delegatedClients: { id: 'urn:zcap:fresh-sibling' }
     })
@@ -159,6 +178,24 @@ describe('the standing-delegation self-refresh', () => {
     })
   })
 
+  it('re-binds the bridge alone when the record carries no sibling', async () => {
+    state.expiring = true
+    const { delegatedClients: _sibling, ...standing } = standingMembers()
+
+    const outcome = await refreshStandingDelegations({
+      session: fakeSession().session,
+      pointer: POINTER,
+      verifiedLog: rejectingLog() as never,
+      standing
+    })
+
+    expect(outcome).toBe('refreshed')
+    expect(mintDelegatedClientsDelegation).not.toHaveBeenCalled()
+    expect(standing.rebindRecord).toHaveBeenCalledWith({
+      delegation: { id: 'urn:zcap:fresh-bridge' }
+    })
+  })
+
   it('reads the log on the not-expiring branch, and no-ops on a listed signer', async () => {
     const verifiedLog = vi.fn(async () => ({ doc: { id: POINTER.did } }))
 
@@ -166,10 +203,7 @@ describe('the standing-delegation self-refresh', () => {
       session: fakeSession().session,
       pointer: POINTER,
       verifiedLog: verifiedLog as never,
-      rebindStandingRecord: vi.fn(async () => undefined),
-      ...standingMembers(),
-      standingClientDid: STANDING_CLIENT_DID,
-      unlockSpaceId: 'unlock-space-test'
+      standing: standingMembers()
     })
 
     expect(outcome).toBe('noop')
@@ -185,10 +219,7 @@ describe('the standing-delegation self-refresh', () => {
       session: fakeSession().session,
       pointer: POINTER,
       verifiedLog: verifiedLog as never,
-      rebindStandingRecord: vi.fn(async () => undefined),
-      ...standingMembers(),
-      standingClientDid: STANDING_CLIENT_DID,
-      unlockSpaceId: 'unlock-space-test'
+      standing: standingMembers()
     })
 
     expect(outcome).toBe('refreshed')
@@ -203,10 +234,7 @@ describe('the standing-delegation self-refresh', () => {
         session: fakeSession().session,
         pointer: POINTER,
         verifiedLog: verifiedLog as never,
-        rebindStandingRecord: vi.fn(async () => undefined),
-        ...standingMembers(),
-        standingClientDid: STANDING_CLIENT_DID,
-        unlockSpaceId: 'unlock-space-test'
+        standing: standingMembers()
       })
     ).rejects.toThrow('did.jsonl could not be read')
     expect(delegateLogWrite).not.toHaveBeenCalled()

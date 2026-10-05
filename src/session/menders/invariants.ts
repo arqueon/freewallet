@@ -207,11 +207,11 @@ const DECLARATIONS: ReadonlyArray<
     when: (route: { popup: boolean }) => !route.popup
   },
   // 8
-  // converger: the remembered chain's standing-delegation refresh closure
-  // (`delegateLogWrite`, `mintDelegatedClientsDelegation`,
-  // `rebindStandingRecord`, then `refreshStandingDelegationFields`); the
-  // transient half sits inside `ensureClientAnnexGenerationReady`
-  // (`src/session/transientLogin.ts`). Neither is an addressable symbol.
+  // converger: the remembered chain's `refreshStandingDelegations`
+  // (`src/session/standingDelegationRefresh.ts`), whose re-mint and record
+  // re-bind (`remintStandingDelegations`) the last-client transition shares;
+  // the transient half sits inside `ensureClientAnnexGenerationReady`
+  // (`src/session/transientLogin.ts`).
   // Also runs in the remote-direct CHAPI popup. Both halves re-seal through
   // the record re-bind, a compare-and-swap over a fresh read of the served
   // unlock record that carries forward any member it does not re-mint.
@@ -233,9 +233,8 @@ const DECLARATIONS: ReadonlyArray<
     evidence: ['served-unlock-record', 'verified-log', 'local-clock']
   },
   // 9
-  // converger: the ladder-rung refresh closure (`attributeLadderRung`, then
-  // `refreshStandingDelegationFields`, `src/session/initSession.ts`), not an
-  // addressable symbol.
+  // converger: `refreshCommittedLadderRung`
+  // (`src/session/standingDelegationRefresh.ts`).
   // Also runs in the remote-direct CHAPI popup.
   {
     id: 'registry-records-the-committed-ladder-rung',

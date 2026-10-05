@@ -349,7 +349,7 @@ docs/architecture/session-persistence.md, and "Remote-direct popup storage" in
 docs/architecture/chapi.md). One local database per user holds every standard
 collection (`private-credentials`, `public-credentials`, `wallet-activity`,
 `contacts`, `contacts-history`, `app-keys`) on the generic synced-doc
-schema (`{ id, updatedAt, version, data }`, `syncedDocSchema` from
+schema (`{ id, updatedAt, data }`, `syncedDocSchema` from
 `@interop/was-sync`). RxDB hashes that schema and refuses a replica whose stored
 hash differs, so its shape is browser-local stored state rather than a code
 detail.
@@ -1142,7 +1142,7 @@ base64url(SHA-256(unlock did:key))` (a discovery convention).
   over RxDB / IndexedDB (Dexie), holding every standard wallet collection on
   the generic synced-doc schema. A transient session constructs none.
 - **Resource replica** -- the local replica's copy of one remote Resource:
-  one synced document (`{ id, updatedAt, version, data }`) in a
+  one synced document (`{ id, updatedAt, data }`) in a
   `BrowserStore` collection. Its `id` is the Resource's id, and `data` holds
   the stored body verbatim, an EDV envelope on an encrypted collection.
   Replication keeps it in step with the Resource in both directions. A

@@ -69,22 +69,17 @@ import { deriveNextKeyHash } from '@interop/did-method-webvh'
 import { WasClient, type ServiceDescription } from '@interop/was-client'
 import {
   clientAnnexLogStore,
-  delegatedClientsDelegationSpaceId,
   forgetEnrolledClient,
   forgetLastEnrolledClient,
   ladderVmAgent,
-  ladderVmZcapClient,
-  mintDelegatedClientsDelegation
+  ladderVmZcapClient
 } from '@interop/wallet-core/clientAnnex'
 import type {
   EnrolledClientForgetResult,
   LastEnrolledClientForgetResult
 } from '@interop/wallet-core/clientAnnex'
 import { agentsFromSeed } from '@interop/was-client/identity'
-import {
-  delegateLogWrite,
-  delegationProofKeyId
-} from '@interop/wallet-core/recovery'
+import type { AccountPointer } from '@interop/wallet-core/keyring'
 import {
   clientSigningKeyMultibase,
   isWebvhDid,
@@ -116,9 +111,12 @@ import { sessionRosterStore } from '@/session/rosterStore'
 import { sessionCollectionStores } from '@/session/collectionLogStore'
 import { unlockLogStore } from '@/session/standingUnlock'
 import {
+  remintStandingDelegations,
+  type RebindableStandingUnlock
+} from '@/session/standingDelegationRefresh'
+import {
   getUnlockMethods,
   latentUpdateKeyMultibasesOf,
-  refreshStandingDelegationFields,
   unlockEntryReaderFor
 } from '@/session/unlockMethods'
 import {
@@ -129,7 +127,6 @@ import { disposeSession } from '@/session/sessionLifecycle'
 import { cascadeCollections } from '@/session/userKeyCascade'
 import { createLogger } from '@/lib/log'
 import { wasServiceDescription } from '@/lib/wasService'
-import { zcapExpires } from '@/lib/zcap'
 
 const log = createLogger('fw:session:forget')
 import { invalidateVerifiedLog } from '@/session/verifiedLog'
@@ -604,10 +601,9 @@ function annexCeremonyReach({
  * `capabilityDelegation` from the install entry on, and the one key the
  * post-removal document still backs -- and the unlock record is re-sealed
  * through the hit's re-bind closure, with the registry pair refreshed under
- * this client's last window of registry authority. Idempotent (a resumed
- * run re-mints and re-binds again). The sibling's auxiliary Space id rides
- * in the old sibling, the id's one carrier; a record without a sibling
- * re-binds the bridge alone.
+ * this client's last window of registry authority. The re-mint and re-bind
+ * are {@link remintStandingDelegations}, the sequence the remembered login's
+ * self-refresh runs under the session's own signer.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -615,8 +611,8 @@ function annexCeremonyReach({
  * @param options.accountDid {string}   the post-install DID (the ladder
  *   VM's id is minted against it)
  * @param options.ladderSeed {Uint8Array}
- * @param options.standing {object}   the profile's standing members with
- *   the re-bind closure present
+ * @param options.standing {RebindableStandingUnlock}   the profile's
+ *   standing members with the re-bind closure present
  * @returns {Promise<void>}
  */
 async function rebindLoginCredentialRecord({
@@ -627,52 +623,16 @@ async function rebindLoginCredentialRecord({
   standing
 }: {
   session: Session
-  pointer: Parameters<typeof delegateLogWrite>[0]['pointer']
+  pointer: AccountPointer
   accountDid: string
   ladderSeed: Uint8Array
-  standing: NonNullable<Session['profile']['standingUnlock']> & {
-    rebindRecord: NonNullable<
-      NonNullable<Session['profile']['standingUnlock']>['rebindRecord']
-    >
-  }
+  standing: RebindableStandingUnlock
 }): Promise<void> {
-  const ladderClient = await ladderVmZcapClient({ accountDid, ladderSeed })
-  const controller = standing.standingClient.clientDid
-  const delegation = await delegateLogWrite({
-    zcapClient: ladderClient,
-    pointer,
-    recoveryClientDid: controller
-  })
-  let delegatedClients
-  if (standing.delegatedClients) {
-    const clientAnnexSpaceId = delegatedClientsDelegationSpaceId({
-      delegation: standing.delegatedClients
-    })
-    if (clientAnnexSpaceId) {
-      delegatedClients = await mintDelegatedClientsDelegation({
-        zcapClient: ladderClient,
-        wasServerUrl: pointer.host,
-        clientAnnexSpaceId,
-        controller
-      })
-    }
-  }
-  await standing.rebindRecord({
-    delegation,
-    ...(delegatedClients ? { delegatedClients } : {})
-  })
-  await refreshStandingDelegationFields({
+  await remintStandingDelegations({
     session,
-    unlockSpaceId: standing.unlockSpaceId,
-    keyAgreementKeyMultibase: standing.standingClient.keyAgreementKeyMultibase,
-    delegationKeyId: delegationProofKeyId(delegation),
-    delegationExpires: zcapExpires(delegation),
-    ...(delegatedClients
-      ? {
-          delegatedClientsKeyId: delegationProofKeyId(delegatedClients),
-          delegatedClientsExpires: zcapExpires(delegatedClients)
-        }
-      : {})
+    zcapClient: await ladderVmZcapClient({ accountDid, ladderSeed }),
+    pointer,
+    standing
   })
 }
 

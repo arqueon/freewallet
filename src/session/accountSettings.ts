@@ -76,6 +76,7 @@ import {
   unlockSpaceVerbInvocation,
   updateUnlockMethods,
   revokeUnlockMethodByCeremony,
+  standingUnlockFields,
   upsertPassphraseUnlockMethod,
   type BackupCredentialUnlockMethod,
   type PassphraseUnlockMethod,
@@ -1026,15 +1027,11 @@ async function standingFieldsOfCredential({
       "The old passphrase's ladder seed is not in hand, so its registry entry records no update key and the login-time repair will not retire it"
     )
   }
-  const { recipientKid, keyAgreementKeyMultibase, clientDid } =
-    credential.standing
-  return {
-    ...(recipientKid ? { rosterKid: recipientKid } : {}),
-    ...(keyAgreementKeyMultibase ? { keyAgreementKeyMultibase } : {}),
-    ...(clientDid ? { unlockClientDid: clientDid } : {}),
-    ...(rung0 ? { updateKeyMultibase: rung0.keyMultibase } : {}),
+  return standingUnlockFields({
+    standing: credential.standing,
+    rung0KeyMultibase: rung0?.keyMultibase,
     ...unlockKeyAgreementMembers({ unlock: credential.unlock })
-  }
+  })
 }
 
 /**

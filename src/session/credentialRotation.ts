@@ -59,6 +59,7 @@ import type { Session } from '@/types/auth'
 import type { CeremonyId } from '@interop/wallet-core'
 import {
   clientAnnexReachFor,
+  isClientAnnexRungUncommittedError,
   standingClientAnnexReachFor
 } from '@/session/annexReach'
 import {
@@ -646,9 +647,7 @@ async function retireClientAnnexInventoryStage({
         })
         return { action: struck ? 'struck' : 'clean' }
       } catch (err) {
-        if (
-          (err as { name?: string }).name !== 'ClientAnnexRungUncommittedError'
-        ) {
+        if (!isClientAnnexRungUncommittedError(err)) {
           throw err
         }
         // No distinct committed rung can sign the strike; fall through to

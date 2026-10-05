@@ -42,6 +42,7 @@
  * (record kept, retried later) -- never a discard, never a wipe.
  */
 import { agentsFromSeed } from '@interop/was-client/identity'
+import { errorNameOf } from '@interop/wallet-core/menders'
 import {
   clientSigningKeyMultibase,
   documentKeyMultibases,
@@ -224,7 +225,7 @@ export async function resumePendingEnrollment({
   } catch (err) {
     if (
       isStorageUnreachable(err) ||
-      PASSTHROUGH_ERROR_NAMES.has((err as { name?: string } | null)?.name ?? '')
+      PASSTHROUGH_ERROR_NAMES.has(errorNameOf(err))
     ) {
       throw err
     }
@@ -279,7 +280,7 @@ async function decidePendingResume({
   } catch (err) {
     if (
       isStorageUnreachable(err) ||
-      PASSTHROUGH_ERROR_NAMES.has((err as { name?: string } | null)?.name ?? '')
+      PASSTHROUGH_ERROR_NAMES.has(errorNameOf(err))
     ) {
       throw err
     }

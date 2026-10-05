@@ -9,42 +9,16 @@
  * @vitest-environment node
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type {
-  IKeyAgreementKey,
-  IKeyResolver
-} from '@interop/data-integrity-core'
 import type { ContactData } from '@interop/social-core'
-import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { getRxStorageMemory } from 'rxdb/plugins/storage-memory'
 import type { ControllerProfile, User } from '@/types/auth'
 import { browserLocalSessionPersistence } from '@/session/persistence'
 import { StorageManager } from './storageManager'
+import { generateVaultKeys } from '@/stores/testing/vaultKeys'
 
 let userCounter = 0
 const openSessions: StorageManager[] = []
 let localStorageBacking: Record<string, string> = {}
-
-/**
- * A generated X25519 key pair plus the single-key resolver the session profile
- * supplies alongside it -- the session's vault KAK, the sole recipient of a
- * local-mode epoch.
- *
- * @returns {Promise<object>}
- */
-async function generateKey(): Promise<{
-  keyAgreementKey: IKeyAgreementKey
-  keyResolver: IKeyResolver
-}> {
-  const key = await X25519KeyAgreementKey2020.generate({
-    controller: 'did:key:z6MkContactsController'
-  })
-  const keyResolver: IKeyResolver = async () => ({
-    id: key.id!,
-    type: key.type,
-    publicKeyMultibase: key.publicKeyMultibase
-  })
-  return { keyAgreementKey: key as IKeyAgreementKey, keyResolver }
-}
 
 /**
  * A local-only session over RxDB memory storage, provisioned so the contact
@@ -61,7 +35,7 @@ async function initLocalSession(): Promise<{
     id: `did:key:z6MkContactsUser${userCounter}`,
     email: 'test@example.com'
   } as User
-  const owner = await generateKey()
+  const owner = await generateVaultKeys()
   const profile = {
     keyAgreementKey: owner.keyAgreementKey,
     keyResolver: owner.keyResolver,

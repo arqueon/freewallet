@@ -4065,15 +4065,9 @@ export class StorageManager {
           // the later account-log reads in the same login run the same pin
           // and surface it to the user. A rollback may be no more than
           // replication lag (nothing rolled back was adopted), so it warns
-          // like everything else. Matched on `err.name` rather than
-          // `instanceof`: the refusal is raised inside wallet-core, whose
-          // copy here can differ from the one this file imports (a linked
-          // checkout, or a duplicate through the dependency tree).
-          if (
-            (err as { name?: unknown } | null)?.name ===
-              'ResourceLogContinuityError' &&
-            (err as { reason?: unknown }).reason !== 'rollback'
-          ) {
+          // like everything else; `isResourceLogRefusal` is the one
+          // implementation of that carve-out.
+          if (isResourceLogRefusal(err)) {
             log.error('did:webvh provisioning refused', { err })
           } else {
             log.warn('did:webvh provisioning failed', { err })

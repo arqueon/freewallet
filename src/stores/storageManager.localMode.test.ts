@@ -23,11 +23,11 @@ import type {
   IVerifiableCredential
 } from '@interop/data-integrity-core'
 import type { CollectionEncryption } from '@interop/was-client'
-import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { getRxStorageMemory } from 'rxdb/plugins/storage-memory'
 import type { ControllerProfile, User } from '@/types/auth'
 import { browserLocalSessionPersistence } from '@/session/persistence'
 import { StorageManager } from './storageManager'
+import { generateVaultKeys } from '@/stores/testing/vaultKeys'
 
 /**
  * A minimal well-formed VC body; the storage layer treats it as opaque JSON.
@@ -39,26 +39,6 @@ function makeCredential(name: string): IVerifiableCredential {
     issuer: 'did:key:z6MkTestIssuer',
     credentialSubject: { name }
   } as unknown as IVerifiableCredential
-}
-
-/**
- * A generated X25519 key pair plus the single-key resolver the session profile
- * supplies alongside it -- the session's vault KAK, the sole recipient of a
- * local-mode epoch.
- */
-async function generateKey(): Promise<{
-  keyAgreementKey: IKeyAgreementKey
-  keyResolver: IKeyResolver
-}> {
-  const key = await X25519KeyAgreementKey2020.generate({
-    controller: 'did:key:z6MkLocalModeController'
-  })
-  const keyResolver: IKeyResolver = async () => ({
-    id: key.id!,
-    type: key.type,
-    publicKeyMultibase: key.publicKeyMultibase
-  })
-  return { keyAgreementKey: key as IKeyAgreementKey, keyResolver }
 }
 
 /**
@@ -187,7 +167,7 @@ afterEach(async () => {
 describe('StorageManager.initStorageClients in local mode', () => {
   it('a guest session gets working ciphers for the encrypted standard collections', async () => {
     const user = makeUser()
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const storage = await initLocalSession({ user, owner, isGuest: true })
     openSessions.push(storage)
 
@@ -209,7 +189,7 @@ describe('StorageManager.initStorageClients in local mode', () => {
 
   it('a non-guest local session persists an epoch-bearing descriptor per encrypted collection', async () => {
     const user = makeUser()
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const storage = await initLocalSession({ user, owner, isGuest: false })
     openSessions.push(storage)
     await storage.addCredential({ credential: makeCredential('Grace'), user })
@@ -233,7 +213,7 @@ describe('StorageManager.initStorageClients in local mode', () => {
 
   it('a guest session persists no descriptors', async () => {
     const user = makeUser()
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const storage = await initLocalSession({ user, owner, isGuest: true })
     openSessions.push(storage)
     await storage.addCredential({ credential: makeCredential('Hopper'), user })
@@ -243,7 +223,7 @@ describe('StorageManager.initStorageClients in local mode', () => {
 
   it('a non-guest local re-init reuses the cached epoch, so earlier rows still decrypt', async () => {
     const user = makeUser()
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const first = await initLocalSession({ user, owner, isGuest: false })
     await first.addCredential({
       credential: makeCredential('Lovelace'),

@@ -83,7 +83,8 @@ import {
 import { healAccountPointer } from '@/session/pointerHeal'
 import {
   clientAnnexReachFor,
-  ensureGenerationDelegation
+  ensureGenerationDelegation,
+  isClientAnnexRungUncommittedError
 } from '@/session/annexReach'
 import { sweepClientAnnexGenerations } from '@/session/clientAnnexGc'
 import { refreshTransientManageCapability } from '@/session/unlockMethods'
@@ -451,12 +452,10 @@ const STANDING_DELEGATION_REFRESH: Registration<LoginMenderDeps, CeremonyId> = {
   trigger: 'remembered-login-chain',
   reports: ['standing-delegations-verify-under-the-current-document'],
   async converge(deps) {
-    const { session, found } = remembered(deps)
+    const { session } = remembered(deps)
     const invariant = 'standing-delegations-verify-under-the-current-document'
-    const rebindStandingRecord = found.rebindStandingRecord
-    const delegation = found.standing?.delegation
-    const standingClientDid = found.standingClient?.clientDid
-    if (!rebindStandingRecord || !delegation || !standingClientDid) {
+    const standing = session.profile.standingUnlock
+    if (!standing?.rebindRecord) {
       return [
         {
           invariant,
@@ -475,19 +474,7 @@ const STANDING_DELEGATION_REFRESH: Registration<LoginMenderDeps, CeremonyId> = {
       session,
       pointer,
       verifiedLog: async () => verifiedAccountLog({ session }),
-      rebindStandingRecord,
-      delegation,
-      ...(found.standing?.delegatedClients
-        ? { delegatedClients: found.standing.delegatedClients }
-        : {}),
-      standingClientDid,
-      unlockSpaceId: found.unlockSpaceId,
-      ...(found.standingClient?.keyAgreementKeyMultibase
-        ? {
-            keyAgreementKeyMultibase:
-              found.standingClient.keyAgreementKeyMultibase
-          }
-        : {})
+      standing: { ...standing, rebindRecord: standing.rebindRecord }
     })
     return [
       { invariant, outcome: refreshed === 'refreshed' ? 'clean' : 'noop' }
@@ -651,9 +638,7 @@ const GENERATION_DELEGATION_HEAL: Registration<LoginMenderDeps, CeremonyId> = {
       // A rung the generation does not commit (a credential bound
       // mid-generation) skips quietly; everything else rides the runner's
       // warn.
-      if (
-        (err as { name?: string }).name !== 'ClientAnnexRungUncommittedError'
-      ) {
+      if (!isClientAnnexRungUncommittedError(err)) {
         throw err
       }
       return [

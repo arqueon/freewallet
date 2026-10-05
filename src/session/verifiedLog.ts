@@ -35,6 +35,7 @@
  * verify) call `verifyAccountLog` directly -- there is no session profile to
  * cache against, and no ownership of what would invalidate it.
  */
+import { errorNameOf } from '@interop/wallet-core/menders'
 import { verifyAccountLog } from '@interop/wallet-core/webvh'
 import type {
   AccountLogPointer,
@@ -438,7 +439,5 @@ export async function reprimeVerifiedAccountLog({
  * @returns {boolean}
  */
 export function isResourceLogContinuityError(err: unknown): boolean {
-  return (
-    (err as { name?: unknown } | null)?.name === 'ResourceLogContinuityError'
-  )
+  return errorNameOf(err) === 'ResourceLogContinuityError'
 }

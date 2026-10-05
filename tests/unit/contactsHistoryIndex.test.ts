@@ -270,7 +270,6 @@ describe('contacts-history projection index', () => {
       await store.rxCollection('contactsHistory').insertIfNotExists({
         id,
         updatedAt: new Date().toISOString(),
-        version: 0,
         data: envelope
       })
     }
@@ -301,7 +300,6 @@ describe('contacts-history projection index', () => {
     await store.rxCollection('contactsHistory').insertIfNotExists({
       id: 'corrupt-resource',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: { jwe: { ciphertext: 'bm90LWpzb24=' } }
     })
 

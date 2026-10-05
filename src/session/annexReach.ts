@@ -460,6 +460,19 @@ export type GenerationDelegationRenewal =
     }
 
 /**
+ * Whether the given error is wallet-core's `ClientAnnexRungUncommittedError`:
+ * the acting credential's ladder rung is not committed in the pointed annex
+ * generation (a credential bound mid-generation), so no annex entry it signs
+ * can verify there. Each caller keeps its own reaction to it.
+ *
+ * @param err {unknown}   the caught error
+ * @returns {boolean}
+ */
+export function isClientAnnexRungUncommittedError(err: unknown): boolean {
+  return errorNameOf(err) === 'ClientAnnexRungUncommittedError'
+}
+
+/**
  * A ladder-branch ceremony refused before the account-document edit that
  * strikes a signer (its pivot), for one of two reasons. Three ceremonies
  * raise it: a wallet disconnect before its removal entry, and a passphrase

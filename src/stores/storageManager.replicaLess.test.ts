@@ -38,11 +38,7 @@ import { TEST_SERVICE_DESCRIPTION } from '../../tests/shared/wasServiceFixture'
 
 import { memoryResourceLogPinStore } from '@interop/vh-resource-log'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
-import type {
-  IKeyAgreementKey,
-  IKeyResolver
-} from '@interop/data-integrity-core'
-import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import type { ZcapClient } from '@interop/ezcap'
 import type {
   CollectionEncryption,
@@ -76,6 +72,7 @@ import { mintUserKey, userKeyVaultKeys } from '@interop/wallet-core/keys'
 import { adoptFollowerUserKey } from '@/session/userKeyAdoption'
 import { BrowserStore } from './browserStore'
 import { StorageManager, type DescriptorLogs } from './storageManager'
+import { generateVaultKeys } from '@/stores/testing/vaultKeys'
 import { WASRemoteStore } from './wasRemoteStore'
 
 vi.mock('@/app.config', async importOriginal => ({
@@ -93,25 +90,6 @@ function makeCredential(name: string): IVerifiableCredential {
     issuer: 'did:key:z6MkTestIssuer',
     credentialSubject: { name }
   } as unknown as IVerifiableCredential
-}
-
-/**
- * A generated X25519 key pair plus the single-key resolver the session profile
- * supplies alongside it.
- */
-async function generateKey(): Promise<{
-  keyAgreementKey: IKeyAgreementKey
-  keyResolver: IKeyResolver
-}> {
-  const key = await X25519KeyAgreementKey2020.generate({
-    controller: 'did:key:z6MkTestController'
-  })
-  const keyResolver: IKeyResolver = async () => ({
-    id: key.id!,
-    type: key.type,
-    publicKeyMultibase: key.publicKeyMultibase
-  })
-  return { keyAgreementKey: key as IKeyAgreementKey, keyResolver }
 }
 
 /**
@@ -531,7 +509,7 @@ function stubLocalStorage(): { keys: () => string[] } {
 
 describe('replica-less remote-direct StorageManager', () => {
   it('serves credential and history reads/writes with no local replica and no browser-local residue', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const { remoteStore, descriptorLogs, provision } = makeFakeRemote()
     await provision(owner)
 
@@ -601,7 +579,7 @@ describe('replica-less remote-direct StorageManager', () => {
   })
 
   it('serves the contacts round-trip through the remote-direct backend', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const { remoteStore, descriptorLogs, provision } = makeFakeRemote()
     await provision(owner)
 
@@ -679,7 +657,7 @@ describe('replica-less remote-direct StorageManager', () => {
   })
 
   it('adopts a rotated user key past the fan-out, sealing later writes under the fresh epoch', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const {
       remoteStore,
       descriptors,
@@ -722,7 +700,7 @@ describe('replica-less remote-direct StorageManager', () => {
       // The ceremony's in-band half, which fires BEFORE the collection
       // fan-out: the manager takes the rotated key material, and the ciphers
       // stay on the epoch the collections still carry.
-      const rotated = await generateKey()
+      const rotated = await generateVaultKeys()
       storage.holdRotatedVaultKeys(rotated)
 
       // The fan-out: every encrypted collection re-epoch'd onto the rotated
@@ -754,7 +732,7 @@ describe('replica-less remote-direct StorageManager', () => {
   })
 
   it('refuses to adopt a rotated key before the fan-out has run', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const { remoteStore, descriptorLogs, provision } = makeFakeRemote()
     await provision(owner)
 
@@ -788,7 +766,7 @@ describe('replica-less remote-direct StorageManager', () => {
       // a full adoption there asks the rotated key to open an epoch it is not
       // yet a recipient of. The adoption throws rather than installing
       // refusing ciphers, so its caller learns it did not land.
-      const rotated = await generateKey()
+      const rotated = await generateVaultKeys()
       await expect(storage.adoptRotatedVaultKeys(rotated)).rejects.toThrow(
         expect.objectContaining({ name: 'KeyUnwrapError' })
       )
@@ -799,12 +777,12 @@ describe('replica-less remote-direct StorageManager', () => {
   })
 
   it('builds the session with refusing ciphers on stranded collections, and a refresh past the fan-out clears them', async () => {
-    const retired = await generateKey()
+    const retired = await generateVaultKeys()
     const { remoteStore, descriptorLogs, provision, rotate } = makeFakeRemote()
     // A rotation torn before its fan-out: every collection still names only
     // the retired key, and the session unlocks the current one.
     await provision(retired)
-    const current = await generateKey()
+    const current = await generateVaultKeys()
 
     const persistence = inMemorySessionPersistence({
       stores: transientSessionStores(),
@@ -861,10 +839,10 @@ describe('replica-less remote-direct StorageManager', () => {
   })
 
   it('tells the stranded callback once when a rebuild records a strand, and not before it is set', async () => {
-    const retired = await generateKey()
+    const retired = await generateVaultKeys()
     const { remoteStore, descriptorLogs, provision, rotate } = makeFakeRemote()
     await provision(retired)
-    const current = await generateKey()
+    const current = await generateVaultKeys()
 
     const persistence = inMemorySessionPersistence({
       stores: transientSessionStores(),
@@ -988,7 +966,7 @@ describe('replica-less remote-direct StorageManager', () => {
   })
 
   it('fails the session build on a recipient entry that does not unwrap', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const { remoteStore, descriptorLogs, descriptors, provision, seed } =
       makeFakeRemote()
     await provision(owner)
@@ -1045,7 +1023,7 @@ describe('replica-less remote-direct StorageManager', () => {
   })
 
   it('refuses a replica-less construction with no remote store', async () => {
-    const vaultKeys = await generateKey()
+    const vaultKeys = await generateVaultKeys()
     expect(
       () =>
         new StorageManager({
@@ -1091,8 +1069,8 @@ async function contactsRotationSession(): Promise<{
   rotateAndRewrite(contact: ContactData): Promise<string>
   restore(): void
 }> {
-  const owner = await generateKey()
-  const readers = [await generateKey(), await generateKey()]
+  const owner = await generateVaultKeys()
+  const readers = [await generateVaultKeys(), await generateVaultKeys()]
   const {
     remoteStore,
     descriptors,

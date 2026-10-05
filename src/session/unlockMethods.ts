@@ -65,7 +65,11 @@ import {
   deriveUnlockCredential,
   standingLadderSeed
 } from '@/session/keyring'
-import { zcapExpiring } from '@interop/wallet-core/recovery'
+import {
+  recordedDelegationFields,
+  zcapExpiring
+} from '@interop/wallet-core/recovery'
+import type { UnlockClientIdentity } from '@interop/wallet-core/unlock'
 import type { AccountPointer, RecordProof } from '@interop/wallet-core/keyring'
 import { errorNameOf } from '@interop/wallet-core/menders'
 import type { PersistableClientKeys } from '@/session/keyring'
@@ -134,6 +138,60 @@ export interface StandingUnlockFields {
   unlockClientDid?: string
   unlockKeyAgreementKeyId?: string
   unlockKeyAgreementKeyMultibase?: string
+}
+
+/**
+ * Builds a `StandingUnlockFields` literal: the one place its members are
+ * assembled, so a new standing field cannot be dropped by a site that builds
+ * the literal by hand. Each member is present only when its input is, and an
+ * absent input leaves its member out (never `undefined`-valued), since the
+ * object is serialized into the registry record. The bridge delegation's and
+ * the sibling delegation's proof key ids and expiries come from wallet-core's
+ * `recordedDelegationFields`, the recovery entries' builder.
+ *
+ * @param options {object}
+ * @param [options.standing] {object}   the credential's standing client
+ *   identity (`clientDid`, `keyAgreementKeyMultibase`, `recipientKid`)
+ * @param [options.rung0KeyMultibase] {string}   ladder rung 0's multibase,
+ *   recorded as `updateKeyMultibase`
+ * @param [options.delegation] {IZcap}   the record's bridge delegation
+ * @param [options.delegatedClients] {IZcap}   the record's sibling delegation
+ *   into the client annex
+ * @param [options.unlockKeyAgreementKeyId] {string}
+ * @param [options.unlockKeyAgreementKeyMultibase] {string}
+ * @returns {StandingUnlockFields}
+ */
+export function standingUnlockFields({
+  standing,
+  rung0KeyMultibase,
+  delegation,
+  delegatedClients,
+  unlockKeyAgreementKeyId,
+  unlockKeyAgreementKeyMultibase
+}: {
+  standing?: Pick<
+    UnlockClientIdentity,
+    'clientDid' | 'keyAgreementKeyMultibase' | 'recipientKid'
+  >
+  rung0KeyMultibase?: string
+  delegation?: IZcap
+  delegatedClients?: IZcap
+  unlockKeyAgreementKeyId?: string
+  unlockKeyAgreementKeyMultibase?: string
+}): StandingUnlockFields {
+  return {
+    ...(standing?.recipientKid ? { rosterKid: standing.recipientKid } : {}),
+    ...(standing?.keyAgreementKeyMultibase
+      ? { keyAgreementKeyMultibase: standing.keyAgreementKeyMultibase }
+      : {}),
+    ...(rung0KeyMultibase ? { updateKeyMultibase: rung0KeyMultibase } : {}),
+    ...recordedDelegationFields({ delegation, delegatedClients }),
+    ...(standing?.clientDid ? { unlockClientDid: standing.clientDid } : {}),
+    ...(unlockKeyAgreementKeyId ? { unlockKeyAgreementKeyId } : {}),
+    ...(unlockKeyAgreementKeyMultibase
+      ? { unlockKeyAgreementKeyMultibase }
+      : {})
+  }
 }
 
 /**
@@ -2481,7 +2539,8 @@ export async function refreshTransientManageCapability({
  * Space. The registry half of the login-time bridge-expiry self-refresh and
  * the post-self-enroll rung refresh. Best-effort semantics are the caller's
  * (both refreshes are fire-and-forget behind provisioning); writes only when
- * an entry matches.
+ * an entry matches. The delegation members are built by
+ * `standingUnlockFields` from the zcaps, so a caller hands in no literal.
  *
  * The unlock Space alone is not always enough to identify the credential: a
  * passphrase change whose retirement failed at its document edit leaves the
@@ -2497,33 +2556,28 @@ export async function refreshTransientManageCapability({
  * @param [options.keyAgreementKeyMultibase] {string}   the acting
  *   credential's key-agreement multibase; when given and the matched entry
  *   records a different one, nothing is written
- * @param [options.delegationKeyId] {string}
- * @param [options.delegationExpires] {string}
- * @param [options.delegatedClientsKeyId] {string}   the annex-Space
- *   sibling delegation's fresh signer
- * @param [options.delegatedClientsExpires] {string}
- * @param [options.updateKeyMultibase] {string}   the ladder's current
- *   committed rung
+ * @param options.fields {object}   the members to stamp: the bridge pair,
+ *   the sibling pair, and the ladder's current committed rung
+ *   (`updateKeyMultibase`); an absent member leaves the stored one alone
  * @returns {Promise<void>}
  */
 export async function refreshStandingDelegationFields({
   session,
   unlockSpaceId,
   keyAgreementKeyMultibase,
-  delegationKeyId,
-  delegationExpires,
-  delegatedClientsKeyId,
-  delegatedClientsExpires,
-  updateKeyMultibase
+  fields
 }: {
   session: Session
   unlockSpaceId: string
   keyAgreementKeyMultibase?: string
-  delegationKeyId?: string
-  delegationExpires?: string
-  delegatedClientsKeyId?: string
-  delegatedClientsExpires?: string
-  updateKeyMultibase?: string
+  fields: Pick<
+    StandingUnlockFields,
+    | 'delegationKeyId'
+    | 'delegationExpires'
+    | 'delegatedClientsKeyId'
+    | 'delegatedClientsExpires'
+    | 'updateKeyMultibase'
+  >
 }): Promise<void> {
   await updateUnlockMethods({
     session,
@@ -2552,16 +2606,7 @@ export async function refreshStandingDelegationFields({
       return {
         ...record,
         methods: record.methods.map(method =>
-          method === stored
-            ? {
-                ...stored,
-                ...(delegationKeyId ? { delegationKeyId } : {}),
-                ...(delegationExpires ? { delegationExpires } : {}),
-                ...(delegatedClientsKeyId ? { delegatedClientsKeyId } : {}),
-                ...(delegatedClientsExpires ? { delegatedClientsExpires } : {}),
-                ...(updateKeyMultibase ? { updateKeyMultibase } : {})
-              }
-            : method
+          method === stored ? { ...stored, ...fields } : method
         )
       }
     }

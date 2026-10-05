@@ -1620,10 +1620,12 @@ describe('the standing delegation scalar pairs (FW-194)', () => {
     await refreshStandingDelegationFields({
       session,
       unlockSpaceId: 'unlock-space-1',
-      delegationKeyId: 'did:key:zFresh#zFresh',
-      delegationExpires: '2027-08-19T00:00:00.000Z',
-      delegatedClientsKeyId: 'did:key:zFreshSibling#zFreshSibling',
-      delegatedClientsExpires: '2027-08-19T01:00:00.000Z'
+      fields: {
+        delegationKeyId: 'did:key:zFresh#zFresh',
+        delegationExpires: '2027-08-19T00:00:00.000Z',
+        delegatedClientsKeyId: 'did:key:zFreshSibling#zFreshSibling',
+        delegatedClientsExpires: '2027-08-19T01:00:00.000Z'
+      }
     })
     const record = await getUnlockMethods({ session })
     const entry = record!.methods[0] as PassphraseUnlockMethod
@@ -1661,8 +1663,10 @@ describe('the standing delegation scalar pairs (FW-194)', () => {
       session,
       unlockSpaceId: 'unlock-space-1',
       keyAgreementKeyMultibase: 'z6LSLoginCredentialKak',
-      updateKeyMultibase: 'z6MkLoginRung',
-      delegationKeyId: 'did:key:zFresh#zFresh'
+      fields: {
+        updateKeyMultibase: 'z6MkLoginRung',
+        delegationKeyId: 'did:key:zFresh#zFresh'
+      }
     })
     const record = await getUnlockMethods({ session })
     const entry = record!.methods[0] as PassphraseUnlockMethod
@@ -1693,7 +1697,7 @@ describe('the standing delegation scalar pairs (FW-194)', () => {
       session,
       unlockSpaceId: 'unlock-space-1',
       keyAgreementKeyMultibase: 'z6LSLoginCredentialKak',
-      updateKeyMultibase: 'z6MkFreshRung'
+      fields: { updateKeyMultibase: 'z6MkFreshRung' }
     })
     const record = await getUnlockMethods({ session })
     const entry = record!.methods[0] as PassphraseUnlockMethod

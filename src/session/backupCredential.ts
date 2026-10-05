@@ -48,10 +48,12 @@ import {
   unlockManagementGrantee
 } from '@/session/keyring'
 import { establishEntryFirstStandingCredential } from '@/session/standingEstablishment'
+import { isClientAnnexRungUncommittedError } from '@/session/annexReach'
 import {
   canRevokeWithoutCeremony,
   emptyUnlockMethodsRegistry,
   getUnlockMethods,
+  standingUnlockFields,
   type BackupCredentialUnlockMethod,
   type UnlockMethodsRecord
 } from '@/session/unlockMethods'
@@ -142,11 +144,10 @@ function annexCommitFailureReason(
   err: unknown
 ): BackupAnnexCommitError['reason'] | undefined {
   for (const current of causeChain(err)) {
-    const name = errorNameOf(current)
-    if (name === 'ClientAnnexRungCommitSkipped') {
+    if (errorNameOf(current) === 'ClientAnnexRungCommitSkipped') {
       return 'no-ladder-seed'
     }
-    if (name === 'ClientAnnexRungUncommittedError') {
+    if (isClientAnnexRungUncommittedError(current)) {
       return 'rung-uncommitted'
     }
   }
@@ -243,10 +244,10 @@ export async function establishBackupCredential({
     createdAt: new Date().toISOString(),
     unlockSpaceId: credential.unlock.spaceId,
     manageCapability,
-    rosterKid: standing.recipientKid,
-    keyAgreementKeyMultibase: standing.keyAgreementKeyMultibase,
-    updateKeyMultibase: rung0.keyMultibase,
-    unlockClientDid: standing.clientDid
+    ...standingUnlockFields({
+      standing,
+      rung0KeyMultibase: rung0.keyMultibase
+    })
   }
 
   // 2-4. The entry-first write, the establishment with its annex rung

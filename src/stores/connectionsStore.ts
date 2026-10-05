@@ -219,7 +219,6 @@ export function localConnectionsStore({
         const inserted = await collection.insert({
           id: resourceId,
           updatedAt,
-          version: 0,
           data: envelope,
           ...(epoch !== undefined && { epoch })
         })

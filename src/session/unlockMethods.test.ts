@@ -6,6 +6,7 @@
  * delegation rather than being turned away before the first read.
  */
 import { describe, expect, it, vi } from 'vitest'
+import type { IZcap } from '@interop/data-integrity-core'
 import type { Session } from '@/types/auth'
 import { STORAGE_IN_MEMORY, STORAGE_INDEXEDDB } from '@/session/persistence'
 
@@ -13,6 +14,7 @@ const {
   backfillPassphraseUnlockMethod,
   upsertUnlockMethod,
   isStandingCredentialEntry,
+  standingUnlockFields,
   upsertPassphraseUnlockMethod
 } = await import('@/session/unlockMethods')
 type PassphraseUnlockMethod =
@@ -271,5 +273,74 @@ describe('backup-credential entries', () => {
         updateKeyMultibase: 'z6MkCode'
       })
     ).toBe(false)
+  })
+})
+
+describe('standingUnlockFields (the one builder of the standing literal)', () => {
+  const standing = {
+    clientDid: 'did:key:z6MkStanding',
+    keyAgreementKeyMultibase: 'z6LSStanding',
+    recipientKid: 'did:key:z6MkStanding#z6LSStanding'
+  }
+  const bridge = {
+    id: 'urn:zcap:bridge',
+    expires: '2027-01-01T00:00:00Z',
+    proof: { verificationMethod: 'did:webvh:acct#ladder-1' }
+  } as unknown as IZcap
+  const sibling = {
+    id: 'urn:zcap:sibling',
+    expires: '2027-02-01T00:00:00Z',
+    proof: [{ verificationMethod: 'did:webvh:acct#ladder-2' }]
+  } as unknown as IZcap
+
+  it('builds every member from full inputs, deriving the delegation members from the zcaps', () => {
+    expect(
+      standingUnlockFields({
+        standing,
+        rung0KeyMultibase: 'z6MkRung0',
+        delegation: bridge,
+        delegatedClients: sibling,
+        unlockKeyAgreementKeyId: 'did:key:z6MkUnlock#z6LSUnlock',
+        unlockKeyAgreementKeyMultibase: 'z6LSUnlock'
+      })
+    ).toStrictEqual({
+      rosterKid: standing.recipientKid,
+      keyAgreementKeyMultibase: standing.keyAgreementKeyMultibase,
+      updateKeyMultibase: 'z6MkRung0',
+      delegationKeyId: 'did:webvh:acct#ladder-1',
+      delegationExpires: '2027-01-01T00:00:00Z',
+      delegatedClientsKeyId: 'did:webvh:acct#ladder-2',
+      delegatedClientsExpires: '2027-02-01T00:00:00Z',
+      unlockClientDid: standing.clientDid,
+      unlockKeyAgreementKeyId: 'did:key:z6MkUnlock#z6LSUnlock',
+      unlockKeyAgreementKeyMultibase: 'z6LSUnlock'
+    })
+  })
+
+  it('leaves every member absent (not undefined-valued) when its input is', () => {
+    const fields = standingUnlockFields({})
+    expect(fields).toStrictEqual({})
+  })
+
+  it('records the standing triple and rung 0 alone when no delegation is passed', () => {
+    const fields = standingUnlockFields({
+      standing,
+      rung0KeyMultibase: 'z6MkRung0'
+    })
+    expect(fields).toStrictEqual({
+      rosterKid: standing.recipientKid,
+      keyAgreementKeyMultibase: standing.keyAgreementKeyMultibase,
+      updateKeyMultibase: 'z6MkRung0',
+      unlockClientDid: standing.clientDid
+    })
+  })
+
+  it('omits the members a zcap without a proof key or an expiry cannot supply', () => {
+    const bare = { id: 'urn:zcap:bare' } as unknown as IZcap
+    const fields = standingUnlockFields({
+      delegation: bare,
+      delegatedClients: bare
+    })
+    expect(fields).toStrictEqual({})
   })
 })

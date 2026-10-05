@@ -3,7 +3,7 @@
  * replica. Owns one RxDB (Dexie/IndexedDB) database per user holding every
  * standard wallet collection (`private-credentials`, `public-credentials`,
  * `wallet-activity`) on the generic synced-doc schema
- * (`{ id, updatedAt, version, data }`). All page reads and writes land here,
+ * (`{ id, updatedAt, data }`). All page reads and writes land here,
  * online or offline, guest or not; when a remote WAS Space is configured, the
  * sync controller replicates these same RxDB collections to it in the
  * background (see `src/stores/syncController.ts`).
@@ -461,7 +461,6 @@ export class BrowserStore {
     await this.rxCollection(logicalKey).insertIfNotExists({
       id,
       updatedAt: new Date().toISOString(),
-      version: 0,
       ...(epoch !== undefined && { epoch }),
       data
     })

@@ -30,6 +30,7 @@ import { forcedRememberBrowser } from '@/lib/e2eSeams'
 import { RecoveryCodeDisplay } from '@/components/RecoveryCodeDisplay'
 import { createLogger } from '@/lib/log'
 import { errorNameOf } from '@interop/wallet-core/menders'
+import { isResourceLogContinuityError } from '@/session/verifiedLog'
 
 const log = createLogger('fw:ui:recover')
 
@@ -101,7 +102,7 @@ export function RecoverPage() {
     // duplicates class identity. A rollback may be nothing worse than
     // replication lag, so it reads as "could not check"; a fork or an
     // SCID/method switch is the real continuity refusal.
-    if ((err as Error | null)?.name === 'ResourceLogContinuityError') {
+    if (isResourceLogContinuityError(err)) {
       return (err as { reason?: string }).reason === 'rollback'
         ? 'auth.recover.errors.couldNotCheck'
         : 'auth.recover.errors.accountLogContinuity'

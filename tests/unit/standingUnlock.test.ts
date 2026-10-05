@@ -113,9 +113,12 @@ vi.mock('@/session/verifiedLog', () => ({
   }))
 }))
 
-vi.mock('@/session/annexReach', () => ({
+vi.mock('@/session/annexReach', async importOriginal => ({
   clientAnnexReachOf: vi.fn(),
-  ensureGenerationDelegation: vi.fn(async () => {})
+  ensureGenerationDelegation: vi.fn(async () => {}),
+  isClientAnnexRungUncommittedError: (
+    await importOriginal<typeof import('@/session/annexReach')>()
+  ).isClientAnnexRungUncommittedError
 }))
 
 vi.mock('@/lib/sessionKey', () => ({
@@ -126,7 +129,10 @@ vi.mock('@/lib/sessionKey', () => ({
   }))
 }))
 
-vi.mock('@/session/unlockMethods', () => ({
+vi.mock('@/session/unlockMethods', async importOriginal => ({
+  standingUnlockFields: (
+    await importOriginal<typeof import('@/session/unlockMethods')>()
+  ).standingUnlockFields,
   emptyUnlockMethodsRegistry: vi.fn(() => ({
     version: 1,
     webAuthnUserId: 'handle',

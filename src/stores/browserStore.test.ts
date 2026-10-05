@@ -275,7 +275,7 @@ describe('BrowserStore (local active replica)', () => {
     await localStore.deleteCredential({ cid })
   })
 
-  it('stamps local rows with the synced-doc envelope (updatedAt, placeholder version)', async () => {
+  it('stamps local rows with the synced-doc envelope (updatedAt)', async () => {
     const { localStore } = await initLocalStore()
     const credential = makeCredential('Alice')
     const cid = await cidFrom({ doc: credential })
@@ -287,7 +287,6 @@ describe('BrowserStore (local active replica)', () => {
       .exec()
     expect(doc).not.toBeNull()
     const resource = doc!.toMutableJSON()
-    expect(resource.version).toBe(0)
     expect(Date.parse(resource.updatedAt)).not.toBeNaN()
   })
 
@@ -431,7 +430,6 @@ describe('BrowserStore (encrypted collections)', () => {
       await collection.insert({
         id,
         updatedAt: new Date().toISOString(),
-        version: 0,
         data: envelope
       })
     }
@@ -507,7 +505,6 @@ describe('BrowserStore (encrypted collections)', () => {
       await collection.insert({
         id,
         updatedAt: new Date().toISOString(),
-        version: 0,
         data: envelope
       })
     }
@@ -564,7 +561,6 @@ describe('BrowserStore (encrypted collections)', () => {
     await collection.insert({
       id,
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: envelope
     })
     await insertUndecryptableResource(localStore, 'appKeys', 'z6Poison')
@@ -614,12 +610,10 @@ describe('BrowserStore (encrypted collections)', () => {
   it('reads legacy plaintext rows through the tolerant read paths', async () => {
     const { localStore } = await initLocalStore({ ciphers: encryptedCiphers() })
     // A plaintext activity resource replica pulled from a
-    // pre-encryption-descriptor remote collection: server revision >= 1,
-    // plaintext data.
+    // pre-encryption-descriptor remote collection.
     await localStore.rxCollection('walletActivity').insert({
       id: 'legacy-activity',
       updatedAt: new Date().toISOString(),
-      version: 3,
       data: { id: 'legacy-activity', summary: 'legacy' } as Json
     })
 
@@ -647,7 +641,6 @@ describe('BrowserStore (encrypted collections)', () => {
     await localStore.rxCollection(logicalKey).insert({
       id: resourceId,
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: resourceId,
         sequence: 0,
@@ -927,7 +920,6 @@ describe('BrowserStore (misbound envelopes)', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id: 'z6ReadUnder',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6ReadUnder',
         sequence: 0,
@@ -962,7 +954,6 @@ describe('BrowserStore (misbound envelopes)', () => {
     await localStore.rxCollection('appKeys').insert({
       id: 'z6AppReadUnder',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6AppReadUnder',
         sequence: 0,
@@ -994,7 +985,6 @@ describe('BrowserStore (misbound envelopes)', () => {
     await localStore.rxCollection('contacts').insert({
       id: 'z6ContactReadUnder',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6ContactReadUnder',
         sequence: 0,
@@ -1030,7 +1020,6 @@ describe('BrowserStore (misbound envelopes)', () => {
     await localStore.rxCollection('contactsHistory').insert({
       id: 'z6RevisionReadUnder',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6RevisionReadUnder',
         sequence: 0,
@@ -1070,7 +1059,6 @@ describe('BrowserStore (misbound envelopes)', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id: 'z6ForeignMisbound',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6ForeignMisbound',
         sequence: 0,
@@ -1130,7 +1118,6 @@ describe('BrowserStore (key epochs)', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id: 'z6Unknown',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6Unknown',
         sequence: 0,
@@ -1168,7 +1155,6 @@ describe('BrowserStore (key epochs)', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id: 'z6ForeignNoKey',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6ForeignNoKey',
         sequence: 0,
@@ -1206,7 +1192,6 @@ describe('BrowserStore (key epochs)', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id: 'z6NoKey',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6NoKey',
         sequence: 0,
@@ -1253,7 +1238,6 @@ describe('BrowserStore (key epochs)', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id: 'z6Swap',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6Swap',
         sequence: 0,
@@ -1351,7 +1335,6 @@ describe('BrowserStore (contacts encryption)', () => {
     await localStore.rxCollection('contacts').insert({
       id: 'legacy-plaintext-head',
       updatedAt: plaintextHead.updatedAt,
-      version: 1,
       data: plaintextHead as Json
     })
 
@@ -1369,7 +1352,6 @@ describe('BrowserStore (contacts encryption)', () => {
       .findOne('legacy-plaintext-head')
       .exec())!.toMutableJSON()
     expect(resource.data).toEqual(plaintextHead)
-    expect(resource.version).toBe(1)
   })
 
   it('tolerates an unknown-epoch contact row rather than throwing', async () => {
@@ -1382,7 +1364,6 @@ describe('BrowserStore (contacts encryption)', () => {
     await localStore.rxCollection('contacts').insert({
       id: 'z6UnknownContact',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6UnknownContact',
         sequence: 0,
@@ -1606,7 +1587,6 @@ describe('StorageManager (local-first facade)', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id: 'z6Poison',
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: 'z6Poison',
         sequence: 0,

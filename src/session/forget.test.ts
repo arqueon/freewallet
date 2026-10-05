@@ -91,8 +91,7 @@ vi.mock('@interop/wallet-core/recovery', async importOriginal => {
     )
   }
 })
-const { delegateLogWrite, delegationProofKeyId } =
-  await import('@interop/wallet-core/recovery')
+const { delegateLogWrite } = await import('@interop/wallet-core/recovery')
 
 vi.mock('@/session/persistence', async importOriginal => {
   const actual = await importOriginal<object>()
@@ -109,26 +108,29 @@ vi.mock('@/session/accountCeremonyContext', () => ({
 const { requireEnrolledCeremonyContext } =
   await import('@/session/accountCeremonyContext')
 
-vi.mock('@/session/unlockMethods', async () => ({
-  // The real helper: the latent-hash hand-off reads it.
-  latentUpdateKeyMultibasesOf: (
-    await vi.importActual<typeof import('@/session/unlockMethods')>(
-      '@/session/unlockMethods'
-    )
-  ).latentUpdateKeyMultibasesOf,
-  getUnlockMethods: vi.fn(),
-  managementZcapClient: vi.fn(() => ({ managementZcapClient: true })),
-  refreshStandingDelegationFields: vi.fn(),
-  // The shared sibling-record reader, in its enrolled-client shape: the
-  // stored management zcap, invoked by the session's own signer.
-  unlockEntryReaderFor: vi.fn(
-    () => async (entry: { manageCapability?: unknown }) => ({
-      zcapClient: { managementZcapClient: true },
-      capability: entry.manageCapability
-    })
-  ),
-  updateUnlockMethods: vi.fn()
-}))
+vi.mock('@/session/unlockMethods', async () => {
+  const actual = await vi.importActual<
+    typeof import('@/session/unlockMethods')
+  >('@/session/unlockMethods')
+  return {
+    // The real helpers: the latent-hash hand-off reads the first, and the
+    // re-mint's registry refresh builds its payload with the second.
+    latentUpdateKeyMultibasesOf: actual.latentUpdateKeyMultibasesOf,
+    standingUnlockFields: actual.standingUnlockFields,
+    getUnlockMethods: vi.fn(),
+    managementZcapClient: vi.fn(() => ({ managementZcapClient: true })),
+    refreshStandingDelegationFields: vi.fn(),
+    // The shared sibling-record reader, in its enrolled-client shape: the
+    // stored management zcap, invoked by the session's own signer.
+    unlockEntryReaderFor: vi.fn(
+      () => async (entry: { manageCapability?: unknown }) => ({
+        zcapClient: { managementZcapClient: true },
+        capability: entry.manageCapability
+      })
+    ),
+    updateUnlockMethods: vi.fn()
+  }
+})
 const { getUnlockMethods, refreshStandingDelegationFields } =
   await import('@/session/unlockMethods')
 
@@ -1127,11 +1129,33 @@ describe('forgetThisBrowser (the ceremony grades)', () => {
       vi.mocked(refreshStandingDelegationFields).mock.calls[0]![0]
     ).toMatchObject({
       unlockSpaceId: 'unlock-1',
-      delegationKeyId: delegationProofKeyId(bridge as never),
-      delegationExpires: bridge.expires,
-      delegatedClientsKeyId: delegationProofKeyId(sibling as never),
-      delegatedClientsExpires: sibling.expires
+      fields: {
+        delegationExpires: bridge.expires,
+        delegatedClientsExpires: sibling.expires
+      }
     })
+    // The re-mint is the self-refresh's shared sequence, which also replaces
+    // the live session's pair (harmless here: the forget tears it down).
+    expect(session.profile.standingUnlock).toMatchObject({
+      delegation: bridge,
+      delegatedClients: sibling
+    })
+  })
+
+  it('re-binds the bridge alone when the record carries no sibling', async () => {
+    const { session, rebindRecord } = fakeSession()
+    delete (session.profile.standingUnlock as { delegatedClients?: unknown })
+      .delegatedClients
+    const bridge = { id: 'urn:zcap:bridge2', expires: '2027-01-01T00:00:00Z' }
+    vi.mocked(delegateLogWrite).mockResolvedValue(bridge as never)
+    await forgetThisBrowser({ session, lastClient: true })
+    await vi.mocked(forgetLastEnrolledClient).mock.calls[0]![0]
+      .onBeforeRemoval!({ did: pointer.did, doc: {}, log: [] as never })
+    expect(vi.mocked(mintDelegatedClientsDelegation)).not.toHaveBeenCalled()
+    expect(vi.mocked(rebindRecord)).toHaveBeenCalledWith({ delegation: bridge })
+    expect(
+      vi.mocked(refreshStandingDelegationFields).mock.calls[0]![0].fields
+    ).not.toHaveProperty('delegatedClientsExpires')
   })
 
   it('writes no sibling credential record on the transition', async () => {

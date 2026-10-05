@@ -1,13 +1,15 @@
 /**
- * The two standing-credential refreshes the remembered login block runs on a
- * promoted account: the bridge-and-sibling self-refresh, and the recorded
- * ladder rung a self-enrollment just climbed.
+ * The standing-credential refreshes the remembered login block runs on a
+ * promoted account -- the bridge-and-sibling self-refresh, and the recorded
+ * ladder rung a self-enrollment just climbed -- and the one re-mint and
+ * record re-bind the self-refresh shares with the last-client transition.
  *
- * Both act on the acting credential's own registry entry, and both are
- * best-effort: the delegations they re-mint are annual, and a rung left
- * unrecorded only makes a later disconnect attribution fail closed.
+ * Each acts on the acting credential's own registry entry. The login-time
+ * refreshes are best-effort: the delegations they re-mint are annual, and a
+ * rung left unrecorded only makes a later disconnect attribution fail closed.
  */
 import type { IZcap } from '@interop/data-integrity-core'
+import type { ZcapClient } from '@interop/ezcap'
 import type { AccountPointer } from '@interop/wallet-core/keyring'
 import type { VerifiedAccountLog } from '@interop/wallet-core/clients'
 import {
@@ -26,7 +28,23 @@ import {
 } from '@interop/wallet-core/recovery'
 import { zcapExpires } from '@/lib/zcap'
 import type { Session } from '@/types/auth'
-import { refreshStandingDelegationFields } from '@/session/unlockMethods'
+import {
+  refreshStandingDelegationFields,
+  standingUnlockFields
+} from '@/session/unlockMethods'
+
+/**
+ * The standing members a re-mint acts on: the live session's standing
+ * unlock members with the record re-bind closure present (a hit that
+ * exposed none cannot re-seal its record, so nothing here runs for it).
+ */
+export type RebindableStandingUnlock = NonNullable<
+  Session['profile']['standingUnlock']
+> & {
+  rebindRecord: NonNullable<
+    NonNullable<Session['profile']['standingUnlock']>['rebindRecord']
+  >
+}
 
 /**
  * The standing-delegation self-refresh: a standing credential's own login
@@ -37,9 +55,8 @@ import { refreshStandingDelegationFields } from '@/session/unlockMethods'
  * `capabilityDelegation` in the verified account document (the relation a
  * delegation proof verifies against). A self-enrollment leaves every ladder
  * VM standing, so the rot this predicate catches comes from elsewhere -- a
- * credential retirement strikes its own ladder VM. One pass reseals both,
- * re-binds the unlock record, replaces the pair on the live session, and
- * records the fresh members on the registry entry.
+ * credential retirement strikes its own ladder VM. A stale pair is re-minted
+ * under the session's own signer by {@link remintStandingDelegations}.
  *
  * @param options {object}
  * @param options.session {Session}
@@ -50,46 +67,27 @@ import { refreshStandingDelegationFields } from '@/session/unlockMethods'
  *   where the signer check needs it. An expiring member is re-minted from
  *   the zcaps in hand, so a log the host cannot serve does not stand the
  *   re-mint down
- * @param options.rebindStandingRecord {Function}   the hit's record re-bind
- * @param options.delegation {IZcap}   the record's bridge delegation
- * @param options.standingClientDid {string}   the credential's own DID, the
- *   delegatee of both members
- * @param options.unlockSpaceId {string}   the credential's unlock Space, the
- *   registry entry's match key
- * @param [options.delegatedClients] {IZcap}   the record's annex sibling
- * @param [options.keyAgreementKeyMultibase] {string}   this credential's
- *   key-agreement multibase; an entry recording another credential's (a
- *   pending retirement) is left alone
+ * @param options.standing {RebindableStandingUnlock}   the credential's
+ *   standing members: the pair the staleness predicate reads, and the
+ *   identity and re-bind closure a re-mint needs
  * @returns {Promise<'noop' | 'refreshed'>}
  */
 export async function refreshStandingDelegations({
   session,
   pointer,
   verifiedLog,
-  rebindStandingRecord,
-  delegation: standingDelegation,
-  delegatedClients: standingDelegatedClients,
-  standingClientDid,
-  unlockSpaceId,
-  keyAgreementKeyMultibase
+  standing
 }: {
   session: Session
   pointer: AccountPointer & { did: string }
   verifiedLog: () => Promise<VerifiedAccountLog>
-  rebindStandingRecord: (members: {
-    delegation: IZcap
-    delegatedClients?: IZcap
-  }) => Promise<unknown>
-  delegation: IZcap
-  delegatedClients?: IZcap
-  standingClientDid: string
-  unlockSpaceId: string
-  keyAgreementKeyMultibase?: string
+  standing: RebindableStandingUnlock
 }): Promise<'noop' | 'refreshed'> {
+  const { delegation, delegatedClients } = standing
   const expiring =
-    zcapExpiring({ expires: zcapExpires(standingDelegation) }) ||
-    (!!standingDelegatedClients &&
-      zcapExpiring({ expires: zcapExpires(standingDelegatedClients) }))
+    zcapExpiring({ expires: zcapExpires(delegation) }) ||
+    (!!delegatedClients &&
+      zcapExpiring({ expires: zcapExpires(delegatedClients) }))
   if (!expiring) {
     // The one branch that needs the account document: nothing is expiring,
     // so the only remaining question is whether the signers are still
@@ -101,34 +99,81 @@ export async function refreshStandingDelegations({
         delegationKeyId: delegationProofKeyId(member)
       })
     if (
-      !rotted(standingDelegation) &&
-      (!standingDelegatedClients || !rotted(standingDelegatedClients))
+      !rotted(delegation) &&
+      (!delegatedClients || !rotted(delegatedClients))
     ) {
       return 'noop'
     }
   }
-  const delegation = await delegateLogWrite({
+  await remintStandingDelegations({
+    session,
     zcapClient: session.profile.zcapClient,
+    pointer,
+    standing
+  })
+  return 'refreshed'
+}
+
+/**
+ * The bridge-and-sibling re-mint and record re-bind: re-mints the bridge
+ * delegation -- and the annex-Space sibling, where the record carries one --
+ * under the given signer, re-binds the unlock record through the hit's
+ * re-bind closure, replaces the pair on the live session, and records the
+ * fresh members on the registry entry. The remembered login's self-refresh
+ * signs with the session's own zcap client; the last-client transition signs
+ * with the ladder VM, the one key its post-removal document still backs.
+ * Replacing the live session's pair on the transition is harmless, since a
+ * forget tears that session down. Idempotent: a resumed run re-mints and
+ * re-binds again.
+ *
+ * @param options {object}
+ * @param options.session {Session}
+ * @param options.zcapClient {ZcapClient}   the signer both members are
+ *   delegated by
+ * @param options.pointer {AccountPointer}   the pointer the bridge's log
+ *   writes address
+ * @param options.standing {RebindableStandingUnlock}   the credential's
+ *   standing members: the current sibling (absent, the bridge re-binds
+ *   alone), the credential's own DID (the delegatee of both members), its
+ *   unlock Space (the registry entry's match key), its key-agreement
+ *   multibase (an entry recording another credential's, a pending
+ *   retirement, is left alone), and the record re-bind closure
+ * @returns {Promise<void>}
+ */
+export async function remintStandingDelegations({
+  session,
+  zcapClient,
+  pointer,
+  standing
+}: {
+  session: Session
+  zcapClient: ZcapClient
+  pointer: AccountPointer
+  standing: RebindableStandingUnlock
+}): Promise<void> {
+  const standingClientDid = standing.standingClient.clientDid
+  const delegation = await delegateLogWrite({
+    zcapClient,
     pointer,
     recoveryClientDid: standingClientDid
   })
   // The sibling reseals in the same pass; its target auxiliary Space id
   // rides in the old delegation (the id's one carrier).
   let delegatedClients
-  if (standingDelegatedClients) {
+  if (standing.delegatedClients) {
     const clientAnnexSpaceId = delegatedClientsDelegationSpaceId({
-      delegation: standingDelegatedClients
+      delegation: standing.delegatedClients
     })
     if (clientAnnexSpaceId) {
       delegatedClients = await mintDelegatedClientsDelegation({
-        zcapClient: session.profile.zcapClient,
+        zcapClient,
         wasServerUrl: pointer.host,
         clientAnnexSpaceId,
         controller: standingClientDid
       })
     }
   }
-  await rebindStandingRecord({
+  await standing.rebindRecord({
     delegation,
     ...(delegatedClients ? { delegatedClients } : {})
   })
@@ -144,21 +189,13 @@ export async function refreshStandingDelegations({
   }
   await refreshStandingDelegationFields({
     session,
-    unlockSpaceId,
+    unlockSpaceId: standing.unlockSpaceId,
     // The entry may still record an earlier credential's standing
     // configuration (a pending retirement); these members are this
     // credential's.
-    ...(keyAgreementKeyMultibase ? { keyAgreementKeyMultibase } : {}),
-    delegationKeyId: delegationProofKeyId(delegation),
-    delegationExpires: zcapExpires(delegation),
-    ...(delegatedClients
-      ? {
-          delegatedClientsKeyId: delegationProofKeyId(delegatedClients),
-          delegatedClientsExpires: zcapExpires(delegatedClients)
-        }
-      : {})
+    keyAgreementKeyMultibase: standing.standingClient.keyAgreementKeyMultibase,
+    fields: standingUnlockFields({ delegation, delegatedClients })
   })
-  return 'refreshed'
 }
 
 /**
@@ -202,8 +239,8 @@ export async function refreshCommittedLadderRung({
   await refreshStandingDelegationFields({
     session,
     unlockSpaceId,
-    ...(keyAgreementKeyMultibase ? { keyAgreementKeyMultibase } : {}),
-    updateKeyMultibase: rung.keyMultibase
+    keyAgreementKeyMultibase,
+    fields: { updateKeyMultibase: rung.keyMultibase }
   })
   return 'recorded'
 }

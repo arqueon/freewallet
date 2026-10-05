@@ -295,7 +295,6 @@ describe('StorageManager app-key collection surface', () => {
     await localStore.rxCollection('appKeys').insert({
       id: appKey,
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: {
         id: appKey,
         sequence: 0,

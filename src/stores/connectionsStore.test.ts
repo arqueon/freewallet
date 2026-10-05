@@ -156,7 +156,6 @@ describe('localConnectionsStore', () => {
     await collection.insert({
       id: elsewhere,
       updatedAt: new Date().toISOString(),
-      version: 0,
       data: envelope
     })
     expect(await rejectionName(store.get({ resourceId: elsewhere }))).toBe(

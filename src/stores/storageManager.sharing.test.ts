@@ -106,6 +106,7 @@ import {
   type AccountSignerCheck
 } from '@/lib/connectedApps'
 import { StorageManager } from './storageManager'
+import { generateVaultKeys } from '@/stores/testing/vaultKeys'
 import {
   accountSignerCheck,
   ENROLLED_SIGNER,
@@ -130,25 +131,6 @@ function makeCredential(name: string): IVerifiableCredential {
     issuer: 'did:key:z6MkTestIssuer',
     credentialSubject: { name }
   } as unknown as IVerifiableCredential
-}
-
-/**
- * A generated X25519 key pair plus the single-key resolver the session profile
- * supplies alongside it.
- */
-async function generateKey(): Promise<{
-  keyAgreementKey: IKeyAgreementKey
-  keyResolver: IKeyResolver
-}> {
-  const key = await X25519KeyAgreementKey2020.generate({
-    controller: 'did:key:z6MkTestController'
-  })
-  const keyResolver: IKeyResolver = async () => ({
-    id: key.id!,
-    type: key.type,
-    publicKeyMultibase: key.publicKeyMultibase
-  })
-  return { keyAgreementKey: key as IKeyAgreementKey, keyResolver }
 }
 
 /**
@@ -1046,7 +1028,7 @@ async function directorySession({
   blindedIndex?: boolean
   appKeys?: boolean
 } = {}) {
-  const owner = await generateKey()
+  const owner = await generateVaultKeys()
   const stores = memoryDescriptorStores()
   const remote = makeFakeRemote({ stores, revoke })
   const descriptors = await provisionGovernedCollections(owner, stores, {
@@ -1141,8 +1123,8 @@ async function shareWithParty({
 
 describe('StorageManager.shareCollection', () => {
   it('refuses a zcap that is not read-only on the shared collection, escrowing nothing', async () => {
-    const owner = await generateKey()
-    const reader = await generateKey()
+    const owner = await generateVaultKeys()
+    const reader = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -1192,8 +1174,8 @@ describe('StorageManager.shareCollection', () => {
   })
 
   it('first share escrows the reader into the provisioned epoch and delegates a GET/HEAD zcap', async () => {
-    const owner = await generateKey()
-    const reader = await generateKey()
+    const owner = await generateVaultKeys()
+    const reader = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -1253,9 +1235,9 @@ describe('StorageManager.shareCollection', () => {
   })
 
   it('a second share adds a reader without rotating the epoch', async () => {
-    const owner = await generateKey()
-    const readerA = await generateKey()
-    const readerB = await generateKey()
+    const owner = await generateVaultKeys()
+    const readerA = await generateVaultKeys()
+    const readerB = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -1382,8 +1364,8 @@ describe('an escrow whose append response was lost', () => {
     mode: 'lands' | 'fails'
     failRereads?: boolean
   }) {
-    const owner = await generateKey()
-    const reader = await generateKey()
+    const owner = await generateVaultKeys()
+    const reader = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -1952,7 +1934,7 @@ describe('StorageManager.revokeConnectionGrants', () => {
     signerCheck: () => Promise<AccountSignerCheck | undefined> = async () =>
       undefined
   ) {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const remoteStore = makeRevokeRemote(revoke)
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -2350,7 +2332,7 @@ describe('StorageManager.revokeConnectionGrants', () => {
   })
 
   it('is a no-op when no remote store is configured', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const ciphers = await buildCiphers(owner, {})
     const { localStore } = await initLocalStore(ciphers)
     const storage = new StorageManager({
@@ -2376,8 +2358,8 @@ describe('StorageManager.revokeConnectionGrants', () => {
 
 describe('StorageManager.provisionEncryptedCollection', () => {
   it('first provision mints an epoch with the owner and the app recipient', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore, governed } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -2409,8 +2391,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 
   it('refuses a standing plaintext collection that holds resources', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore, governed, standPlaintextCollection } = makeFakeRemote({
       stores
@@ -2444,8 +2426,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 
   it('finishes a torn provision over an empty collection with no descriptor', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore, standPlaintextCollection } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -2473,8 +2455,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 
   it('a reconnect after revoke re-adds the app without a second epoch', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -2525,8 +2507,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 
   it('is a no-op when the app is already a recipient of the current epoch', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -2563,8 +2545,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 
   it('installs a blinded-index HMAC key wrapped to the owner and the app', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -2595,8 +2577,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 
   it('lets the app unwrap the blinding key from the descriptor and its own key alone', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -2633,8 +2615,8 @@ describe('StorageManager.provisionEncryptedCollection', () => {
   })
 
   it('adopts a pre-blind-index epoch roster without installing an HMAC key', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -4145,8 +4127,8 @@ describe('StorageManager.deleteAppKeyResource (remote)', () => {
 
 describe('StorageManager.decryptCollectionResource (app collection)', () => {
   it('decrypts an app-collection envelope with the vault KAK', async () => {
-    const owner = await generateKey()
-    const app = await generateKey()
+    const owner = await generateVaultKeys()
+    const app = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -4189,7 +4171,7 @@ describe('StorageManager.decryptCollectionResource (app collection)', () => {
   })
 
   it('returns undefined for an app collection with no epoch roster', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores)
@@ -4224,8 +4206,8 @@ describe('StorageManager.decryptCollectionResource (app collection)', () => {
 
 describe('StorageManager unknown-epoch refresh', () => {
   it('re-reads the descriptor and returns a credential written under a newer epoch', async () => {
-    const owner = await generateKey()
-    const extra = await generateKey()
+    const owner = await generateVaultKeys()
+    const extra = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
 
@@ -4284,7 +4266,6 @@ describe('StorageManager unknown-epoch refresh', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id,
       updatedAt: new Date().toISOString(),
-      version: 0,
       epoch,
       data: envelope
     })
@@ -4299,8 +4280,8 @@ describe('StorageManager unknown-epoch refresh', () => {
     // Production reads the global at call time, so a cache write that leaked
     // past the in-memory strategy would land in this stub.
     const residue = stubLocalStorage()
-    const owner = await generateKey()
-    const extra = await generateKey()
+    const owner = await generateVaultKeys()
+    const extra = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore } = makeFakeRemote({ stores })
 
@@ -4362,7 +4343,6 @@ describe('StorageManager unknown-epoch refresh', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id,
       updatedAt: new Date().toISOString(),
-      version: 0,
       epoch,
       data: envelope
     })
@@ -4386,8 +4366,8 @@ describe('StorageManager unknown-epoch refresh', () => {
   })
 
   it('remote-direct: refreshes the descriptor and returns a fresh-epoch credential', async () => {
-    const owner = await generateKey()
-    const extra = await generateKey()
+    const owner = await generateVaultKeys()
+    const extra = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore, seedResource } = makeFakeRemote({ stores })
 
@@ -4452,8 +4432,8 @@ describe('StorageManager unknown-epoch refresh', () => {
   })
 
   it('refetches the collection metadata, so later writes carry index entries', async () => {
-    const owner = await generateKey()
-    const extra = await generateKey()
+    const owner = await generateVaultKeys()
+    const extra = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore, setCollectionMeta } = makeFakeRemote({ stores })
 
@@ -4522,7 +4502,6 @@ describe('StorageManager unknown-epoch refresh', () => {
     await localStore.rxCollection('privateCredentials').insert({
       id,
       updatedAt: new Date().toISOString(),
-      version: 0,
       epoch,
       data: envelope
     })
@@ -4557,8 +4536,8 @@ async function localContactsRotation(): Promise<{
   stored: StoredContact
   rotateAndRewrite(contact: ContactData): Promise<string>
 }> {
-  const owner = await generateKey()
-  const extra = await generateKey()
+  const owner = await generateVaultKeys()
+  const extra = await generateVaultKeys()
   const stores = memoryDescriptorStores()
   const { remoteStore } = makeFakeRemote({ stores })
   const contactsStore = stores.storeFor('contacts')
@@ -4707,7 +4686,7 @@ describe('StorageManager blinded index writes', () => {
     descriptors: Record<string, CollectionEncryption>
     setCollectionMeta: ReturnType<typeof makeFakeRemote>['setCollectionMeta']
   }> {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const stores = memoryDescriptorStores()
     const { remoteStore, setCollectionMeta } = makeFakeRemote({ stores })
     const descriptors = await provisionGovernedCollections(owner, stores, {
@@ -4804,7 +4783,7 @@ describe('StorageManager blinded index writes', () => {
 
 describe('StorageManager.addHistoryWalletLogin', () => {
   it('records the local sign-in with the actor and no relying party', async () => {
-    const owner = await generateKey()
+    const owner = await generateVaultKeys()
     const ciphers = await buildCiphers(owner, {})
     const { localStore, user } = await initLocalStore(ciphers)
     const storage = new StorageManager({
