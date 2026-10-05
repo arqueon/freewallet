@@ -4,7 +4,7 @@ import {
   getVerificationAggregateStatus,
   isExpiredOnly,
   isFullyVerified
-} from '@/lib/viewMappers/verificationMessages'
+} from '@interop/vc-display'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import type { TFunction } from 'i18next'
 import en from '@/i18n/locales/en.json'

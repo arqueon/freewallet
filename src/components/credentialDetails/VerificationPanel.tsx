@@ -1,14 +1,14 @@
 import { Box, Chip, CircularProgress, Divider, Typography } from '@mui/material'
 import { useTranslation } from 'react-i18next'
 import { MdCancel, MdCheckCircle, MdWarning } from 'react-icons/md'
-import type { UseVerificationReturn } from '@/hooks/useVerification'
-import { formatDateTime } from '@/lib/viewMappers/formatDate'
 import {
   getVerificationAggregateStatus,
   hasVerificationWarning,
   isExpiredOnly,
   isFullyVerified
-} from '@/lib/viewMappers/verificationMessages'
+} from '@interop/vc-display'
+import type { UseVerificationReturn } from '@/hooks/useVerification'
+import { formatDateTime } from '@/lib/viewMappers/formatDate'
 import { credentialDetailCardStyles as sx } from '@/styles/credentialStyles'
 import type {
   VerificationStep,
