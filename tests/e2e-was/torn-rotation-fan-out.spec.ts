@@ -21,7 +21,6 @@
  * assertions read the teaching server's FileSystem backend off disk
  * (`tests/shared/storedLogs.ts`).
  */
-import { test, expect } from '@playwright/test'
 import {
   addCredentialViaPaste,
   awaitLoginChain,
@@ -33,6 +32,7 @@ import {
 } from './helpers'
 import { readCollectionEpoch, readUserKeyRoster } from '../shared/storedLogs'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.

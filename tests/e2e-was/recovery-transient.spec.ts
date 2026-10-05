@@ -16,7 +16,7 @@
  *
  * The REMEMBERED recovery cell is pinned in `recovery.spec.ts`.
  */
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import {
   defaultWebvhLogVerifier,
   readLogFromString,
@@ -33,6 +33,7 @@ import {
   captureLocalStorageKeys,
   expectNoStorageResidue
 } from '../shared/storageResidue'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.

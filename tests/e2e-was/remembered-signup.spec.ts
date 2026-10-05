@@ -11,13 +11,14 @@
  * Argon2id unlock derivations and the four-entry ceremony chain make this a
  * slow spec.
  */
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import {
   defaultWebvhLogVerifier,
   readLogFromString,
   resolveDIDFromLog
 } from '@interop/did-method-webvh'
 import { addCredentialViaPaste, fillSettled, signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * Scrapes the world-readable `did.jsonl` URL from the Settings page's

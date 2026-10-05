@@ -22,13 +22,7 @@
  * same archives are reached by root invocation and by a POST-only child of
  * each stored management zcap, signed by the enrolled client, instead.
  */
-import {
-  test,
-  expect,
-  type BrowserContext,
-  type Locator,
-  type Page
-} from '@playwright/test'
+import type { BrowserContext, Locator, Page } from '@playwright/test'
 import {
   BUNDLE_ROLE,
   migrateBundle,
@@ -47,6 +41,7 @@ import {
   stubSaveFilePicker,
   submitTransientLogin
 } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT / WAS_PORT). A manually
 // created context does not inherit the config's `use.baseURL`.

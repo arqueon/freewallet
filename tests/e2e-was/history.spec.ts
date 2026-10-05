@@ -1,4 +1,3 @@
-import { test, expect } from '@playwright/test'
 import {
   addCredentialViaPaste,
   deleteCredential,
@@ -6,6 +5,7 @@ import {
   goToHistory,
   signupViaWizard
 } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * Wallet-activity history tests. History is only recorded when the app runs in

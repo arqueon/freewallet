@@ -1,11 +1,6 @@
-import {
-  test,
-  expect,
-  type Browser,
-  type CDPSession,
-  type Page
-} from '@playwright/test'
+import type { Browser, CDPSession, Page } from '@playwright/test'
 import { fillSettled, forceRememberBrowser, signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * Revoking an unlock method from a client that did NOT create it (WAS mode).

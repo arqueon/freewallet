@@ -1,11 +1,6 @@
-import {
-  test,
-  expect,
-  type CDPSession,
-  type Page,
-  type TestInfo
-} from '@playwright/test'
+import type { CDPSession, Page, TestInfo } from '@playwright/test'
 import { forceRememberBrowser } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * Passkey (WebAuthn PRF) unlock e2e (WAS mode). A passkey is a Layer 1 unlock

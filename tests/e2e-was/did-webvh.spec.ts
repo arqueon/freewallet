@@ -1,4 +1,4 @@
-import { test, expect, type Page, type TestInfo } from '@playwright/test'
+import type { Page, TestInfo } from '@playwright/test'
 import { readLogFromString, resolveDIDFromLog } from '@interop/did-method-webvh'
 import {
   classifyCollectionFile,
@@ -9,6 +9,7 @@ import {
 import { fillSettled, forceRememberBrowser, sessionSpaceId } from './helpers'
 import { readStoredResource } from '../shared/storedLogs'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * Hosted did:webvh DID log e2e (Track F, Phase 2). Runs against the app in

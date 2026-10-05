@@ -13,7 +13,7 @@
  * wrap the signup itself established -- and reads back the credential the
  * signup visit stored.
  */
-import { test, expect, type Browser, type Page } from '@playwright/test'
+import type { Browser, Page } from '@playwright/test'
 import { addCredentialViaPaste, fillSettled, signupViaWizard } from './helpers'
 import { accountSpaceIdFrom } from './storeOracle'
 import { readAccountLogVersions } from '../shared/storedLogs'
@@ -22,6 +22,7 @@ import {
   expectNoStorageResidue
 } from '../shared/storageResidue'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.

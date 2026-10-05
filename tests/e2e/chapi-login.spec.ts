@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * E2E coverage for the CHAPI "Login with Wallet" flow (`/wallet/get`) in local

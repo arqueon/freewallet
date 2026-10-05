@@ -1,4 +1,4 @@
-import { test, expect, type Browser, type Page } from '@playwright/test'
+import type { Browser, Page } from '@playwright/test'
 import {
   fillSettled,
   forceRememberBrowser,
@@ -9,6 +9,7 @@ import {
 } from './helpers'
 import { readCollectionEpoch, readUserKeyRoster } from '../shared/storedLogs'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * The Settings "Connected wallets" surface e2e (WAS mode): the enrolled

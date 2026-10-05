@@ -1,5 +1,6 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * WAS-backed E2E for a plain CHAPI `get` carrying a standalone capability

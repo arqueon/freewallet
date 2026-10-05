@@ -1,4 +1,4 @@
-import { test, expect, type Browser, type Page } from '@playwright/test'
+import type { Browser, Page } from '@playwright/test'
 import type { IDelegatedZcap } from '@interop/data-integrity-core'
 import {
   appZcapClient,
@@ -10,6 +10,7 @@ import {
 } from './helpers'
 import { listStoredResourceIds } from '../shared/storedLogs'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * The Applications revocation surface e2e (WAS mode), modeled on

@@ -9,7 +9,7 @@
  * fold -- self-enrolling this browser and leaving the same four-entry
  * account log a clean remembered signup produces.
  */
-import { test, expect, type Browser, type Page } from '@playwright/test'
+import type { Browser, Page } from '@playwright/test'
 import {
   defaultWebvhLogVerifier,
   readLogFromString,
@@ -21,6 +21,7 @@ import {
   submitTransientLogin,
   testUser
 } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.

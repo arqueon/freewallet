@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
 import { loginAsGuest } from './helpers/auth'
+import { test, expect } from '../shared/consoleCapture'
 
 test.describe('Settings page', () => {
   test('redirects to landing page when not logged in', async ({ page }) => {

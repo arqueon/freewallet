@@ -17,16 +17,13 @@
  *
  * Specs import `test` and `expect` from here in place of `@playwright/test`
  * and ask for the `ceremonyEvents` fixture. A context the spec creates
- * itself (`browser.newContext()`) is watched once passed to `tag()`.
+ * itself (`browser.newContext()`) is watched once passed to `tag()`. The
+ * `test` here extends the console-capture one (`consoleCapture.ts`), so its
+ * `consoleCapture` fixture comes along.
  */
 import { open, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import {
-  test as base,
-  expect,
-  type BrowserContext,
-  type Page
-} from '@playwright/test'
+import type { BrowserContext, Page } from '@playwright/test'
 import type { CeremonyId, CeremonyOutcome } from '@interop/wallet-core'
 import type { InvariantId } from '@interop/wallet-core/menders'
 import type {
@@ -68,6 +65,7 @@ import {
   stageEvents,
   type DevLogLine
 } from './ceremonyEventLines'
+import { test as base, expect } from './consoleCapture'
 import { awaitLoginChain } from './loginChain'
 
 export { expect }
@@ -388,7 +386,7 @@ export async function createCeremonyEvents({
 }
 
 /**
- * The Playwright `test` with the `ceremonyEvents` fixture. The fixture is
+ * The console-capture `test` with the `ceremonyEvents` fixture. The fixture is
  * automatic, so it tags the default context before any `beforeEach` hook
  * navigates: a page loaded before the tag would write untagged lines the
  * fixture cannot see.

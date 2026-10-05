@@ -1,11 +1,6 @@
-import {
-  test,
-  expect,
-  type Frame,
-  type Page,
-  type TestInfo
-} from '@playwright/test'
+import type { Frame, Page, TestInfo } from '@playwright/test'
 import { fillSettled, forceRememberBrowser } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * The did:web projection e2e. Runs against the app in remote mode backed by

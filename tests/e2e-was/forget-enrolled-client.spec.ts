@@ -20,7 +20,7 @@
  * stage pays the deliberately slow unlock KDF on top of several WAS
  * ceremonies, hence the generous timeouts.
  */
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import {
   addCredentialViaPaste,
   awaitLoginChain,
@@ -33,6 +33,7 @@ import {
   signupViaWizard,
   submitTransientLogin
 } from './helpers'
+import { test, expect, formatConsoleLines } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.
@@ -50,7 +51,8 @@ function walletCards(page: Page) {
 
 test.describe('The ordinary forget ceremony', () => {
   test('a transient login seals the collection logs behind the removal entry', async ({
-    browser
+    browser,
+    consoleCapture
   }, testInfo) => {
     test.slow()
     test.setTimeout(540_000)
@@ -73,16 +75,6 @@ test.describe('The ordinary forget ceremony', () => {
     // --- Browser B: the second enrolled client, then its forget. ---
     const second = await coldTerminal(browser, APP_URL)
     try {
-      const pageErrors: string[] = []
-      second.page.on('pageerror', err => {
-        pageErrors.push(`pageerror: ${err.message}`)
-      })
-      second.page.on('console', message => {
-        if (message.type() === 'error') {
-          pageErrors.push(`console: ${message.text()}`)
-        }
-      })
-
       await second.page.goto('/#/login')
       await forceRememberBrowser(second.page)
       await fillSettled(
@@ -113,12 +105,13 @@ test.describe('The ordinary forget ceremony', () => {
       ).toHaveCount(0)
       await second.page.getByTestId('forget-this-browser-confirm').click()
 
-      // The ceremony ends in a hard reload onto the login page.
+      // The ceremony ends in a hard reload onto the login page. A timeout
+      // carries this page's console error lines, both lanes.
       try {
         await expect(second.page).toHaveURL(/\/login/, { timeout: 180_000 })
       } catch (err) {
         throw new Error(
-          `The forget ceremony did not reach the login page. Page errors:\n${pageErrors.join('\n')}`,
+          `The forget ceremony did not reach the login page. Page errors:\n${formatConsoleLines(consoleCapture.errors({ page: second.page }))}`,
           { cause: err }
         )
       }

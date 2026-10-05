@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import {
   fillSettled,
   signupViaWizard,
@@ -6,6 +6,7 @@ import {
   expectHistoryEntry,
   E2E_TEST_CREDENTIAL
 } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * WAS-backed E2E for the CHAPI "store" flow end-to-end: a credential accepted

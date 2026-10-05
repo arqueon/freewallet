@@ -19,7 +19,7 @@
  * transient client visible nowhere on the account -- the connected-wallets
  * list on the enrolled client never grows a row for it.
  */
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import type { IDelegatedZcap } from '@interop/data-integrity-core'
 import {
   appZcapClient,
@@ -44,6 +44,7 @@ import {
   withoutUnpartitionedStorageAccess
 } from './popupHarness'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 // Chromium's Local Network Access checks block a loopback subresource
 // fetched from a DIFFERENT loopback origin, which is exactly the cross-site

@@ -22,13 +22,7 @@
  * Every stage pays the deliberately slow unlock KDF on top of several WAS
  * ceremonies, hence the generous timeouts.
  */
-import {
-  test,
-  expect,
-  type Browser,
-  type Page,
-  type TestInfo
-} from '@playwright/test'
+import type { Browser, Page, TestInfo } from '@playwright/test'
 import {
   awaitLoginChain,
   coldTerminal,
@@ -52,6 +46,7 @@ import {
   expectNoStorageResidue
 } from '../shared/storageResidue'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.

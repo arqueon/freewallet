@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
 import { signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * WebKMS provisioning e2e. Runs against the app in remote mode backed by a

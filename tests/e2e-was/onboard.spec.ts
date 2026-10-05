@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import {
   completeEnrollmentCore,
   encodeOnboardingResponse,
@@ -10,6 +10,7 @@ import {
   type IVPRQuery
 } from '@interop/wallet-request'
 import { signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * The wallet-onboarding rendezvous e2e (WAS mode): the inviter's half of the

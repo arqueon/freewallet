@@ -1,5 +1,6 @@
-import { test, expect, type Browser, type Page } from '@playwright/test'
+import type { Browser, Page } from '@playwright/test'
 import { fillSettled, forceRememberBrowser, signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * Keyring v2 e2e (WAS mode). A login derives an unlock identity from the

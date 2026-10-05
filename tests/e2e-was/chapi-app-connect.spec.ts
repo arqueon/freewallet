@@ -1,5 +1,6 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { fillSettled, signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * WAS-backed E2E for the App Connect CHAPI consent flow. A single CHAPI `get`

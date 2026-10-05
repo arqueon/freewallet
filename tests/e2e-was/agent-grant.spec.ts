@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { CapabilityAgent } from '@interop/capability-agent'
 import {
   WasClient,
@@ -27,6 +27,7 @@ import {
 } from './helpers'
 import { listStoredResourceIds } from '../shared/storedLogs'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * The agent-grant e2e (WAS mode): a CLI agent asking for storage access

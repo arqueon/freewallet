@@ -30,13 +30,7 @@
  * empty, so a run under it could not produce the bundle in the first place.
  */
 import { Buffer } from 'node:buffer'
-import {
-  test,
-  expect,
-  type BrowserContext,
-  type Page,
-  type Request
-} from '@playwright/test'
+import type { BrowserContext, Page, Request } from '@playwright/test'
 import { readBundle } from '@interop/wallet-backup'
 import {
   addCredentialViaPaste,
@@ -47,6 +41,7 @@ import {
   stubSaveFilePicker,
   submitTransientLogin
 } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT / WAS_PORT). A manually
 // created context does not inherit the config's `use.baseURL`.

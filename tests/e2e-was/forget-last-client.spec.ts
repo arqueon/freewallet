@@ -29,7 +29,7 @@
  * Every stage pays the deliberately slow unlock KDF on top of several WAS
  * ceremonies, hence `test.slow()` and the generous timeouts.
  */
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { readLogFromString, resolveDIDFromLog } from '@interop/did-method-webvh'
 import {
   addCredentialViaPaste,
@@ -43,6 +43,7 @@ import {
   sessionSpaceId,
   signupViaWizard
 } from './helpers'
+import { test, expect, formatConsoleLines } from '../shared/consoleCapture'
 import {
   captureLocalStorageKeys,
   expectNoStorageResidue
@@ -157,7 +158,8 @@ async function readSessionDatabaseKeys(page: Page): Promise<string[]> {
 
 test.describe('The last-enrolled-client forget transition', () => {
   test('forgetting the only connected browser leaves the account ladder-anchored', async ({
-    browser
+    browser,
+    consoleCapture
   }, testInfo) => {
     test.slow()
     test.setTimeout(540_000)
@@ -189,19 +191,6 @@ test.describe('The last-enrolled-client forget transition', () => {
     // --- Terminal B: the remembered self-enrollment, then the forget. ---
     const second = await coldTerminal(browser, APP_URL)
     try {
-      // The ceremony runs several ladder-signed WAS writes with no UI of its
-      // own; a failure is far easier to place with the page's own errors in
-      // hand, so they are collected and reported with the timeout.
-      const pageErrors: string[] = []
-      second.page.on('pageerror', err => {
-        pageErrors.push(`pageerror: ${err.message}`)
-      })
-      second.page.on('console', message => {
-        if (message.type() === 'error') {
-          pageErrors.push(`console: ${message.text()}`)
-        }
-      })
-
       await second.page.goto('/#/login')
       // The cold profile is non-remembered, so the default login would be
       // transient; the standing passphrase self-enrolls this browser as an
@@ -263,12 +252,15 @@ test.describe('The last-enrolled-client forget transition', () => {
       await second.page.getByTestId('forget-this-browser-confirm').click()
 
       // The ceremony ends in a hard reload onto the login page (the wipe has
-      // just deleted the storage this tab's handles point at).
+      // just deleted the storage this tab's handles point at). The ceremony
+      // runs several ladder-signed WAS writes with no UI of its own; a
+      // failure is far easier to place with the page's own errors in hand,
+      // so the console capture's error lines for this page ride the timeout.
       try {
         await expect(second.page).toHaveURL(/\/login/, { timeout: 180_000 })
       } catch (err) {
         throw new Error(
-          `The forget transition did not reach the login page. Page errors:\n${pageErrors.join('\n')}`,
+          `The forget transition did not reach the login page. Page errors:\n${formatConsoleLines(consoleCapture.errors({ page: second.page }))}`,
           { cause: err }
         )
       }

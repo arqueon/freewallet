@@ -39,6 +39,11 @@
   ordered request record. The transient recovery spend torn at its roster
   append is covered there, refused and with its response dropped. A second
   test interleaves two visits at a held annex enrollment.
+- A shared Playwright `consoleCapture` fixture (`tests/shared/`) collects
+  every console line and uncaught page error of a test, across every
+  context it opens, and attaches them on failure. Logger lines and bare
+  dependency lines are kept as separate lanes. It replaces the per-spec
+  collectors in the two forget specs.
 
 ### Changed
 

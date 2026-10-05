@@ -1,11 +1,6 @@
-import {
-  test,
-  expect,
-  type CDPSession,
-  type Page,
-  type TestInfo
-} from '@playwright/test'
+import type { CDPSession, Page, TestInfo } from '@playwright/test'
 import { fillSettled, forceRememberBrowser, signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * The login page's forget affordance (the no-unlock-material grade) e2e (WAS

@@ -1,10 +1,11 @@
-import { test, expect, type Browser, type Page } from '@playwright/test'
+import type { Browser, Page } from '@playwright/test'
 import {
   defaultWebvhLogVerifier,
   readLogFromString,
   resolveDIDFromLog
 } from '@interop/did-method-webvh'
 import { fillSettled, forceRememberBrowser, signupViaWizard } from './helpers'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * The self-enrolling login e2e (WAS mode): connecting a second browser

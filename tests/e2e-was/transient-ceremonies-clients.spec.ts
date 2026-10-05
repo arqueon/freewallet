@@ -26,13 +26,7 @@
  * in-memory, so a reload would end it. Nothing is written to that browser at
  * any point, which each suite's residue assertion pins.
  */
-import {
-  test,
-  expect,
-  type Browser,
-  type BrowserContext,
-  type Page
-} from '@playwright/test'
+import type { Browser, BrowserContext, Page } from '@playwright/test'
 import {
   defaultWebvhLogVerifier,
   readLogFromString,
@@ -48,6 +42,7 @@ import {
   captureLocalStorageKeys,
   expectNoStorageResidue
 } from '../shared/storageResidue'
+import { test, expect } from '../shared/consoleCapture'
 
 // Matches `playwright.was.config.ts` (APP_PORT). Manually created contexts do
 // not inherit the config's `use.baseURL`, so pass it explicitly.

@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * End-to-end coverage for the four core credential flows -- add, accept,

@@ -1,8 +1,9 @@
-import { test, expect, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { fillSettled, goToStorage, signupViaWizard } from './helpers'
 import { accountSpaceIdFrom } from './storeOracle'
 import { spaceExistsInStore } from '../shared/storeOracle'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * WAS (remote storage) smoke tests. These run against the app in remote mode

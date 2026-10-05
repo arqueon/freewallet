@@ -1,4 +1,3 @@
-import { test, expect } from '@playwright/test'
 import {
   addCredentialViaPaste,
   collectionRow,
@@ -12,6 +11,7 @@ import {
 } from './helpers'
 import { listStoredResourceIds } from '../shared/storedLogs'
 import { WAS_E2E_DATA_DIR } from './wasDataDir'
+import { test, expect } from '../shared/consoleCapture'
 
 // Background replication pushes a local write a beat after the wallet-side
 // action, so a usage figure is polled until the server's measurement moves.

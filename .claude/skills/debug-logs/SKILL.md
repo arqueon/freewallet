@@ -183,8 +183,15 @@ and reads only the `page` ids that carry its tag.
   `configure({ filter: 'fw:*' })` plus a capture sink, and undoes both.
 - vitest builds carry no NDJSON sink and no `__fwLog` (the dev wiring
   is gated on `MODE === 'development'`).
-- e2e: read the NDJSON file above, or capture the console -- but keep
-  an unprefixed lane: the CHAPI polyfill, `wallet-worker.html`, RxDB,
-  and other deps emit bare lines without a `[ns]` prefix, and those are
-  often the interesting ones. A shared Playwright console fixture is
-  FW-309, not built yet.
+- e2e: read the NDJSON file above, or the console capture. The
+  automatic `consoleCapture` fixture (`tests/shared/consoleCapture.ts`,
+  also carried by the `test` in `ceremonyEvents.ts`) records every
+  console line and uncaught exception of every page in every context a
+  test opens, and attaches them as `console` when the test fails. It
+  keeps two lanes: `ns` for logger-seam lines, and `bare` for the CHAPI
+  polyfill, `wallet-worker.html`, RxDB, and other deps that log without
+  a `[ns]` prefix, which are often the interesting ones. A spec reads
+  them with `consoleCapture.errors({ page })` and
+  `formatConsoleLines(...)`. Playwright's `message.text()` does no `%s`
+  substitution, so a logger line's raw text starts with the format
+  string `%s [%s] %s`. Never anchor a console match at position 0.

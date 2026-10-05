@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
 import { loginAsGuest } from './helpers/auth'
+import { test, expect } from '../shared/consoleCapture'
 
 /**
  * Storage quota UI in local (non-WAS) mode — no remote space, so the quota

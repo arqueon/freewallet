@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from '../shared/consoleCapture'
 
 test.describe('Landing page', () => {
   test('has title "Freewallet"', async ({ page }) => {
