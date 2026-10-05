@@ -18,7 +18,7 @@
  * an encrypted collection's key-epoch roster carries an Access expired chip
  * and a note that it can still decrypt new writes.
  *
- * The page keeps reading the `app-connections` collection beside the
+ * The page keeps reading the `app-keys` collection beside the
  * directory, for its health: the undecryptable and no-epoch-key warnings and
  * the purge button.
  */
@@ -43,7 +43,7 @@ import { RevokeAppDialog } from '@/components/RevokeAppDialog'
 import { getCollectionDisplayName } from '@/components/storage/displayUtils'
 import { useAsyncLoad } from '@/hooks/useAsyncLoad'
 import { usePullSettled } from '@/hooks/usePullSettled'
-import { APP_CONNECTIONS_COLLECTION } from '@interop/wallet-core/space'
+import { APP_KEYS_COLLECTION } from '@interop/wallet-core/space'
 import { useAuthStore } from '@/stores/authStore'
 import { showToast } from '@/stores/toastStore'
 import { dashboardStyles } from '@/styles/appStyles'
@@ -65,7 +65,7 @@ const log = createLogger('fw:ui:applications')
 
 // The collection whose pulls change what this page shows: the app-key
 // health counts. The directory is read remote-direct and never replicated.
-const PULLED_COLLECTIONS = [APP_CONNECTIONS_COLLECTION]
+const PULLED_COLLECTIONS = [APP_KEYS_COLLECTION]
 
 /**
  * The soonest still-future expiry among a row's recorded grants, so the row
@@ -141,7 +141,7 @@ export function ApplicationsPage() {
     }
   )
 
-  // The app-key health counts come from `app-connections`; on a fresh
+  // The app-key health counts come from `app-keys`; on a fresh
   // browser its pull can land after the mount read, so re-list when it
   // settles.
   const reloadAfterPull = useCallback(() => {

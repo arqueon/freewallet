@@ -726,7 +726,7 @@ describe('a guest or no-WAS session', () => {
       'wallet-activity',
       'contacts',
       'contacts-history',
-      'app-connections',
+      'app-keys',
       'connections'
     ]) {
       const descriptor = await cache.readDescriptor({ collectionId })

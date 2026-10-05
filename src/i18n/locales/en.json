@@ -642,7 +642,7 @@
     "collectionNames": {
       "private-credentials": "Verifiable Credentials",
       "public-credentials": "Verifiable Credentials (Publicly Shared)",
-      "app-connections": "App Connections",
+      "app-keys": "App Keys",
       "wallet-activity": "Wallet Activity Log",
       "id": "Identity",
       "key-map": "Key Map",

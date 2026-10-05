@@ -411,20 +411,18 @@ function makeFakeRemote({
  * StorageManager builds internally. Every encrypted collection carries a
  * key-epoch roster from birth, so a collection the test supplies no
  * descriptor for gets a local one-epoch descriptor wrapped to the owner --
- * standing in for what provisioning would have installed. `appConnections`
- * adds the `app-connections` cipher, for a test that stores app keys.
+ * standing in for what provisioning would have installed. `appKeys`
+ * adds the `app-keys` cipher, for a test that stores app keys.
  */
 async function buildCiphers(
   owner: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver },
   descriptors: Record<string, CollectionEncryption>,
-  { appConnections = false }: { appConnections?: boolean } = {}
+  { appKeys = false }: { appKeys?: boolean } = {}
 ): Promise<Record<string, DocCipher>> {
   const specs: Array<[string, string]> = [
     ['privateCredentials', 'private-credentials'],
     ['walletActivity', 'wallet-activity'],
-    ...(appConnections
-      ? [['appConnections', 'app-connections'] as [string, string]]
-      : [])
+    ...(appKeys ? [['appKeys', 'app-keys'] as [string, string]] : [])
   ]
   const entries = await Promise.all(
     specs.map(async ([key, id]) => [
@@ -1032,7 +1030,7 @@ async function rotateParty({
  * @param [options.signerCheck] {Function}
  * @param [options.persistence] {SessionPersistence}
  * @param [options.blindedIndex] {boolean}
- * @param [options.appConnections] {boolean}   builds the app-key cipher
+ * @param [options.appKeys] {boolean}   builds the app-key cipher
  * @returns {Promise<object>}
  */
 async function directorySession({
@@ -1040,13 +1038,13 @@ async function directorySession({
   signerCheck,
   persistence = browserLocalSessionPersistence(),
   blindedIndex = false,
-  appConnections = false
+  appKeys = false
 }: {
   revoke?: (zcap: unknown) => Promise<void>
   signerCheck?: () => Promise<AccountSignerCheck | undefined>
   persistence?: SessionPersistence
   blindedIndex?: boolean
-  appConnections?: boolean
+  appKeys?: boolean
 } = {}) {
   const owner = await generateKey()
   const stores = memoryDescriptorStores()
@@ -1054,7 +1052,7 @@ async function directorySession({
   const descriptors = await provisionGovernedCollections(owner, stores, {
     blindedIndex
   })
-  const ciphers = await buildCiphers(owner, descriptors, { appConnections })
+  const ciphers = await buildCiphers(owner, descriptors, { appKeys })
   const { localStore, user } = await initLocalStore(ciphers)
   const storage = new StorageManager({
     persistence,
@@ -3974,16 +3972,16 @@ describe('a planted directory entry', () => {
       seedResource,
       remoteStore,
       revoked
-    } = await directorySession({ appConnections: true })
+    } = await directorySession({ appKeys: true })
     await storage.provisionEncryptedCollection({
       collectionId: 'app-docs',
       recipient: x25519RecipientFromDidKey({ did: victimDid })
     })
-    const { id: victimKeyId, envelope } = await ciphers.appConnections.encrypt({
+    const { id: victimKeyId, envelope } = await ciphers.appKeys.encrypt({
       data: victim.credential as unknown as Json
     })
     seedResource({
-      logicalKey: 'appConnections',
+      logicalKey: 'appKeys',
       resourceId: victimKeyId,
       body: envelope
     })
@@ -4031,9 +4029,9 @@ describe('a planted directory entry', () => {
       })
     ).toBe('foreign')
     expect(
-      (
-        await remoteStore.listSyncedDocuments({ logicalKey: 'appConnections' })
-      ).map(({ id }) => id)
+      (await remoteStore.listSyncedDocuments({ logicalKey: 'appKeys' })).map(
+        ({ id }) => id
+      )
     ).toEqual([victimKeyId])
   })
 })
@@ -4043,7 +4041,7 @@ describe('StorageManager.deleteAppKeyResource (remote)', () => {
     // A remembered session before its pull: the local replica holds no copy,
     // and the server holds the key twice under two ids.
     const { storage, ciphers, seedResource, remoteStore, localStore } =
-      await directorySession({ appConnections: true })
+      await directorySession({ appKeys: true })
     const editor = await mintAppKeyCredential({
       app: { name: 'Editor', appUrl: 'https://app.example/editor' },
       origin: 'https://app.example'
@@ -4059,23 +4057,23 @@ describe('StorageManager.deleteAppKeyResource (remote)', () => {
       ['editor-2', editor.credential],
       ['reader', reader.credential]
     ] as const) {
-      const { id, envelope } = await ciphers.appConnections.encrypt({
+      const { id, envelope } = await ciphers.appKeys.encrypt({
         data: credential as unknown as Json
       })
       seedResource({
-        logicalKey: 'appConnections',
+        logicalKey: 'appKeys',
         resourceId: id,
         body: envelope
       })
       seeded[label] = id
     }
-    expect(
-      await localStore.rxCollection('appConnections').find().exec()
-    ).toHaveLength(0)
+    expect(await localStore.rxCollection('appKeys').find().exec()).toHaveLength(
+      0
+    )
     const held = async () =>
-      (
-        await remoteStore.listSyncedDocuments({ logicalKey: 'appConnections' })
-      ).map(({ id }) => id)
+      (await remoteStore.listSyncedDocuments({ logicalKey: 'appKeys' })).map(
+        ({ id }) => id
+      )
 
     expect(
       await storage.deleteAppKeyResource({
@@ -4098,7 +4096,7 @@ describe('StorageManager.deleteAppKeyResource (remote)', () => {
 
   it('deletes the named copy last, so a retry after a torn delete finds the rest', async () => {
     const { storage, ciphers, seedResource, remoteStore } =
-      await directorySession({ appConnections: true })
+      await directorySession({ appKeys: true })
     const editor = await mintAppKeyCredential({
       app: { name: 'Editor', appUrl: 'https://app.example/editor' },
       origin: 'https://app.example'
@@ -4106,11 +4104,11 @@ describe('StorageManager.deleteAppKeyResource (remote)', () => {
     const editorDid = (editor.credential.credentialSubject as { id: string }).id
     const ids: string[] = []
     for (let copy = 0; copy < 2; copy++) {
-      const { id, envelope } = await ciphers.appConnections.encrypt({
+      const { id, envelope } = await ciphers.appKeys.encrypt({
         data: editor.credential as unknown as Json
       })
       seedResource({
-        logicalKey: 'appConnections',
+        logicalKey: 'appKeys',
         resourceId: id,
         body: envelope
       })
@@ -4140,7 +4138,7 @@ describe('StorageManager.deleteAppKeyResource (remote)', () => {
       await storage.deleteAppKeyResource({ appKey: named, did: editorDid })
     ).toBe('deleted')
     expect(
-      await remoteStore.listSyncedDocuments({ logicalKey: 'appConnections' })
+      await remoteStore.listSyncedDocuments({ logicalKey: 'appKeys' })
     ).toEqual([])
   })
 })

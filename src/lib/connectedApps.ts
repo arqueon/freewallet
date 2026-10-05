@@ -3,7 +3,7 @@
  * the `connections` directory (`@interop/wallet-core/connections`): one
  * encrypted entry per party the wallet has dealt with. An app connected
  * through the App Connect CHAPI flow has a `kind: 'app'` entry carrying its
- * attested origin, its canonical app URL, the `app-connections` Resource
+ * attested origin, its canonical app URL, the `app-keys` Resource
  * holding its app key (`appKey`), and every grant it was delegated. An agent
  * that answered an interaction-URL request has a `kind: 'agent'` entry with
  * its grants and no app key. The `wallet-activity` Grant and Revoke rows are
@@ -172,7 +172,7 @@ export interface ConnectedApp {
    */
   subjectDid: string
   /**
-   * The `app-connections` Resource holding the app key, when the entry
+   * The `app-keys` Resource holding the app key, when the entry
    * names one.
    */
   appKey?: string

@@ -46,7 +46,7 @@ import {
 import { mintUserKey } from '@interop/wallet-core/keys/userKey'
 import { userKeyAsRecipient } from '@interop/wallet-core/keys/userKeyGenerations'
 import {
-  APP_CONNECTIONS_COLLECTION,
+  APP_KEYS_COLLECTION,
   KEY_MAP_COLLECTION,
   PRIVATE_CREDENTIALS_COLLECTION,
   USER_KEY_ROSTER_LOG_RESOURCE,
@@ -606,11 +606,11 @@ describe('migrateContent', () => {
     expect(revisions[0].writerId).toBe('old-writer')
   })
 
-  it('counts the app-connections rows as not migrated and lands no app key', async () => {
+  it('counts the app-keys rows as not migrated and lands no app key', async () => {
     const session = await memorySession()
     const { bundle, secret } = await makeBundle([
       {
-        collectionId: APP_CONNECTIONS_COLLECTION,
+        collectionId: APP_KEYS_COLLECTION,
         resources: [
           credentialResource('an app key'),
           credentialResource('another app key')
@@ -623,10 +623,8 @@ describe('migrateContent', () => {
     ])
 
     const result = await migrateContent({ session, bundle, secret })
-    expect(result.report.notMigrated[APP_CONNECTIONS_COLLECTION]).toBe(2)
-    expect(
-      result.report.collections[APP_CONNECTIONS_COLLECTION]
-    ).toBeUndefined()
+    expect(result.report.notMigrated[APP_KEYS_COLLECTION]).toBe(2)
+    expect(result.report.collections[APP_KEYS_COLLECTION]).toBeUndefined()
     expect((await session.storage.listAppKeys()).appKeys).toHaveLength(0)
     expect(await session.storage.listCredentials()).toHaveLength(1)
   })

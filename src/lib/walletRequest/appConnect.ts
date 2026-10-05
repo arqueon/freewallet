@@ -136,11 +136,11 @@ export function appConnectZcapRequests({
  * Processes an App Connect request on the consent-approved path:
  *
  * 1. finds the stored app-key credential for the app's `appUrl` and the
- *    requesting origin, in the `app-connections` collection (the wallet-side
+ *    requesting origin, in the `app-keys` collection (the wallet-side
  *    origin binding: a phishing origin can neither recover nor be handed
  *    another origin's key);
  * 2. on no match -- a first run -- mints a fresh one (32-byte seed,
- *    seed-derived did:key, self-issued) and saves it to `app-connections`, a
+ *    seed-derived did:key, self-issued) and saves it to `app-keys`, a
  *    wallet-internal store under the same consent, no second popup;
  * 3. delegates the requested capabilities to the credential's subject DID;
  * 4. runs `beforeProvision` exactly once, with the signed grants and the
@@ -212,7 +212,7 @@ export async function processAppConnect({
   // the refresh was already spent earlier this session -- the consent preview
   // scans before this call does); a no-epoch-key Resource names an epoch this
   // session holds no wrap for (the residue of a rotation whose
-  // `app-connections` fan-out did not complete); and an undecryptable envelope
+  // `app-keys` fan-out did not complete); and an undecryptable envelope
   // will not open under any descriptor. So "no match" here does not mean "this
   // app has never connected", and minting would hand the app a second seed and
   // DID, permanently orphaning whatever it encrypted under the first.
@@ -223,7 +223,7 @@ export async function processAppConnect({
   const firstRun = !existing
   let credential: IVerifiableCredential
   let subjectDid: string
-  // The `app-connections` Resource holding the key, which the app's
+  // The `app-keys` Resource holding the key, which the app's
   // `connections` entry records as `appKey`.
   let appKey: string
   if (existing) {

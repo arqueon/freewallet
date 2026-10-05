@@ -35,7 +35,7 @@ describe('roster projections', () => {
 describe('the roster-wide collection sets', () => {
   it('names the connections directory among the encrypted collections', () => {
     expect([...ENCRYPTED_WALLET_COLLECTION_IDS].sort()).toEqual([
-      'app-connections',
+      'app-keys',
       'connections',
       'contacts',
       'contacts-history',
@@ -48,7 +48,7 @@ describe('the roster-wide collection sets', () => {
     for (const id of [
       'connections',
       'private-credentials',
-      'app-connections',
+      'app-keys',
       'key-map',
       'id'
     ]) {

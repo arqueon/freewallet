@@ -7,7 +7,7 @@
  * fully attacker-generated credential binds perfectly. Only the wallet's own
  * mint path stores one, through its own store method (`addMintedAppKey`), which in
  * turn refuses anything that does not carry the mint invariants and writes to
- * the dedicated `app-connections` collection.
+ * the dedicated `app-keys` collection.
  *
  * The second half covers that collection's surface: `addMintedAppKey` /
  * `listAppKeys` / `deleteAppKeyResource`, their idempotence on the
@@ -51,7 +51,7 @@ const origin = 'https://app.example'
  */
 const APP_KEY_COLLECTIONS: CollectionPair[] = [
   ['privateCredentials', 'private-credentials'],
-  ['appConnections', 'app-connections'],
+  ['appKeys', 'app-keys'],
   ['walletActivity', 'wallet-activity']
 ]
 
@@ -146,7 +146,7 @@ describe('StorageManager.addCredential app-key screening', () => {
 })
 
 describe('StorageManager app-key collection surface', () => {
-  it('stores a wallet-minted app key in app-connections, apart from the credentials', async () => {
+  it('stores a wallet-minted app key in app-keys, apart from the credentials', async () => {
     const { storage } = await makeStorage()
     const { credential } = await mintAppKeyCredential({ app, origin })
 
@@ -292,7 +292,7 @@ describe('StorageManager app-key collection surface', () => {
     const { storage, localStore } = await makeStorage()
     const { credential } = await mintAppKeyCredential({ app, origin })
     const appKey = 'z6UndecryptableAppKey'
-    await localStore.rxCollection('appConnections').insert({
+    await localStore.rxCollection('appKeys').insert({
       id: appKey,
       updatedAt: new Date().toISOString(),
       version: 0,
@@ -310,10 +310,7 @@ describe('StorageManager app-key collection surface', () => {
     await expect(
       storage.deleteAppKeyResource({ appKey, did: subjectOf(credential) })
     ).rejects.toThrow('could not be read')
-    const held = await localStore
-      .rxCollection('appConnections')
-      .findOne(appKey)
-      .exec()
+    const held = await localStore.rxCollection('appKeys').findOne(appKey).exec()
     expect(held).not.toBeNull()
   })
 

@@ -87,7 +87,7 @@ describe('a zero-grant App Connect on a guest session', () => {
         did: subjectDid!
       })
     )
-    // The minted key's `app-connections` Resource is the entry's `appKey`.
+    // The minted key's `app-keys` Resource is the entry's `appKey`.
     const { appKeys } = await storage.listAppKeys()
     expect(appKeys).toHaveLength(1)
     expect(read.entry).toMatchObject({

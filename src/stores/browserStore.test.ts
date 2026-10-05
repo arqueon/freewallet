@@ -201,7 +201,7 @@ function makeFakeContentCipher(): DocCipher {
 function encryptedCiphers(): Record<string, DocCipher> {
   return {
     privateCredentials: makeFakeCipher(),
-    appConnections: makeFakeCipher(),
+    appKeys: makeFakeCipher(),
     walletActivity: makeFakeCipher()
   }
 }
@@ -444,7 +444,7 @@ describe('BrowserStore (encrypted collections)', () => {
     expect(await localStore.listCredentials()).toHaveLength(0)
   })
 
-  it('keeps app keys in app-connections, out of the credential collection', async () => {
+  it('keeps app keys in app-keys, out of the credential collection', async () => {
     const { localStore } = await initLocalStore({ ciphers: encryptedCiphers() })
     const appKey = makeAppKey('https://app.example/editor')
     const cid = await cidFrom({ doc: appKey })
@@ -454,10 +454,7 @@ describe('BrowserStore (encrypted collections)', () => {
 
     // Stored as an envelope under the cipher-minted id, read back by content
     // cid, and invisible to every credential-wide surface.
-    const resources = await localStore
-      .rxCollection('appConnections')
-      .find()
-      .exec()
+    const resources = await localStore.rxCollection('appKeys').find().exec()
     expect(resources).toHaveLength(1)
     expect(resources[0].id).toBe(added.resourceId)
     expect(
@@ -482,9 +479,9 @@ describe('BrowserStore (encrypted collections)', () => {
       resourceId: first.resourceId
     })
 
-    expect(
-      await localStore.rxCollection('appConnections').find().exec()
-    ).toHaveLength(1)
+    expect(await localStore.rxCollection('appKeys').find().exec()).toHaveLength(
+      1
+    )
     expect(await localStore.listAppKeys()).toHaveLength(1)
   })
 
@@ -502,9 +499,9 @@ describe('BrowserStore (encrypted collections)', () => {
 
     // Two resource replicas carrying the same app key under different ids -- a
     // legacy copy replicated from remote beside a locally re-keyed one.
-    const collection = localStore.rxCollection('appConnections')
+    const collection = localStore.rxCollection('appKeys')
     for (let copy = 0; copy < 2; copy++) {
-      const { id, envelope } = await ciphers.appConnections.encrypt({
+      const { id, envelope } = await ciphers.appKeys.encrypt({
         data: appKey as unknown as Json
       })
       await collection.insert({
@@ -550,17 +547,17 @@ describe('BrowserStore (encrypted collections)', () => {
       async decrypt({ envelope }: { envelope: Json }) {
         const { ciphertext } = (envelope as { jwe: { ciphertext: string } }).jwe
         JSON.parse(ciphertext)
-        throw new KeyUnwrapError('No epoch key for "app-connections".')
+        throw new KeyUnwrapError('No epoch key for "app-keys".')
       }
     }
     const { localStore } = await initLocalStore({
       ciphers: {
         privateCredentials: makeFakeCipher(),
-        appConnections: skippingCipher,
+        appKeys: skippingCipher,
         walletActivity: makeFakeCipher()
       }
     })
-    const collection = localStore.rxCollection('appConnections')
+    const collection = localStore.rxCollection('appKeys')
     const { id, envelope } = await skippingCipher.encrypt({
       data: makeAppKey('https://app.example/editor') as unknown as Json
     })
@@ -570,7 +567,7 @@ describe('BrowserStore (encrypted collections)', () => {
       version: 0,
       data: envelope
     })
-    await insertUndecryptableResource(localStore, 'appConnections', 'z6Poison')
+    await insertUndecryptableResource(localStore, 'appKeys', 'z6Poison')
 
     // Nothing lists, and the two skipped resource replicas are counted on their
     // own axes.
@@ -958,11 +955,11 @@ describe('BrowserStore (misbound envelopes)', () => {
     const { localStore } = await initLocalStore({
       ciphers: {
         privateCredentials: makeFakeCipher(),
-        appConnections: makeMisboundCipher(),
+        appKeys: makeMisboundCipher(),
         walletActivity: makeFakeCipher()
       }
     })
-    await localStore.rxCollection('appConnections').insert({
+    await localStore.rxCollection('appKeys').insert({
       id: 'z6AppReadUnder',
       updatedAt: new Date().toISOString(),
       version: 0,
@@ -982,9 +979,9 @@ describe('BrowserStore (misbound envelopes)', () => {
     expect(localStore.noEpochKeyAppKeys).toBe(0)
 
     expect(await localStore.purgeUndecryptableAppKeys()).toBe(0)
-    expect(
-      await localStore.rxCollection('appConnections').find().exec()
-    ).toHaveLength(1)
+    expect(await localStore.rxCollection('appKeys').find().exec()).toHaveLength(
+      1
+    )
   })
 
   it('refuses a misbound contacts row on the point read under its own warning', async () => {
@@ -1971,7 +1968,7 @@ describe('RemoteDirectStore', () => {
       data: makeAppKey('https://app.example/editor') as unknown as Json
     })
     collections.set(
-      'appConnections',
+      'appKeys',
       new Map([
         [id, envelope],
         [
@@ -1989,14 +1986,14 @@ describe('RemoteDirectStore', () => {
       async decrypt({ envelope: body }: { envelope: Json }) {
         const { ciphertext } = (body as { jwe: { ciphertext: string } }).jwe
         JSON.parse(ciphertext)
-        throw new KeyUnwrapError('No epoch key for "app-connections".')
+        throw new KeyUnwrapError('No epoch key for "app-keys".')
       }
     }
     const store = new RemoteDirectStore({
       remoteStore,
       ciphers: {
         privateCredentials: makeFakeCipher(),
-        appConnections: skippingCipher,
+        appKeys: skippingCipher,
         walletActivity: makeFakeCipher()
       }
     })
@@ -2008,7 +2005,7 @@ describe('RemoteDirectStore', () => {
 
     // The purge deletes from the SERVER, so only the poisoned resource goes.
     expect(await store.purgeUndecryptableAppKeys()).toBe(1)
-    expect([...collections.get('appConnections')!.keys()]).toEqual([id])
+    expect([...collections.get('appKeys')!.keys()]).toEqual([id])
   })
 
   it('dedupes adds against the session cache without re-listing per item', async () => {

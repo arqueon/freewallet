@@ -681,7 +681,7 @@ export const ENCRYPTED_STANDARD_COLLECTIONS = [
   'wallet-activity',
   'contacts',
   'contacts-history',
-  'app-connections',
+  'app-keys',
   'connections'
 ]
 

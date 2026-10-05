@@ -208,7 +208,7 @@ function includesWrite(allowedActions: string[]): boolean {
  *
  * Today that is four collections. `connections` is the wallet's party
  * directory: every party's names, origins, and delegated capabilities.
- * `app-connections` holds one app-key
+ * `app-keys` holds one app-key
  * credential per connected app, each carrying that app's private seed in
  * `credentialSubject.seed`. `key-map` is plaintext on the server. Its user key
  * roster (`user-key.jsonl`) carries a passphrase credential's derived
@@ -219,7 +219,7 @@ function includesWrite(allowedActions: string[]): boolean {
  * `resolveInvocationTarget` checks the resolved collection id once, after
  * every descriptor form, so a grant naming one of these collections is
  * unsatisfiable rather than merely read-only. That also keeps
- * `app-connections` out of `provisionFor`'s recipient roster, since an
+ * `app-keys` out of `provisionFor`'s recipient roster, since an
  * unsatisfiable grant never reaches provisioning. Confidentiality of the seeds
  * rests elsewhere, on the epoch roster: the Resources are EDV envelopes, and a
  * grantee is not an epoch recipient, so it decrypts nothing.
@@ -1119,7 +1119,7 @@ function resolveTargetForm({
     const { name } = descriptor
     // Both conditions, deliberately. Encryption is necessary -- a share escrows
     // the reader into a key-epoch roster, and there is no roster where nothing
-    // is encrypted -- but not sufficient: `app-connections` carries epochs and
+    // is encrypted -- but not sufficient: `app-keys` carries epochs and
     // is never shareable, since its Resources are the connected apps' private
     // seeds, and so does `wallet-activity`, whose Resources carry the account's
     // delegated capabilities verbatim. Everything else -- a plaintext

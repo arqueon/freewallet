@@ -51,7 +51,7 @@
     "@interop/wallet-backup": "^0.5.1",
     "@interop/wallet-core": "link:../wallet-core",
     "@interop/wallet-request": "^0.4.1",
-    "@interop/was-client": "^0.90.1",
+    "@interop/was-client": "^0.90.2",
     "@interop/was-sync": "^0.7.0",
     "@interop/webkms-client": "^15.0.2",
     "@interop/x25519-key-agreement-key": "^5.4.1",

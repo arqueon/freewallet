@@ -73,7 +73,7 @@ describe('usePullSettled', () => {
   it('ignores collections it does not watch', async () => {
     const onSettled = vi.fn()
     const probe = await mount({
-      collectionIds: ['app-connections'],
+      collectionIds: ['app-keys'],
       onSettled
     })
     await setStatus('contacts', 'syncing')
@@ -85,16 +85,16 @@ describe('usePullSettled', () => {
   it('fires once for a status update that settles several watched collections', async () => {
     const onSettled = vi.fn()
     const probe = await mount({
-      collectionIds: ['app-connections', 'wallet-activity'],
+      collectionIds: ['app-keys', 'wallet-activity'],
       onSettled
     })
-    await setStatus('app-connections', 'syncing')
+    await setStatus('app-keys', 'syncing')
     await setStatus('wallet-activity', 'syncing')
     await act(async () => {
       useSyncStatusStore.setState(state => ({
         statuses: {
           ...state.statuses,
-          'app-connections': 'synced',
+          'app-keys': 'synced',
           'wallet-activity': 'synced'
         }
       }))

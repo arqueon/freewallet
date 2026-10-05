@@ -8,7 +8,7 @@ import {
   CONTACTS_HISTORY_COLLECTION
 } from '@interop/social-core'
 import {
-  APP_CONNECTIONS_COLLECTION,
+  APP_KEYS_COLLECTION,
   PRIVATE_CREDENTIALS_COLLECTION,
   PUBLIC_CREDENTIALS_COLLECTION,
   WALLET_ACTIVITY_COLLECTION,
@@ -136,7 +136,7 @@ export const WAS_SYNC_POLL_MS = env.VITE_WAS_SYNC_POLL_MS
 const RXDB_KEY_BY_COLLECTION_ID: Record<string, string> = {
   [PRIVATE_CREDENTIALS_COLLECTION]: 'privateCredentials',
   [PUBLIC_CREDENTIALS_COLLECTION]: 'publicCredentials',
-  [APP_CONNECTIONS_COLLECTION]: 'appConnections',
+  [APP_KEYS_COLLECTION]: 'appKeys',
   [WALLET_ACTIVITY_COLLECTION]: 'walletActivity',
   [CONTACTS_COLLECTION]: 'contacts',
   [CONTACTS_HISTORY_COLLECTION]: 'contactsHistory'
@@ -157,14 +157,14 @@ export const WALLET_STANDARD_COLLECTIONS: Array<{
   // shares listing does not consult it, so an existing reader of a collection
   // that is no longer shareable stays removable. Projected verbatim from the
   // spec: it is a narrower predicate than `encryption`, since a collection can
-  // carry a key epoch roster and still never be shareable (`app-connections`,
+  // carry a key epoch roster and still never be shareable (`app-keys`,
   // whose Resources are the connected apps' private seeds, and
   // `wallet-activity`, whose Resources are the account's grant history).
   shareable: boolean
   // Whether any App Connect or interaction-URL grant may name the collection,
   // read-only or otherwise. Projected verbatim from the spec. It is
   // independent of `shareable`: `public-credentials` is not shareable yet is
-  // grantable, and `app-connections` is neither, since its Resources are the
+  // grantable, and `app-keys` is neither, since its Resources are the
   // connected apps' private seeds.
   grantable: boolean
   // How the collection's cipher mints a document id, from the collection spec:

@@ -38,7 +38,7 @@ random bytes and derives the did:key via `CapabilityAgent.fromSeed({ seed,
 keyName: 'app-key' })`; the `keyName` string must match was-react's
 derivation exactly. It self-issues the credential (issuer == subject ==
 seed-derived DID, seed base64url-no-pad in `credentialSubject.seed`) and
-saves it to the `app-connections` collection under the same consent. No
+saves it to the `app-keys` collection under the same consent. No
 second popup.
 
 Every app key has the same shape: the fixed two-entry `type` array
@@ -64,7 +64,7 @@ refusal below is what keeps plants out. Candidates rank on the instant each
 self-stated `issuanceDate` denotes rather than on its text, and an absent or
 unparseable date sorts last.
 
-**App keys live in their own collection.** `app-connections` is synced,
+**App keys live in their own collection.** `app-keys` is synced,
 EDV-encrypted and content-addressed like the credential replica, but
 structurally separate. The credential-wide surfaces are scoped to
 `private-credentials`, so they cannot reach a seed and need no filtering
@@ -77,8 +77,8 @@ key, so a read of it would be an offline guessing oracle, and
 roster rather than a list kept here: each of the three declares
 `grantable: false` on its roster spec, so a new roster entry is never
 grantable only by its own declaration. An app-key credential stranded in
-`private-credentials` from before `app-connections` existed stays where it
-is, and so does any public copy of one. Such a key predates the
+`private-credentials` from before the dedicated app-key collection existed
+stays where it is, and so does any public copy of one. Such a key predates the
 `connections` directory and has no entry there, so deleting it would
 revoke none of the app's grants. The login-time sweep that deleted these
 keys is retired for that reason. A stranded key keeps both of
@@ -114,12 +114,12 @@ URL / QR / manual-paste import, the credentials half of a space import). It
 refuses every marked credential, binding or not (`assertStorableAppKey`,
 `AppKeyRefusedError`). The mint path has its own store method,
 `StorageManager.addMintedAppKey` (called only by `processAppConnect`,
-writing into `app-connections`), which asserts the mint invariants.
+writing into `app-keys`), which asserts the mint invariants.
 
 Two ingest paths sit outside that entry point: the background sync pull, and
 the space half of an import. The pull replicates the account's own remote
 collections, writable only by the account's enrolled wallet clients
-(`app-connections` is never grantable, and `private-credentials` is
+(`app-keys` is never grantable, and `private-credentials` is
 protected, so RP and share grants on it are read-only). The import writes
 opaque resources into the user's own Space server-side. For both, the
 match-time binding is the backstop.
@@ -329,7 +329,7 @@ delegation first, which is local and needs no target to exist. Then the
 app's entry is written (`recordGrants`, through `beforeProvision` in
 `composeAndDeliverResponse`). It is created as `kind: 'app'`, or merged into
 by zcap id, with the app's `name`, its attested `origin`, its canonical app
-URL as `url`, and the `app-connections` Resource holding its key as
+URL as `url`, and the `app-keys` Resource holding its key as
 `appKey`. A share grant is marked `grantKind: 'share'`, and every other
 grant `'grant'`. The App Connect `Grant` activity follows, as audit trail.
 Only then is each share escrowed and each collection provisioned. Every App
@@ -387,7 +387,7 @@ detail.
 memory. An app row is an unretired `kind: 'app'` entry holding an `appKey`
 or any grant. Its display name is the user's `label`, then the app's
 `name`, then its origin, then its shortened DID. Rows sort by `lastSeen`,
-which only a consent moves. The page still lists `app-connections` for its
+which only a consent moves. The page still lists `app-keys` for its
 health: the undecryptable and no-epoch-key warnings and the purge button
 read that scan. A row opens `/applications/:resourceId`, keyed by the
 entry's resource id. That page shows every grant on the entry, live and
@@ -416,7 +416,7 @@ them.
 3. The server-side app-key delete (`StorageManager.deleteAppKeyResource`).
    The Resource the entry's `appKey` names is read, and deleted only when
    its credential binds the entry's DID: its subject is that DID, and
-   `appKeySeedBindsSubject` holds. Every other `app-connections` Resource
+   `appKeySeedBindsSubject` holds. Every other `app-keys` Resource
    carrying the same credential goes with it. A 404 or a dangling `appKey`
    reads as already deleted. A Resource that does not bind the DID is left
    alone, since it is some other app's seed. On a session with a Space the
@@ -587,7 +587,7 @@ without the other.
 **The recipient key is derived, not transmitted.** `name` must be one of the
 shareable standard collections: every `WALLET_STANDARD_COLLECTIONS` entry
 whose roster spec carries `shareable: true`, so today `private-credentials`,
-`contacts`, and `contacts-history`. `app-connections` is encrypted but never
+`contacts`, and `contacts-history`. `app-keys` is encrypted but never
 shareable, its Resources carrying app seeds. Neither is `wallet-activity`. Its
 Grant and collection-share activities carry each delegated capability verbatim,
 proof and capability chain included, so one reader of it would learn every

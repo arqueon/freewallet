@@ -29,7 +29,7 @@ const APP = {
   appUrl: 'https://app.example/editor'
 }
 const ORIGIN = 'https://app.example'
-// The `app-connections` Resource id the fake mint store returns.
+// The `app-keys` Resource id the fake mint store returns.
 const MINTED_RESOURCE_ID = 'z1MintedAppKeyResource'
 // The Resource id of a stored app key a test lists.
 const STORED_RESOURCE_ID = 'z1StoredAppKeyResource'
@@ -45,7 +45,7 @@ const CAPABILITY_QUERY = {
 /**
  * A minimal session whose storage records added app keys and lists a
  * caller-provided set. Two listings, deliberately distinct: `appKeys` is the
- * dedicated `app-connections` collection the match path reads, `credentials`
+ * dedicated `app-keys` collection the match path reads, `credentials`
  * the user's own credential store, which the match path must never consult.
  * The keyAgent signs the DIDAuth proof.
  */
@@ -123,7 +123,7 @@ describe('processAppConnect', () => {
 
     expect(response.appConnect?.firstRun).toBe(true)
     // The mint store method takes the credential alone: the Resource lands in
-    // `app-connections` and no credential-created activity is attributed.
+    // `app-keys` and no credential-created activity is attributed.
     expect(added).toEqual([{ credential: expect.anything() }])
     const subjectDid = response.appConnect?.subjectDid
     expect(subjectDid).toMatch(/^did:key:/)
@@ -142,7 +142,7 @@ describe('processAppConnect', () => {
   })
 
   it('refuses to mint when the scan skipped no-epoch-key rows', async () => {
-    // The rotation residue: every app-connections Resource sits in an epoch
+    // The rotation residue: every app-keys Resource sits in an epoch
     // this session holds no wrap for, so "no match" does not mean "never
     // connected" and a mint would orphan the app's prior identity.
     const { session, added } = await fakeSession({
@@ -399,9 +399,9 @@ describe('processAppConnect', () => {
 
   it('never finds an app key left in the credential store', async () => {
     // A key sitting among the ordinary credentials rather than in
-    // `app-connections`, in the exact shape that would match this request:
+    // `app-keys`, in the exact shape that would match this request:
     // marker type, this `appUrl`, this origin, and a seed that binds its
-    // subject. The match path reads `app-connections` only, so it is
+    // subject. The match path reads `app-keys` only, so it is
     // invisible -- the connect is a genuine first run under a fresh identity,
     // and the stranded Resource is the login-time sweep's business, not this
     // path's.

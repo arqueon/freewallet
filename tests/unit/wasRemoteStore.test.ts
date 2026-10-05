@@ -416,7 +416,7 @@ describe('WASRemoteStore.listSyncedDocuments', () => {
     })
 
     await expect(
-      store.listSyncedDocuments({ logicalKey: 'appConnections' })
+      store.listSyncedDocuments({ logicalKey: 'appKeys' })
     ).resolves.toEqual([])
   })
 

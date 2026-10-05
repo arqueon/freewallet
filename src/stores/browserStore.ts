@@ -184,33 +184,33 @@ export class BrowserStore {
   // replicas the last scan skipped as unknown-epoch), forcing the next
   // `addCredential` to rebuild.
   #credentialsIndexed = false
-  // Count of `app-connections` resource replicas the most recent
+  // Count of `app-keys` resource replicas the most recent
   // {@link listAppKeys} call had to skip because their envelope named a key
   // epoch this instance's cipher does not know -- the same signal as
   // `#unknownEpochCredentials`, and load-bearing here: an app key read as
   // absent would mint a second identity for the app rather than merely hiding a
   // resource replica.
   #unknownEpochAppKeys = 0
-  // Count of `app-connections` resource replicas the most recent
+  // Count of `app-keys` resource replicas the most recent
   // {@link listAppKeys} call had to skip because this wallet holds no key for
   // their (known) key epoch -- KeyUnwrapError, the app-key sibling of
   // `#noEpochKeyCredentials`. No descriptor refresh can help, and they are real
   // data, so they are never purged; they are surfaced because a skipped app key
   // read as absent would mint a second identity for the app.
   #noEpochKeyAppKeys = 0
-  // Count of `app-connections` resource replicas the most recent
+  // Count of `app-keys` resource replicas the most recent
   // {@link listAppKeys} call had to skip because their envelope would not
   // decrypt at all (corrupted, or written under a mismatched KAK). Purgeable
   // garbage, exactly like the credential collection's undecryptable resource
   // replicas.
   #undecryptableAppKeys = 0
-  // Count of `app-connections` resource replicas the most recent
+  // Count of `app-keys` resource replicas the most recent
   // {@link listAppKeys} call had to skip because their body failed its
   // integrity check -- the app-key sibling of `#integrityCredentials`, and
   // load-bearing for the same reason as the epoch counters: an app key read as
   // absent would mint a second identity for the app.
   #integrityAppKeys = 0
-  // The content cid of each decrypted `app-connections` envelope resource
+  // The content cid of each decrypted `app-keys` envelope resource
   // replica, keyed by resource id (the app-key sibling of
   // `#credentialCidByResource`). The collection holds one resource replica per
   // connected app, so it is scanned per call rather than carrying a
@@ -1136,7 +1136,7 @@ export class BrowserStore {
   }
 
   /**
-   * Reads every live `app-connections` resource replica, oldest first,
+   * Reads every live `app-keys` resource replica, oldest first,
    * resolving each to its content cid + decrypted app-key credential -- the
    * app-key sibling of {@link _credentialEntries}, without the session-wide cid
    * index: the collection holds one resource replica per connected app, so a
@@ -1168,7 +1168,7 @@ export class BrowserStore {
       noEpochKeyResourceIds,
       integrityResourceIds
     } = await this.#decryptedResources({
-      logicalKey: 'appConnections',
+      logicalKey: 'appKeys',
       sort: 'asc'
     })
     const entries: Array<{
@@ -1200,7 +1200,7 @@ export class BrowserStore {
   }
 
   /**
-   * Adds an app-key credential to the local `app-connections` collection -- the
+   * Adds an app-key credential to the local `app-keys` collection -- the
    * wallet's own mint path is the only writer. Like {@link addCredential} the
    * resource replica is the credential's EDV envelope under a content-derived
    * envelope-hash id and idempotence is by the credential's content cid
@@ -1227,14 +1227,11 @@ export class BrowserStore {
       return { inserted: false, resourceId: held.resourceId }
     }
     const { resourceId } = await this.#insertEncrypted({
-      logicalKey: 'appConnections',
+      logicalKey: 'appKeys',
       id: cid,
       data: credential as unknown as Json
     })
-    this.#cacheFor('appConnections').set(
-      resourceId,
-      credential as unknown as Json
-    )
+    this.#cacheFor('appKeys').set(resourceId, credential as unknown as Json)
     this.#appKeyCidByResource.set(resourceId, cid)
     return { inserted: true, resourceId }
   }
@@ -1284,19 +1281,19 @@ export class BrowserStore {
       if (entry.cid !== cid) {
         continue
       }
-      const doc = await this.rxCollection('appConnections')
+      const doc = await this.rxCollection('appKeys')
         .findOne(entry.resourceId)
         .exec()
       if (doc) {
         await doc.remove()
       }
-      this.#cacheFor('appConnections').delete(entry.resourceId)
+      this.#cacheFor('appKeys').delete(entry.resourceId)
       this.#appKeyCidByResource.delete(entry.resourceId)
     }
   }
 
   /**
-   * The count of `app-connections` resource replicas the most recent
+   * The count of `app-keys` resource replicas the most recent
    * {@link listAppKeys} call had to skip because their envelope named a key
    * epoch this instance's cipher does not know. Drives the same one-time
    * descriptor refresh the credential read uses.
@@ -1308,7 +1305,7 @@ export class BrowserStore {
   }
 
   /**
-   * The count of `app-connections` resource replicas the most recent
+   * The count of `app-keys` resource replicas the most recent
    * {@link listAppKeys} call had to skip because this wallet holds no key for
    * their (known) key epoch. Load-bearing on the match path: no descriptor
    * refresh can reveal them, so a caller that found no match must refuse rather
@@ -1321,7 +1318,7 @@ export class BrowserStore {
   }
 
   /**
-   * The count of `app-connections` resource replicas the most recent
+   * The count of `app-keys` resource replicas the most recent
    * {@link listAppKeys} call had to skip because their body failed its
    * integrity check. Never purged, and load-bearing on the match path for the
    * same reason as {@link noEpochKeyAppKeys}: a skipped app key read as absent
@@ -1334,7 +1331,7 @@ export class BrowserStore {
   }
 
   /**
-   * The count of `app-connections` resource replicas the most recent
+   * The count of `app-keys` resource replicas the most recent
    * {@link listAppKeys} call had to skip because their envelope would not
    * decrypt at all. Purgeable via {@link purgeUndecryptableAppKeys}.
    *
@@ -1345,7 +1342,7 @@ export class BrowserStore {
   }
 
   /**
-   * Removes every `app-connections` resource replica whose envelope will not
+   * Removes every `app-keys` resource replica whose envelope will not
    * decrypt under the current vault KAK, the app-key sibling of
    * {@link purgeUndecryptableCredentials}. Returns the number of resource
    * replicas removed.
@@ -1359,13 +1356,11 @@ export class BrowserStore {
   async purgeUndecryptableAppKeys(): Promise<number> {
     const { undecryptableResourceIds } = await this.#appKeyEntries()
     for (const resourceId of undecryptableResourceIds) {
-      const doc = await this.rxCollection('appConnections')
-        .findOne(resourceId)
-        .exec()
+      const doc = await this.rxCollection('appKeys').findOne(resourceId).exec()
       if (doc) {
         await doc.remove()
       }
-      this.#cacheFor('appConnections').delete(resourceId)
+      this.#cacheFor('appKeys').delete(resourceId)
       this.#appKeyCidByResource.delete(resourceId)
     }
     this.#undecryptableAppKeys = 0

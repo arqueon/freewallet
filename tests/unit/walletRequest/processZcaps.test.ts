@@ -8,7 +8,7 @@ import type { ICapabilityQueryDetail, IZcap } from '@/lib/walletRequest'
 import { x25519RecipientFromDidKey } from '@interop/was-client/edv'
 import type { CollectionGenerator } from '@interop/was-client'
 import {
-  APP_CONNECTIONS_COLLECTION,
+  APP_KEYS_COLLECTION,
   KEY_MAP_COLLECTION,
   UNLOCK_METHODS_COLLECTION
 } from '@interop/wallet-core/space'
@@ -884,12 +884,12 @@ describe('resolveInvocationTarget', () => {
   it('refuses a share of anything but a shareable standard collection', () => {
     // Plaintext standard collection, the `id` / `key-map` collections, an RP
     // collection, a made-up name, a missing name -- none has an epoch roster.
-    // `app-connections` and `wallet-activity` do have one and are refused all
+    // `app-keys` and `wallet-activity` do have one and are refused all
     // the same: their Resources are the connected apps' private seeds and the
     // account's grant history.
     for (const name of [
       'public-credentials',
-      APP_CONNECTIONS_COLLECTION,
+      APP_KEYS_COLLECTION,
       'wallet-activity',
       'id',
       KEY_MAP_COLLECTION.id,
@@ -912,34 +912,32 @@ describe('resolveInvocationTarget', () => {
     }
   })
 
-  it('refuses every descriptor spelling that names app-connections', () => {
+  it('refuses every descriptor spelling that names app-keys', () => {
     // The collection holds one app-key credential per connected app, each
     // carrying that app's private seed, so a grant naming it is unsatisfiable
     // rather than merely read-only -- whichever spelling it arrives in, and
     // whether it names the collection or a resource inside it.
     for (const descriptor of [
-      `${SPACE_URL}${APP_CONNECTIONS_COLLECTION}`,
-      `${SPACE_URL}${APP_CONNECTIONS_COLLECTION}/some-resource`,
+      `${SPACE_URL}${APP_KEYS_COLLECTION}`,
+      `${SPACE_URL}${APP_KEYS_COLLECTION}/some-resource`,
       {
         type: 'https://w3id.org/byoe#private-collection',
-        name: APP_CONNECTIONS_COLLECTION
+        name: APP_KEYS_COLLECTION
       },
       {
         type: 'https://w3id.org/byoe#public-collection',
-        name: APP_CONNECTIONS_COLLECTION
+        name: APP_KEYS_COLLECTION
       },
       {
         type: 'https://w3id.org/byoe#shared-wallet-collection',
-        name: APP_CONNECTIONS_COLLECTION
+        name: APP_KEYS_COLLECTION
       }
     ]) {
       const target = resolveInvocationTarget({
         descriptor,
         space: SPACE,
         // Listed, so a string target is refused for what it names.
-        collections: existingCollectionsFrom([
-          { id: APP_CONNECTIONS_COLLECTION }
-        ]),
+        collections: existingCollectionsFrom([{ id: APP_KEYS_COLLECTION }]),
         requester: {}
       })
       expect(target.targetClass).toBeUndefined()

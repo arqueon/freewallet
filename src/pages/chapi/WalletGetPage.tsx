@@ -407,7 +407,7 @@ export function WalletGetPage() {
       // deliberately not waited on.
       // The credential list feeds the generic-VC selection only. An App
       // Connect request never reads it -- it matches over the dedicated
-      // `app-connections` collection below -- so listing and decrypting every
+      // `app-keys` collection below -- so listing and decrypting every
       // private credential is skipped there.
       await loggedIn.storage.ready()
       const [, stored] = await Promise.all([
@@ -438,7 +438,7 @@ export function WalletGetPage() {
       // the first-run vs returning consent copy and the grants preview. The
       // approve-time processing repeats the lookup authoritatively.
       if (profile.appConnect) {
-        // Over the dedicated `app-connections` collection, exactly as the
+        // Over the dedicated `app-keys` collection, exactly as the
         // approve-time processing matches: app keys never sit among the
         // ordinary credentials listed above. The attribution pass below reads
         // this same listing rather than listing the collection again.

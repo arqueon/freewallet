@@ -106,7 +106,7 @@ describe('RemoteDirectStore (misbound envelopes)', () => {
     const { remote, deleted } = fakeRemote({ resourceId: 'z6AppReadUnder' })
     const store = new RemoteDirectStore({
       remoteStore: remote,
-      ciphers: { appConnections: misboundCipher() }
+      ciphers: { appKeys: misboundCipher() }
     })
 
     expect(await store.listAppKeys()).toEqual([])

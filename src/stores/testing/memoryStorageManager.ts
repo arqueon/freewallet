@@ -34,7 +34,7 @@ export type CollectionPair = readonly [logicalKey: string, collectionId: string]
  */
 export const MIGRATION_COLLECTIONS: CollectionPair[] = [
   ['privateCredentials', 'private-credentials'],
-  ['appConnections', 'app-connections'],
+  ['appKeys', 'app-keys'],
   ['walletActivity', 'wallet-activity'],
   ['contacts', 'contacts'],
   ['contactsHistory', 'contacts-history']

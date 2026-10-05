@@ -1,7 +1,7 @@
 /**
  * Tests for the share surface's two collection sets. The roster's `shareable`
  * flag is the allowlist a new share may name. It is narrower than the
- * encrypted set -- `app-connections` and `wallet-activity` carry key-epoch
+ * encrypted set -- `app-keys` and `wallet-activity` carry key-epoch
  * rosters and are deliberately never shareable, since their Resources are the
  * connected apps' private seeds and the account's grant history. The shares
  * listing (`listSharedCollections` in `src/session/shares.ts`) reads the
@@ -33,9 +33,9 @@ describe('the shareable flag', () => {
     ])
   })
 
-  it('excludes app-connections, which is encrypted all the same', () => {
-    expect(ids(ENCRYPTED_STANDARD_COLLECTIONS)).toContain('app-connections')
-    expect(ids(SHAREABLE)).not.toContain('app-connections')
+  it('excludes app-keys, which is encrypted all the same', () => {
+    expect(ids(ENCRYPTED_STANDARD_COLLECTIONS)).toContain('app-keys')
+    expect(ids(SHAREABLE)).not.toContain('app-keys')
   })
 
   it('excludes wallet-activity, whose rows carry the delegated zcaps', () => {

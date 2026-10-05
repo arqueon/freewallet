@@ -301,7 +301,7 @@ capabilities delegated to that credential's subject DID. The wallet mints
 the app-key seed, a client secret that exists only in the wallet and the
 app, and matches a returning app on the marker type, the `appUrl`, the
 requesting origin, and the seed-to-subject binding. App keys live in the
-dedicated `app-connections` collection, and `StorageManager.addCredential`
+dedicated `app-keys` collection, and `StorageManager.addCredential`
 refuses every externally supplied credential carrying the marker type.
 
 A request can also arrive with no popup and no attested origin, through the
@@ -348,7 +348,7 @@ popup serve them remote-direct over the remote WAS collections (see
 docs/architecture/session-persistence.md, and "Remote-direct popup storage" in
 docs/architecture/chapi.md). One local database per user holds every standard
 collection (`private-credentials`, `public-credentials`, `wallet-activity`,
-`contacts`, `contacts-history`, `app-connections`) on the generic synced-doc
+`contacts`, `contacts-history`, `app-keys`) on the generic synced-doc
 schema (`{ id, updatedAt, version, data }`, `syncedDocSchema` from
 `@interop/was-sync`). RxDB hashes that schema and refuses a replica whose stored
 hash differs, so its shape is browser-local stored state rather than a code
@@ -820,7 +820,7 @@ Containment hierarchy (remote mode): **Space > Collection > Resource**.
   (`credentialSubject.appUrl`), issued to and by the seed-derived did:key
   (`CapabilityAgent.fromSeed`, `keyName: 'app-key'`). It carries the type
   `AppKeyCredential` (`https://w3id.org/byoe#AppKeyCredential`) and lives in
-  the `app-connections` collection. The app's connection entry names that
+  the `app-keys` collection. The app's connection entry names that
   Resource as `appKey`.
 - **Client / `clientId`** -- the keyed, custodied, revocable identity of an
   (app, user) pair: a keypair that can be a zcap grantee, a delegation
@@ -897,7 +897,7 @@ Containment hierarchy (remote mode): **Space > Collection > Resource**.
 base64url(SHA-256(unlock did:key))` (a discovery convention).
 - **Collection** -- a named grouping of Resources within a Space. Standard
   collections: `private-credentials`, `public-credentials`,
-  `wallet-activity`, `contacts`, `contacts-history`, `app-connections`. The
+  `wallet-activity`, `contacts`, `contacts-history`, `app-keys`. The
   `connections` directory sits in the same provision roster, outside the
   synced set.
 - **Resource** -- an individual stored item (JSON or binary) within a

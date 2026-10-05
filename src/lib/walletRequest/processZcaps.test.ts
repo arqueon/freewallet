@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import {
-  APP_CONNECTIONS_COLLECTION,
+  APP_KEYS_COLLECTION,
   CONNECTIONS_COLLECTION,
   KEY_MAP_COLLECTION,
   UNLOCK_METHODS_COLLECTION,
@@ -287,7 +287,7 @@ describe('never-grantable system collections', () => {
   const NEVER = [
     KEY_MAP_COLLECTION.id,
     UNLOCK_METHODS_COLLECTION.id,
-    APP_CONNECTIONS_COLLECTION,
+    APP_KEYS_COLLECTION,
     CONNECTIONS_COLLECTION
   ]
   // Present in the snapshot, so a string target is refused for what it names

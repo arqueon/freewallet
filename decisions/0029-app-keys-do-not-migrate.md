@@ -2,10 +2,13 @@
 
 - Status: accepted
 - Date: 2026-09-17
+- Amended: 2026-10-04 (the collection is now `app-keys`; a pre-rename
+  bundle's `app-connections` is an ordinary app collection to the
+  migration, carried as content and read as app keys by nothing)
 - Driving work: the design for migrating a backup bundle's content into
-  a new account, which had to decide whether the `app-connections`
+  a new account, which had to decide whether the `app-keys`
   collection is content.
-- Affects: freewallet (the sink counts `app-connections` rows and calls
+- Affects: freewallet (the sink counts `app-keys` rows and calls
   no import function for them; `StorageManager.addCredential` keeps
   refusing the app-key marker type); dcw (the same); the App Connect
   documentation, which says a connected app must be added again after a
@@ -32,7 +35,7 @@ the app reconnect without re-adding.
 
 ## Decision
 
-The migration does not carry `app-connections`. Its rows are counted in
+The migration does not carry `app-keys`. Its rows are counted in
 the report and no import function is called. Every connected app and
 agent is added again from scratch on the new account, and the entry
 page says so. `addCredential`'s refusal of the marker type stands.

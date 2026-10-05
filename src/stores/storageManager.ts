@@ -198,7 +198,7 @@ import {
   addHistoryGenerationCollected as buildHistoryGenerationCollected,
   addHistoryCollectionShared as buildHistoryCollectionShared,
   addHistoryCollectionUnshared as buildHistoryCollectionUnshared,
-  APP_CONNECTIONS_COLLECTION,
+  APP_KEYS_COLLECTION,
   CONNECTIONS_COLLECTION,
   type WalletActivity
 } from '@interop/wallet-core/space'
@@ -2474,12 +2474,12 @@ export class StorageManager {
    * from the carried seed) so this method cannot be misused to store a foreign
    * app key either.
    *
-   * The app key lands in the dedicated `app-connections` collection, never in
+   * The app key lands in the dedicated `app-keys` collection, never in
    * `private-credentials`, and no credential-created activity is written: the
    * app's `connections` entry is the record of the connection, and an app key
    * is not a credential the user acquired.
    *
-   * Returns the id of the `app-connections` Resource holding the key (the
+   * Returns the id of the `app-keys` Resource holding the key (the
    * one already holding it when the store skipped a duplicate), which the
    * app's `connections` entry records as `appKey`.
    *
@@ -2500,7 +2500,7 @@ export class StorageManager {
 
   /**
    * The app-key credentials of the connected applications, out of the
-   * dedicated `app-connections` collection -- the match path's input and the
+   * dedicated `app-keys` collection -- the match path's input and the
    * Applications page's listing. Never mixed into {@link listCredentials}: the
    * credential-wide surfaces (the dashboard, public links, shares) must not be
    * able to reach an app's private seed.
@@ -2532,7 +2532,7 @@ export class StorageManager {
     // missed by a stale cipher would read as "no key for this app" and mint a
     // second identity, orphaning what the app encrypted under the first.
     return this.#readWithEpochRefresh({
-      collectionId: 'app-connections',
+      collectionId: 'app-keys',
       read: async () => {
         const appKeys = await this.#store.listAppKeys()
         const skipped = {
@@ -2554,7 +2554,7 @@ export class StorageManager {
    * confirmed delete: the Resource `appKey` names is read, and deleted only
    * when its credential binds the entry's DID (its subject is that DID, and
    * its own seed derives it, `appKeySeedBindsSubject`). Every other Resource
-   * of `app-connections` whose credential binds the DID goes with it, since
+   * of `app-keys` whose credential binds the DID goes with it, since
    * a key can sit there more than once. The named Resource is deleted last,
    * so a retry after a torn run still reaches the copies left.
    *
@@ -2633,7 +2633,7 @@ export class StorageManager {
         )
       for (const entry of doomed) {
         await remote.deleteSyncedResource({
-          logicalKey: 'appConnections',
+          logicalKey: 'appKeys',
           resourceId: entry.resourceId
         })
       }
@@ -2650,7 +2650,7 @@ export class StorageManager {
   }
 
   /**
-   * The local `app-connections` listing, for a session with no remote Space,
+   * The local `app-keys` listing, for a session with no remote Space,
    * with the Resource `appKey` names marked unreadable when the local replica
    * holds it and it would not open. The listing reports a skipped replica by
    * count alone, so the replica at `appKey` is opened here. One that opens is
@@ -2670,15 +2670,12 @@ export class StorageManager {
     if (!local || entries.some(entry => entry.resourceId === appKey)) {
       return { entries, unreadable: [] }
     }
-    const doc = await local
-      .rxCollection('appConnections')
-      .findOne(appKey)
-      .exec()
+    const doc = await local.rxCollection('appKeys').findOne(appKey).exec()
     if (!doc) {
       return { entries, unreadable: [] }
     }
     const cipher = await this.#rosterCipher({
-      collectionId: APP_CONNECTIONS_COLLECTION
+      collectionId: APP_KEYS_COLLECTION
     })
     const data = doc.toJSON().data as Json
     if (cipher && isEncryptedEnvelope(data)) {
@@ -2705,7 +2702,7 @@ export class StorageManager {
   }
 
   /**
-   * Every Resource of the remote `app-connections` collection, opened, with
+   * Every Resource of the remote `app-keys` collection, opened, with
    * the ids of those that would not open. One documents-feed read; an
    * unknown-epoch Resource refreshes the descriptors once and reads again,
    * as every other encrypted read does.
@@ -2719,16 +2716,16 @@ export class StorageManager {
     unreadable: string[]
   }> {
     return this.#readWithEpochRefresh({
-      collectionId: APP_CONNECTIONS_COLLECTION,
+      collectionId: APP_KEYS_COLLECTION,
       read: async () => {
         const cipher = await this.#rosterCipher({
-          collectionId: APP_CONNECTIONS_COLLECTION
+          collectionId: APP_KEYS_COLLECTION
         })
         if (!cipher) {
-          throw new Error('The app-connections collection has no cipher.')
+          throw new Error('The app-keys collection has no cipher.')
         }
         const documents = await remote.listSyncedDocuments({
-          logicalKey: 'appConnections'
+          logicalKey: 'appKeys'
         })
         const entries: StoredAppKey[] = []
         const unreadable: string[] = []
@@ -2939,7 +2936,7 @@ export class StorageManager {
   }
 
   /**
-   * The count of `app-connections` Resources the most recent
+   * The count of `app-keys` Resources the most recent
    * {@link listAppKeys} read had to skip because their envelope would not
    * decrypt at all.
    * Surfaced on the Applications page beside its purge action.
@@ -2951,7 +2948,7 @@ export class StorageManager {
   }
 
   /**
-   * The count of `app-connections` Resources the most recent
+   * The count of `app-keys` Resources the most recent
    * {@link listAppKeys} read had to skip because their body failed its
    * integrity check. Never
    * purged, and load-bearing on the match path: a skipped app key read as
@@ -2964,7 +2961,7 @@ export class StorageManager {
   }
 
   /**
-   * The count of `app-connections` Resources the most recent
+   * The count of `app-keys` Resources the most recent
    * {@link listAppKeys} read had to skip because this wallet holds no key for
    * their (known) key epoch. Never purged: the Resource is an app's real
    * identity, readable again once the collection's epochs wrap a key this
@@ -2977,7 +2974,7 @@ export class StorageManager {
   }
 
   /**
-   * Removes the `app-connections` Resources that could not be decrypted at
+   * Removes the `app-keys` Resources that could not be decrypted at
    * all. Returns the number of Resources removed.
    *
    * @returns {Promise<number>}

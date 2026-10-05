@@ -45,7 +45,7 @@ const ENCRYPTED_COLLECTIONS = [
   'wallet-activity',
   'contacts',
   'contacts-history',
-  'app-connections',
+  'app-keys',
   'connections'
 ]
 

@@ -70,6 +70,11 @@
   `decisions/0038-no-authorship-guard-on-connections-entries.md`. A host
   can still roll an entry back or rename it, but cannot steer a grant or a
   rotation at another party.
+- The app-key collection is renamed from `app-connections` to `app-keys`
+  (display name "App Keys"), with no migration. An existing Space keeps an
+  orphan `app-connections` collection, and content migration treats a
+  pre-rename bundle's `app-connections` as an ordinary app collection:
+  it is carried as content, and nothing reads it as app keys.
 
 ### Fixed
 

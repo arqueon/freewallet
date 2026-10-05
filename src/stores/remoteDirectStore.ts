@@ -168,7 +168,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
   // the facade's shared epoch-refresh path drives both backends identically.
   #undecryptableCredentials = 0
   #unknownEpochCredentials = 0
-  // Same signal for the `app-connections` collection, so a rekey by another
+  // Same signal for the `app-keys` collection, so a rekey by another
   // client cannot make a stored app key read as absent (which would mint a
   // second identity for the app).
   #unknownEpochAppKeys = 0
@@ -284,7 +284,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
    * session cache and a purge list, the app-key path scans per call).
    *
    * @param options {object}
-   * @param options.logicalKey {string}   'privateCredentials' | 'appConnections'
+   * @param options.logicalKey {string}   'privateCredentials' | 'appKeys'
    * @returns {Promise<{ entries: Array<{ resourceId: string; cid: string;
    *   vc: IVerifiableCredential }>; undecryptableResourceIds: string[];
    *   unknownEpoch: number; noEpochKey: number; integrity: number }>}
@@ -514,7 +514,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
   }
 
   /**
-   * Adds an app-key credential to the remote `app-connections` collection,
+   * Adds an app-key credential to the remote `app-keys` collection,
    * idempotent on the credential's content cid (encryption is
    * nondeterministic, so the resource id cannot carry idempotence). Returns
    * whether a Resource was actually created, and the id of the Resource that
@@ -536,9 +536,9 @@ export class RemoteDirectStore implements SyncedCollectionStore {
     cid: string
     credential: IVerifiableCredential
   }): Promise<{ inserted: boolean; resourceId: string }> {
-    const cipher = this.#cipherFor('appConnections')
+    const cipher = this.#cipherFor('appKeys')
     const { entries } = await this.#scanContentCollection({
-      logicalKey: 'appConnections'
+      logicalKey: 'appKeys'
     })
     const held = entries.find(entry => entry.cid === cid)
     if (held) {
@@ -548,7 +548,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
       data: credential as unknown as Json
     })
     const { created } = await this.#remote.putSyncedResource({
-      logicalKey: 'appConnections',
+      logicalKey: 'appKeys',
       resourceId: id,
       body: envelope,
       epoch
@@ -564,7 +564,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
       noEpochKey,
       integrity
     } = await this.#scanContentCollection({
-      logicalKey: 'appConnections'
+      logicalKey: 'appKeys'
     })
     this.#unknownEpochAppKeys = unknownEpoch
     this.#noEpochKeyAppKeys = noEpochKey
@@ -585,14 +585,14 @@ export class RemoteDirectStore implements SyncedCollectionStore {
 
   async deleteAppKey({ cid }: { cid: string }): Promise<void> {
     const { entries } = await this.#scanContentCollection({
-      logicalKey: 'appConnections'
+      logicalKey: 'appKeys'
     })
     for (const entry of entries) {
       if (entry.cid !== cid) {
         continue
       }
       await this.#remote.deleteSyncedResource({
-        logicalKey: 'appConnections',
+        logicalKey: 'appKeys',
         resourceId: entry.resourceId
       })
     }
@@ -615,7 +615,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
   }
 
   /**
-   * Removes the remote `app-connections` resources whose envelopes will not
+   * Removes the remote `app-keys` resources whose envelopes will not
    * decrypt at all, from the most recent scan. Only that bucket is deleted:
    * unknown-epoch resources, resources this wallet holds no key for, and
    * resources whose body failed its integrity check stay on the server.
@@ -627,7 +627,7 @@ export class RemoteDirectStore implements SyncedCollectionStore {
     await this.listAppKeys()
     for (const resourceId of this.#undecryptableAppKeyResourceIds) {
       await this.#remote.deleteSyncedResource({
-        logicalKey: 'appConnections',
+        logicalKey: 'appKeys',
         resourceId
       })
     }

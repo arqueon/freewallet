@@ -7,7 +7,7 @@ import { test, expect } from '../shared/consoleCapture'
  * carrying an `AppConnectQuery` (plus DID Authentication) replaces the generic
  * consent sections with the app-centric "Connect {app}?" panel. On the
  * approve path the wallet match-or-mints the app-key credential for the
- * requesting origin, stores it in the dedicated `app-connections` collection
+ * requesting origin, stores it in the dedicated `app-keys` collection
  * (never among the user's own credentials), delegates the requested collection
  * capabilities to that credential's subject DID, and returns credential +
  * grants + a `firstRun` marker in one signed presentation.
@@ -273,12 +273,12 @@ test('returning App Connect reuses the same app key and marks firstRun false', a
   expect(second.data.appConnect.firstRun).toBe(false)
 })
 
-test('the minted app key lands in app-connections, never on the credentials list', async ({
+test('the minted app key lands in app-keys, never on the credentials list', async ({
   page
 }, testInfo) => {
   test.slow()
 
-  // App keys live in their own `app-connections` collection: each Resource
+  // App keys live in their own `app-keys` collection: each Resource
   // carries that app's private seed, so it must stay out of every
   // credential-wide surface (the dashboard, the credential detail route, public
   // links, shares).
@@ -308,7 +308,7 @@ test('the minted app key lands in app-connections, never on the credentials list
 
   // The Storage page lists the dedicated collection (wallet system group).
   await page.goto('/#/storage')
-  await expect(page.getByText('App Connections')).toBeVisible({
+  await expect(page.getByText('App Keys')).toBeVisible({
     timeout: 60_000
   })
 })

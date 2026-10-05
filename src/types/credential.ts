@@ -77,7 +77,7 @@ export interface StoredCredential {
 
 /**
  * An app-key credential as the storage layer lists it: a
- * {@link StoredCredential} plus the id of the `app-connections` Resource that
+ * {@link StoredCredential} plus the id of the `app-keys` Resource that
  * holds it, the id an app's `connections` entry records as `appKey`. When the
  * same credential sits in several Resources, the listing reports the oldest.
  */
