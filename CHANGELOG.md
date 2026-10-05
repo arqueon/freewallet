@@ -75,6 +75,9 @@
   orphan `app-connections` collection, and content migration treats a
   pre-rename bundle's `app-connections` as an ordinary app collection:
   it is carried as content, and nothing reads it as app keys.
+- Requires `@interop/was-sync` 0.8.0, whose default conflict-handler
+  equality compares every member of the synced document. The contacts
+  conflict handler no longer overrides it with RxDB's `deepEqual`.
 
 ### Fixed
 

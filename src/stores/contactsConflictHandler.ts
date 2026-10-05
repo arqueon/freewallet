@@ -23,18 +23,10 @@
  * queued rather than being dropped. The refusal is logged here first, on the
  * `sync` namespace, naming the resource replica and the side the binding check
  * refused, and is then rethrown unchanged.
- *
- * Equality is a `deepEqual` over the whole resource replica, not the
- * package's `statesEqual` (which compares the revision and body members
- * alone): the feed echo of a resource replica this client just pushed
- * carries the server-managed `createdBy` and `updatedAt`, and a handler that
- * called the two states equal would let RxDB skip writing them into the
- * local resource replica.
  */
 import { makeConflictHandler, type ConflictHandler } from '@interop/was-sync'
 import { resolveContactHeadConflict } from '@interop/wallet-core/sync'
 import type { DocCipher } from '@interop/was-client/edv'
-import { deepEqual } from 'rxdb/plugins/utils'
 import { createLogger } from '@/lib/log'
 
 // The driver's own namespace: the refusal reads beside was-sync's report of
@@ -53,7 +45,6 @@ export function createContactsConflictHandler({
   getCipher: () => DocCipher | undefined
 }): ConflictHandler {
   return makeConflictHandler({
-    isEqual: deepEqual,
     async resolve({ realMasterState, newDocumentState }) {
       const cipher = getCipher()
       return await resolveContactHeadConflict({

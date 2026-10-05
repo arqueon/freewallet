@@ -28,20 +28,21 @@ const DECOY_ID = 'urn:uuid:decoy'
  *
  * @param options {object}
  * @param options.envelopeId {string}
- * @param options.version {number}
+ * @param options.etag {string}   the content validator, quoted as the server
+ *   reports it
  * @returns {WithDeleted<SyncedDoc>}
  */
 function headResource({
   envelopeId,
-  version
+  etag
 }: {
   envelopeId: string
-  version: number
+  etag: string
 }): WithDeleted<SyncedDoc> {
   return {
     id: RESOURCE_ID,
     updatedAt: '000000000001',
-    version,
+    etag,
     _deleted: false,
     data: { jwe: { ciphertext: envelopeId } }
   }
@@ -152,8 +153,8 @@ describe('the contacts conflict binding', () => {
     })
     const handler = createContactsConflictHandler({ getCipher: () => cipher })
     const input = {
-      realMasterState: headResource({ envelopeId: 'remote-env', version: 4 }),
-      newDocumentState: headResource({ envelopeId: 'local-env', version: 3 })
+      realMasterState: headResource({ envelopeId: 'remote-env', etag: '"4"' }),
+      newDocumentState: headResource({ envelopeId: 'local-env', etag: '"3"' })
     }
 
     expect(await handler.resolve(input)).toBe(input.realMasterState)
@@ -179,8 +180,8 @@ describe('the contacts conflict binding', () => {
         })
     })
     const input = {
-      realMasterState: headResource({ envelopeId: 'remote-env', version: 4 }),
-      newDocumentState: headResource({ envelopeId: 'local-env', version: 3 })
+      realMasterState: headResource({ envelopeId: 'remote-env', etag: '"4"' }),
+      newDocumentState: headResource({ envelopeId: 'local-env', etag: '"3"' })
     }
 
     expect(await handler.resolve(input)).toBe(input.realMasterState)
@@ -188,19 +189,20 @@ describe('the contacts conflict binding', () => {
 
   it('treats a revision-only difference as a real difference', async () => {
     // The equality RxDB asks for before it resolves anything must count the
-    // server revision: this replica's own write comes back off the feed
-    // byte-identical but one revision ahead, and a state that compared equal
+    // server's validator: this replica's own write comes back off the feed
+    // byte-identical but under a new `etag`, and a state that compared equal
     // would leave every later conditional write sending a stale `If-Match`.
+    // The package default compares it; nothing here overrides it.
     const handler = createContactsConflictHandler({
       getCipher: () => undefined
     })
-    const local = headResource({ envelopeId: 'local-env', version: 3 })
+    const local = headResource({ envelopeId: 'local-env', etag: '"3"' })
 
     expect(handler.isEqual(local, local)).toBe(true)
     expect(
       handler.isEqual(
         local,
-        headResource({ envelopeId: 'local-env', version: 4 })
+        headResource({ envelopeId: 'local-env', etag: '"4"' })
       )
     ).toBe(false)
   })
@@ -222,8 +224,8 @@ describe('the contacts conflict binding', () => {
         })
     })
     const input = {
-      realMasterState: headResource({ envelopeId: 'remote-env', version: 4 }),
-      newDocumentState: headResource({ envelopeId: 'local-env', version: 3 })
+      realMasterState: headResource({ envelopeId: 'remote-env', etag: '"4"' }),
+      newDocumentState: headResource({ envelopeId: 'local-env', etag: '"3"' })
     }
 
     expect(await handler.resolve(input)).toBe(input.newDocumentState)
@@ -240,8 +242,8 @@ describe('the contacts conflict binding', () => {
       getCipher: () => misboundCipher()
     })
     const input = {
-      realMasterState: headResource({ envelopeId: 'remote-env', version: 4 }),
-      newDocumentState: headResource({ envelopeId: 'local-env', version: 3 })
+      realMasterState: headResource({ envelopeId: 'remote-env', etag: '"4"' }),
+      newDocumentState: headResource({ envelopeId: 'local-env', etag: '"3"' })
     }
 
     let raised: unknown
@@ -269,8 +271,11 @@ describe('the contacts conflict binding', () => {
           })
       })
       const input = {
-        realMasterState: headResource({ envelopeId: 'remote-env', version: 4 }),
-        newDocumentState: headResource({ envelopeId: 'local-env', version: 3 })
+        realMasterState: headResource({
+          envelopeId: 'remote-env',
+          etag: '"4"'
+        }),
+        newDocumentState: headResource({ envelopeId: 'local-env', etag: '"3"' })
       }
 
       const capture = captureSink()
@@ -306,8 +311,8 @@ describe('the contacts conflict binding', () => {
       }
     })
     const input = {
-      realMasterState: headResource({ envelopeId: 'remote-env', version: 4 }),
-      newDocumentState: headResource({ envelopeId: 'local-env', version: 3 })
+      realMasterState: headResource({ envelopeId: 'remote-env', etag: '"4"' }),
+      newDocumentState: headResource({ envelopeId: 'local-env', etag: '"3"' })
     }
 
     const capture = captureSink()
