@@ -5,8 +5,8 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import '@/i18n'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import i18n from '@/i18n'
 import type { CreatedByAttribution } from '@/lib/collectionAttribution'
 import { ObservedCreatorAttribution } from './ObservedCreatorAttribution'
 
@@ -40,6 +40,11 @@ async function mount(attribution: CreatedByAttribution) {
 }
 
 describe('ObservedCreatorAttribution', () => {
+  // Cartera UDGPlus arranca en español; estas aserciones son del texto en inglés.
+  beforeAll(async () => {
+    await i18n.changeLanguage('en')
+  })
+
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
   })

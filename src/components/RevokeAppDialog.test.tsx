@@ -4,8 +4,8 @@
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import '@/i18n'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import i18n from '@/i18n'
 import { RevokeAppDialog } from './RevokeAppDialog'
 
 declare global {
@@ -13,6 +13,11 @@ declare global {
 }
 
 describe('RevokeAppDialog', () => {
+  // Cartera UDGPlus arranca en español; estas aserciones son del texto en inglés.
+  beforeAll(async () => {
+    await i18n.changeLanguage('en')
+  })
+
   let container: HTMLDivElement
   let root: Root
   beforeEach(() => {
