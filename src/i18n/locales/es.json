@@ -362,6 +362,7 @@
       "connectDropbox": "Conectar con Dropbox",
       "connectDrive": "Conectar con Google Drive",
       "courtesyStorage": "10 MB de cortesía (gratis)",
+      "localStorageOption": "En este navegador (modo local)",
       "createWallet": "Crear billetera",
       "lostPassphrase": "¿Perdiste tu frase de contraseña?",
       "recoverLink": "Recupera tu cartera existente en lugar de empezar de nuevo."

@@ -386,6 +386,11 @@ export const MAX_CREDENTIAL_JSON_FILE_BYTES = 10 * 1024 * 1024
 // `?url=` query parameter (the single
 // proxy path lives in `src/lib/corsProxy.ts`). When a WAS server is
 // configured, its built-in proxy facet at `/api/cors` is the default.
+// Dropbox/Google Drive signup cards are inert placeholders upstream (and the
+// Dropbox one loads its logo from Dropbox). Hidden unless explicitly enabled.
+export const SHOW_EXTERNAL_STORAGE_OPTIONS =
+  env.VITE_SHOW_EXTERNAL_STORAGE_OPTIONS === 'true'
+
 // `none` disables the proxy entirely (every fetch goes direct), so a
 // deployment without a WAS server does not fall back to a third-party proxy.
 export const CORS_PROXY_URL =

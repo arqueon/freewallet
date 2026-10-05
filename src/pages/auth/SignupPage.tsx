@@ -38,7 +38,12 @@ import {
 import { PassphraseStrengthField } from '@/components/PassphraseStrengthField'
 import { usePrfRetryPrompt } from '@/hooks/usePrfRetryPrompt'
 import { promptForPrfRetry } from '@/stores/prfRetryStore'
-import { DATE_FMT, PASSWORD_RULES } from '@/app.config'
+import {
+  DATE_FMT,
+  PASSWORD_RULES,
+  SHOW_EXTERNAL_STORAGE_OPTIONS,
+  WAS_SERVER_URL
+} from '@/app.config'
 import { registerWallet } from '@/lib/registerWallet'
 import { forcedRememberBrowser } from '@/lib/e2eSeams'
 import type { AuthLocationState } from '@/types/auth'
@@ -494,46 +499,56 @@ export function SignupPage() {
             </Typography>
 
             <Stack spacing={2}>
-              {/* Dropbox card */}
-              <Card sx={authStyles.authCard} variant="outlined">
-                <CardContent sx={authStyles.passkeyCardContent}>
-                  <Button
-                    variant="contained"
-                    disabled
-                    startIcon={
-                      <img
-                        src="https://cfl.dropboxstatic.com/static/metaserver/static/images/logo_catalog/blue_dropbox_glyph_m1-vflZvZxbS.png"
-                        alt="Dropbox"
-                        style={{ width: 20, height: 20, objectFit: 'contain' }}
-                      />
-                    }
-                    sx={authStyles.passkeyButton}
-                  >
-                    {t('auth.signup.connectDropbox')}
-                  </Button>
-                </CardContent>
-              </Card>
+              {SHOW_EXTERNAL_STORAGE_OPTIONS && (
+                <>
+                  {/* Dropbox card */}
+                  <Card sx={authStyles.authCard} variant="outlined">
+                    <CardContent sx={authStyles.passkeyCardContent}>
+                      <Button
+                        variant="contained"
+                        disabled
+                        startIcon={
+                          <img
+                            src="https://cfl.dropboxstatic.com/static/metaserver/static/images/logo_catalog/blue_dropbox_glyph_m1-vflZvZxbS.png"
+                            alt="Dropbox"
+                            style={{
+                              width: 20,
+                              height: 20,
+                              objectFit: 'contain'
+                            }}
+                          />
+                        }
+                        sx={authStyles.passkeyButton}
+                      >
+                        {t('auth.signup.connectDropbox')}
+                      </Button>
+                    </CardContent>
+                  </Card>
 
-              {/* Google Drive card */}
-              <Card sx={authStyles.authCard} variant="outlined">
-                <CardContent sx={authStyles.passkeyCardContent}>
-                  <Button
-                    variant="contained"
-                    disabled
-                    startIcon={<SiGoogledrive />}
-                    sx={authStyles.passkeyButton}
-                  >
-                    {t('auth.signup.connectDrive')}
-                  </Button>
-                </CardContent>
-              </Card>
+                  {/* Google Drive card */}
+                  <Card sx={authStyles.authCard} variant="outlined">
+                    <CardContent sx={authStyles.passkeyCardContent}>
+                      <Button
+                        variant="contained"
+                        disabled
+                        startIcon={<SiGoogledrive />}
+                        sx={authStyles.passkeyButton}
+                      >
+                        {t('auth.signup.connectDrive')}
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </>
+              )}
 
               {/* Free storage card */}
               <Card sx={authStyles.authCard} variant="outlined">
                 <CardContent sx={authStyles.passkeyCardContent}>
                   <FiCheckCircle size={32} color="green" />
                   <Typography variant="h6" component="h3">
-                    {t('auth.signup.courtesyStorage')}
+                    {WAS_SERVER_URL
+                      ? t('auth.signup.courtesyStorage')
+                      : t('auth.signup.localStorageOption')}
                   </Typography>
                 </CardContent>
               </Card>
