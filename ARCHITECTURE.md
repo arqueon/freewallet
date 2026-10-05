@@ -143,6 +143,19 @@ VC API client and storage facade. Its input, consent and origin rules are in
 [Credential issuance links](docs/architecture/credential-offer.md). The
 capability-grant route `/external/request` retains its existing refusals.
 
+## UDG credential presentation
+
+`CredentialDetail` selects `UdgCredentialDetail` for single-subject
+OpenBadgeCredentials whose issuer has the configured fork's known Certo DID
+or the current/historical UDG issuer name. This is a presentation selector,
+not an issuer-trust decision. Other issuers, resume credentials and
+multi-subject credentials retain the existing view. `udgCredential.ts`
+projects signed fields without modifying or persisting the credential;
+`AchievementResults` resolves level references within each criterion.
+Verification still runs through `useVerification` and its existing panel.
+The field mapping, fixture and rendered checks are recorded in
+[UDG validation](docs/udg-validacion.md#ficha-ob3-completa-4-de-octubre-de-2026).
+
 ## Topic docs
 
 The topic docs under `docs/architecture/` carry the mechanism in full. Open

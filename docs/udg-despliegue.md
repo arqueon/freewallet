@@ -62,16 +62,16 @@ Ed25519Signature2020. La firma de la credencial recibida es independiente.
 
 ## Configuración de build
 
-| Variable Vite           | Predeterminado         | Uso                                                                                                                               |
-| ----------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_DEFAULT_LANGUAGE` | `es`                   | Primer inicio, independiente del navegador. `en` también admitido; prevalece la elección guardada del usuario.                    |
-| `VITE_APP_THEME`        | `udg`                  | Tema inicial: `udg`, `default` o `west-coast`; conserva selector.                                                                 |
-| `VITE_APP_NAME`         | `Cartera UDGPlus`      | Nombre de interfaz, título y manifiesto generado.                                                                                 |
-| `VITE_APP_LOGO_URL`     | `/udg-placeholder.svg` | Ruta o URL de logo. Coloca el oficial en `public/udg-logo.svg` y configura esa ruta. El placeholder UDG+ no es el escudo oficial. |
-| `VITE_UDG_SOURCE_URL`   | `/source.html`         | Enlace visible al código de esta versión. En Docker se pasa como `UDG_SOURCE_URL`.                                                |
-| `VITE_WAS_SERVER_URL`   | sin valor              | Repositorio de Spaces WAS opcional.                                                                                               |
-| `VITE_KMS_SERVER_URL`   | sin valor sin WAS      | KMS opcional; no se necesita para did:key.                                                                                        |
-| `VITE_CORS_PROXY_URL`   | valor upstream         | Proxy para documentos y verificación; nunca para ofertas. Revisa la tabla completa del README.                                    |
+| Variable Vite           | Predeterminado    | Uso                                                                                                            |
+| ----------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `VITE_DEFAULT_LANGUAGE` | `es`              | Primer inicio, independiente del navegador. `en` también admitido; prevalece la elección guardada del usuario. |
+| `VITE_APP_THEME`        | `udg`             | Tema inicial: `udg`, `default` o `west-coast`; conserva selector.                                              |
+| `VITE_APP_NAME`         | `Cartera UDGPlus` | Nombre de interfaz, título y manifiesto generado.                                                              |
+| `VITE_APP_LOGO_URL`     | `/udg-logo.svg`   | Ruta o URL configurable; predeterminado: logo oficial blanco para el encabezado azul.                          |
+| `VITE_UDG_SOURCE_URL`   | `/source.html`    | Enlace visible al código de esta versión. En Docker se pasa como `UDG_SOURCE_URL`.                             |
+| `VITE_WAS_SERVER_URL`   | sin valor         | Repositorio de Spaces WAS opcional.                                                                            |
+| `VITE_KMS_SERVER_URL`   | sin valor sin WAS | KMS opcional; no se necesita para did:key.                                                                     |
+| `VITE_CORS_PROXY_URL`   | valor upstream    | Proxy para documentos y verificación; nunca para ofertas. Revisa la tabla completa del README.                 |
 
 Todas se incorporan al JavaScript al compilar. Cambiar variables al ejecutar
 nginx no cambia la marca. Usa valores públicos, nunca secretos. El azul
@@ -101,7 +101,7 @@ docker build --target udg-static \
   --build-arg VITE_APP_THEME=udg \
   --build-arg VITE_APP_NAME='Cartera UDGPlus' \
   --build-arg VITE_DEFAULT_LANGUAGE=es \
-  --build-arg VITE_APP_LOGO_URL=/udg-placeholder.svg \
+  --build-arg VITE_APP_LOGO_URL=/udg-logo.svg \
   --build-arg UDG_SOURCE_URL='https://REPOSITORIO-POR-DEFINIR' \
   -t cartera-udgplus:local .
 ```
