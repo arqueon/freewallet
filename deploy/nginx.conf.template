@@ -51,6 +51,11 @@ server {
     # and conditional writes (If-Match) need the strong ones.
     gzip off;
 
+    # Same for a CDN in front (Cloudflare compresses and rewrites the ETag to
+    # W/"..."): `no-transform` keeps the response, and its ETag, untouched.
+    # Sent as an extra Cache-Control field, which joins the server's own.
+    add_header Cache-Control "no-transform" always;
+
     # See the map blocks above. The header has no effect on the wallet's own
     # fetch() calls, so it can cover the JSON routes under /space/ too.
     add_header Content-Security-Policy $was_csp always;
