@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { gzipSync } from 'node:zlib'
 import { CapabilityAgent } from '@interop/capability-agent'
@@ -5,12 +6,15 @@ import { DataIntegrityProof } from '@interop/data-integrity-proof'
 import { eddsaRdfc2022 } from '@interop/ed25519-signature/eddsa-rdfc-2022'
 import { issue, verify } from '@interop/vc'
 import { documentLoader } from '@interop/wallet-request'
+import richCredential from '../../fixtures/udg-ob3.json' with { type: 'json' }
 
 /**
  * Local one-use Certo-shaped exchange. Real EdDSA signatures on the holder
  * proof, OB3 credential and Bitstring Status List; no production service.
  */
-export async function startCertoExchange() {
+export async function startCertoExchange({
+  rich = false
+}: { rich?: boolean } = {}) {
   const issuer = await CapabilityAgent.fromSecret({
     secret: new Uint8Array(32).fill(42),
     handle: 'certo-test'
@@ -32,6 +36,15 @@ export async function startCertoExchange() {
     }
     if (req.url === '/status/1') {
       res.end(JSON.stringify(statusCredential))
+      return
+    }
+    if (req.url === '/logo.png') {
+      res.setHeader('Content-Type', 'image/png')
+      res.end(
+        await readFile(
+          new URL('../../../public/udg-logo-color.png', import.meta.url)
+        )
+      )
       return
     }
     if (req.url === '/badge.svg') {
@@ -102,59 +115,79 @@ export async function startCertoExchange() {
       verifiedHolder = true
       const credential = await issue({
         credential: {
-          '@context': [
-            'https://www.w3.org/ns/credentials/v2',
-            'https://purl.imsglobal.org/spec/ob/v3p0/context-3.0.3.json'
-          ],
-          id: 'urn:uuid:f289238a-5df1-4c60-a23b-d553a81e9a6c',
-          type: ['VerifiableCredential', 'OpenBadgeCredential'],
-          name: 'Microcredencial de prueba Certo',
-          issuer: {
-            id: issuer.id,
-            type: 'Profile',
-            name: 'Emisor de prueba UDGPlus'
-          },
-          validFrom: '2025-01-01T00:00:00Z',
-          validUntil: '2035-01-01T00:00:00Z',
-          credentialStatus: {
-            id: `${base}/status/1#0`,
-            type: 'BitstringStatusListEntry',
-            statusPurpose: 'revocation',
-            statusListIndex: '0',
-            statusListCredential: `${base}/status/1`
-          },
-          credentialSubject: {
-            id: holder,
-            type: 'AchievementSubject',
-            achievement: {
-              id: 'urn:udg:test:achievement',
-              type: 'Achievement',
-              name: 'Microcredencial de prueba Certo',
-              description:
-                'Credencial ficticia para comprobar el reclamo local.',
-              image: { id: `${base}/badge.svg`, type: 'Image' },
-              criteria: {
-                narrative: 'Identifica fuentes y justifica tus decisiones.'
-              },
-              resultDescription: [
-                {
-                  id: 'urn:udg:test:criterion1',
-                  type: 'ResultDescription',
-                  name: 'Evaluación de fuentes',
-                  resultType: 'Percent',
-                  requiredValue: '80'
+          ...(rich
+            ? {
+                ...richCredential,
+                issuer: {
+                  ...richCredential.issuer,
+                  id: issuer.id,
+                  image: { id: `${base}/logo.png`, type: 'Image' }
+                },
+                credentialSubject: {
+                  ...richCredential.credentialSubject,
+                  id: holder,
+                  achievement: {
+                    ...richCredential.credentialSubject.achievement,
+                    image: { id: `${base}/badge.svg`, type: 'Image' }
+                  }
                 }
-              ]
-            },
-            result: [
-              {
-                type: 'Result',
-                resultDescription: 'urn:udg:test:criterion1',
-                value: '95',
-                status: 'Achieved'
               }
-            ]
-          }
+            : {
+                '@context': [
+                  'https://www.w3.org/ns/credentials/v2',
+                  'https://purl.imsglobal.org/spec/ob/v3p0/context-3.0.3.json'
+                ],
+                id: 'urn:uuid:f289238a-5df1-4c60-a23b-d553a81e9a6c',
+                type: ['VerifiableCredential', 'OpenBadgeCredential'],
+                name: 'Microcredencial de prueba Certo',
+                issuer: {
+                  id: issuer.id,
+                  type: 'Profile',
+                  name: 'Universidad de Guadalajara'
+                },
+                validFrom: '2025-01-01T00:00:00Z',
+                validUntil: '2035-01-01T00:00:00Z',
+                credentialStatus: {
+                  id: `${base}/status/1#0`,
+                  type: 'BitstringStatusListEntry',
+                  statusPurpose: 'revocation',
+                  statusListIndex: '0',
+                  statusListCredential: `${base}/status/1`
+                },
+                credentialSubject: {
+                  id: holder,
+                  type: 'AchievementSubject',
+                  achievement: {
+                    id: 'urn:udg:test:achievement',
+                    type: 'Achievement',
+                    name: 'Microcredencial de prueba Certo',
+                    description:
+                      'Credencial ficticia para comprobar el reclamo local.',
+                    image: { id: `${base}/badge.svg`, type: 'Image' },
+                    criteria: {
+                      narrative:
+                        'Identifica fuentes y justifica tus decisiones.'
+                    },
+                    resultDescription: [
+                      {
+                        id: 'urn:udg:test:criterion1',
+                        type: 'ResultDescription',
+                        name: 'Evaluación de fuentes',
+                        resultType: 'Percent',
+                        requiredValue: '80'
+                      }
+                    ]
+                  },
+                  result: [
+                    {
+                      type: 'Result',
+                      resultDescription: 'urn:udg:test:criterion1',
+                      value: '95',
+                      status: 'Achieved'
+                    }
+                  ]
+                }
+              })
         },
         suite: new DataIntegrityProof({
           signer: issuer.getSigner(),

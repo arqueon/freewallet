@@ -34,6 +34,24 @@ const DEFAULT_FONT =
 export const THEME_DEFINITIONS: Record<AppThemeId, ThemeDefinition> = {
   udg: {
     fontFamily: DEFAULT_FONT,
+    muiComponents: {
+      MuiAppBar: {
+        styleOverrides: {
+          root: {
+            backgroundColor: '#00427B',
+            backgroundImage: 'none',
+            color: '#ffffff',
+            '& .MuiTypography-root, & .MuiIconButton-root, & .MuiButton-root, & .MuiInputBase-root, & .MuiSelect-icon':
+              {
+                color: 'inherit'
+              },
+            '& .MuiButton-outlined, & .MuiOutlinedInput-notchedOutline': {
+              borderColor: 'rgba(255, 255, 255, 0.65)'
+            }
+          }
+        }
+      }
+    },
     palette: {
       light: {
         background: { default: '#f4f7fa', paper: '#ffffff' },

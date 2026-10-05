@@ -1,6 +1,7 @@
 import { Box, Stack, Typography } from '@mui/material'
 import { useTranslation } from 'react-i18next'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
+import { rubricLevel } from '@/lib/viewMappers/udgCredential'
 import { SectionHeader } from './InfoBlock'
 
 /**
@@ -31,11 +32,30 @@ export function AchievementResults({ vc }: { vc: IVerifiableCredential }) {
         {rows.map(({ result, descriptor }, index) => (
           <Box key={index}>
             <Typography variant="subtitle2">
-              {textOf(descriptor?.name) || textOf(result.resultDescription)}
+              {textOf(descriptor?.name) ||
+                t('credential.unnamedCriterion', { number: index + 1 })}
             </Typography>
             {textOf(descriptor?.description) && (
               <Typography variant="body2">
                 {textOf(descriptor?.description)}
+              </Typography>
+            )}
+            {textOf(result.achievedLevel) && (
+              <Typography variant="body2">
+                {t('credential.achievedLevel', {
+                  value:
+                    rubricLevel(descriptor, result.achievedLevel) ||
+                    t('credential.levelUnavailable')
+                })}
+              </Typography>
+            )}
+            {textOf(descriptor?.requiredLevel) && (
+              <Typography variant="body2">
+                {t('credential.requiredLevel', {
+                  value:
+                    rubricLevel(descriptor, descriptor?.requiredLevel) ||
+                    t('credential.levelUnavailable')
+                })}
               </Typography>
             )}
             {textOf(result.value) && (

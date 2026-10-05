@@ -81,7 +81,7 @@ describe('getDisplayFields', () => {
   })
 })
 
-it('shows the holder DID instead of the badge title for an unnamed OB3 subject', () => {
+it('does not use the holder DID or the badge title as an OB3 recipient name', () => {
   const fields = getDisplayFields({
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', 'OpenBadgeCredential'],
@@ -89,5 +89,5 @@ it('shows the holder DID instead of the badge title for an unnamed OB3 subject',
     issuer: 'did:key:issuer',
     credentialSubject: { id: 'did:key:holder', type: 'AchievementSubject' }
   } as never)
-  expect(fields.issuedTo).toBe('did:key:holder')
+  expect(fields.issuedTo).toBe('')
 })

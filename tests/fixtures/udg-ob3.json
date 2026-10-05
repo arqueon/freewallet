@@ -1,0 +1,152 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/credentials/v2",
+    "https://purl.imsglobal.org/spec/ob/v3p0/context-3.0.3.json"
+  ],
+  "id": "urn:uuid:f289238a-5df1-4c60-a23b-d553a81e9a6c",
+  "type": ["VerifiableCredential", "OpenBadgeCredential"],
+  "name": "Credencial de evaluación de fuentes",
+  "issuer": {
+    "id": "did:web:microcredenciales.arqueonautis.org",
+    "type": "Profile",
+    "name": "Universidad de Guadalajara",
+    "image": { "id": "https://example.org/udg-logo.png", "type": "Image" }
+  },
+  "validFrom": "2026-01-01T00:00:00Z",
+  "validUntil": "2035-01-01T00:00:00Z",
+  "credentialSubject": {
+    "id": "did:key:holder-test",
+    "type": "AchievementSubject",
+    "identifier": [
+      {
+        "type": "IdentityObject",
+        "identityType": "emailAddress",
+        "identityHash": "sha256$synthetic",
+        "hashed": true
+      },
+      {
+        "type": "IdentityObject",
+        "identityType": "name",
+        "identityHash": "Ana García (persona ficticia)",
+        "hashed": false
+      }
+    ],
+    "term": "2026-B",
+    "source": {
+      "id": "https://example.org/asu",
+      "type": "Profile",
+      "name": "Arizona State University"
+    },
+    "creditsEarned": 2,
+    "activityStartDate": "2026-08-01T00:00:00Z",
+    "activityEndDate": "2026-09-01T00:00:00Z",
+    "achievement": {
+      "id": "https://example.org/logros/fuentes/v1",
+      "type": "Achievement",
+      "name": "Evaluación crítica de fuentes digitales",
+      "achievementType": "MicroCredential",
+      "image": { "id": "https://example.org/badge.svg", "type": "Image" },
+      "description": "Credencial ficticia para pruebas. Acredita la evaluación de fuentes digitales y la justificación de decisiones. Programa piloto UDGPlus–ASU. Modalidad: en línea. Duración: 32 horas (12 con mediación docente, 12 de trabajo independiente y 8 de evaluación). Base: 16 horas por crédito.",
+      "creator": {
+        "id": "https://example.org/udgplus",
+        "type": "Profile",
+        "name": "UDGPlus",
+        "parentOrg": {
+          "id": "https://www.udg.mx",
+          "type": "Profile",
+          "name": "Universidad de Guadalajara"
+        }
+      },
+      "tag": ["Programa piloto UDGPlus–ASU", "En línea"],
+      "alignment": [
+        {
+          "type": "Alignment",
+          "targetName": "Evalúa la confiabilidad de una fuente",
+          "targetDescription": "Contrasta autoría, evidencia y fecha antes de usar una fuente.",
+          "targetType": "CFItem",
+          "targetUrl": "https://example.org/resultados/1"
+        },
+        {
+          "type": "Alignment",
+          "targetName": "Justifica tus decisiones con evidencia",
+          "targetUrl": "https://example.org/resultados/2"
+        },
+        {
+          "type": "Alignment",
+          "targetName": "Nivel 6 del MNC",
+          "targetFramework": "Marco Nacional de Cualificaciones (MNC)",
+          "targetCode": "6",
+          "targetType": "CFItem",
+          "targetUrl": "https://example.org/mnc/6"
+        }
+      ],
+      "creditsAvailable": 2,
+      "inLanguage": "es-MX",
+      "fieldOfStudy": "Bibliotecología, información y archivología (CINE-F 0322)",
+      "humanCode": "UDGP-FUENTES-001",
+      "version": "1.0",
+      "criteria": {
+        "id": "https://example.org/fichas/fuentes/v1",
+        "narrative": "Evaluación mediante rúbrica: compara fuentes y justifica la elección. Se requiere el nivel Competente en cada criterio."
+      },
+      "resultDescription": [
+        {
+          "id": "urn:udg:criterion:fuentes",
+          "type": "ResultDescription",
+          "name": "Evaluación de fuentes",
+          "resultType": "RubricCriterion",
+          "requiredLevel": "urn:udg:level:competente",
+          "rubricCriterionLevel": [
+            {
+              "id": "urn:udg:level:inicial",
+              "type": "RubricCriterionLevel",
+              "name": "Inicial",
+              "level": "1"
+            },
+            {
+              "id": "urn:udg:level:competente",
+              "type": "RubricCriterionLevel",
+              "name": "Competente",
+              "level": "2"
+            },
+            {
+              "id": "urn:udg:level:avanzado",
+              "type": "RubricCriterionLevel",
+              "name": "Avanzado",
+              "level": "3"
+            }
+          ]
+        },
+        {
+          "id": "urn:udg:criterion:argumento",
+          "type": "ResultDescription",
+          "name": "Justificación de decisiones",
+          "resultType": "RubricCriterion",
+          "requiredLevel": "urn:udg:level:solido",
+          "rubricCriterionLevel": [
+            {
+              "id": "urn:udg:level:solido",
+              "type": "RubricCriterionLevel",
+              "name": "Sólido",
+              "level": "2"
+            }
+          ]
+        }
+      ]
+    },
+    "result": [
+      {
+        "type": "Result",
+        "resultDescription": "urn:udg:criterion:fuentes",
+        "achievedLevel": "urn:udg:level:avanzado",
+        "status": "Achieved"
+      },
+      {
+        "type": "Result",
+        "resultDescription": "urn:udg:criterion:argumento",
+        "achievedLevel": "urn:udg:level:solido",
+        "status": "Achieved"
+      }
+    ]
+  }
+}

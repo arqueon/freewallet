@@ -19,6 +19,8 @@ import { formatDate } from '@/lib/viewMappers/formatDate'
 import { getProofCreatedIso } from '@/lib/getProofCreatedIso'
 import { useVerification } from '@/hooks/useVerification'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import { UdgCredentialDetail } from './UdgCredentialDetail'
+import { getUdgCredential } from '@/lib/viewMappers/udgCredential'
 import { AchievementResults } from './AchievementResults'
 import { IssuerInfo } from '@/components/credentialDetails/IssuerInfo'
 import {
@@ -84,6 +86,36 @@ export function CredentialDetail({
     [vc, showResumePreview]
   )
 
+  const rawSource = (
+    <Box sx={sx.rawToggleWrapper}>
+      <Button
+        size="small"
+        variant="text"
+        onClick={() => setShowRaw(prev => !prev)}
+        sx={sx.rawToggle}
+      >
+        {showRaw ? t('credential.hideJson') : t('credential.viewSource')}
+      </Button>
+      <Collapse in={showRaw} unmountOnExit>
+        <Box sx={sx.codeBlockWrapper}>
+          <Tooltip title={copied ? t('common.copied') : t('common.copy')}>
+            <IconButton
+              size="small"
+              aria-label={t('common.copy')}
+              onClick={() => {
+                void copyRawJson(rawJson)
+              }}
+              sx={sx.codeBlockCopyButton}
+            >
+              {copied ? <MdCheck /> : <MdContentCopy />}
+            </IconButton>
+          </Tooltip>
+          <JsonHighlight code={rawJson} sx={credentialDetailStyles.codeBlock} />
+        </Box>
+      </Collapse>
+    </Box>
+  )
+
   if (showResumePreview && resumePreviewData) {
     return (
       <Stack spacing={2} sx={sx.credentialStack}>
@@ -109,6 +141,20 @@ export function CredentialDetail({
 
         <ResumePreview data={resumePreviewData} />
       </Stack>
+    )
+  }
+
+  const udg = getUdgCredential(vc)
+  if (udg) {
+    return (
+      <UdgCredentialDetail
+        vc={vc}
+        data={udg}
+        verification={verification}
+        actions={actions}
+      >
+        {rawSource}
+      </UdgCredentialDetail>
     )
   }
 
@@ -148,7 +194,10 @@ export function CredentialDetail({
                   color="text.secondary"
                   sx={sx.achievementType}
                 >
-                  {t('credential.achievementType')} {fields.achievementType}
+                  {t('credential.achievementType')}{' '}
+                  {t(`credential.achievementTypes.${fields.achievementType}`, {
+                    defaultValue: fields.achievementType
+                  })}
                 </Typography>
               )}
             </Box>
@@ -288,36 +337,7 @@ export function CredentialDetail({
 
         <Divider />
 
-        <Box sx={sx.rawToggleWrapper}>
-          <Button
-            size="small"
-            variant="text"
-            onClick={() => setShowRaw(prev => !prev)}
-            sx={sx.rawToggle}
-          >
-            {showRaw ? t('credential.hideJson') : t('credential.viewSource')}
-          </Button>
-          <Collapse in={showRaw} unmountOnExit>
-            <Box sx={sx.codeBlockWrapper}>
-              <Tooltip title={copied ? t('common.copied') : t('common.copy')}>
-                <IconButton
-                  size="small"
-                  aria-label={t('common.copy')}
-                  onClick={() => {
-                    void copyRawJson(rawJson)
-                  }}
-                  sx={sx.codeBlockCopyButton}
-                >
-                  {copied ? <MdCheck /> : <MdContentCopy />}
-                </IconButton>
-              </Tooltip>
-              <JsonHighlight
-                code={rawJson}
-                sx={credentialDetailStyles.codeBlock}
-              />
-            </Box>
-          </Collapse>
-        </Box>
+        {rawSource}
       </Paper>
       <Paper variant="outlined" sx={sx.card}>
         <VerificationPanel verification={verification} />

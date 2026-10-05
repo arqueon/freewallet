@@ -4,11 +4,9 @@
  * unaffected. The library returns raw ISO dates (the raw-values seam); the
  * `expirationDate` field is a raw ISO string, formatted at the UI layer.
  */
-import {
-  getDisplayFields as sharedDisplayFields,
-  extractIssuedTo
-} from '@interop/vc-display'
+import { getDisplayFields as sharedDisplayFields } from '@interop/vc-display'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
+import { ob3Recipient, recordOf, criteriaText } from './udgCredential'
 
 export function getDisplayFields(credential: IVerifiableCredential) {
   const fields = sharedDisplayFields(credential)
@@ -19,11 +17,8 @@ export function getDisplayFields(credential: IVerifiableCredential) {
     const subject = Array.isArray(credential.credentialSubject)
       ? credential.credentialSubject[0]
       : credential.credentialSubject
-    // A badge title is not a recipient name. Preserve real person/identifier
-    // names; fall back to the subject DID for a pseudonymous OB3 recipient.
-    fields.issuedTo =
-      extractIssuedTo({ ...credential, name: undefined }) ||
-      (typeof subject?.id === 'string' ? subject.id : '')
+    fields.issuedTo = ob3Recipient(recordOf(subject))
+    fields.criteria = criteriaText(fields.criteria)
   }
   return fields
 }

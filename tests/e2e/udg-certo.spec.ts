@@ -51,7 +51,7 @@ test('Certo: holder proof, signed OB3, local persistence and Spanish detail', as
     await page.goto(`/#/request?request=${encodeURIComponent(request)}`)
     await page.reload()
     await expect(
-      page.getByRole('heading', { name: 'Guardar tu microcredencial' })
+      page.getByRole('heading', { name: 'Guardar tu credencial' })
     ).toBeVisible()
     expect(exchange.state().posts).toBe(0)
     await page
@@ -82,6 +82,7 @@ test('Certo: holder proof, signed OB3, local persistence and Spanish detail', as
       page.getByText('Evaluación de fuentes', { exact: true })
     ).toBeVisible()
     await expect(page.getByText('Resultado: 95', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: /Ver comprobaciones/ }).click()
     await expect(
       page.getByText('tiene una firma válida', { exact: false })
     ).toBeVisible({ timeout: 30000 })
@@ -135,6 +136,7 @@ test('Certo: holder proof, signed OB3, local persistence and Spanish detail', as
       fullPage: false,
       animations: 'disabled'
     })
+    await page.getByRole('button', { name: /Ver comprobaciones/ }).click()
     await page
       .getByRole('heading', {
         name: 'Verificación y validación de la credencial'
@@ -191,7 +193,7 @@ for (const format of ['json', 'url', 'lcw'] as const) {
       await page.getByRole('textbox').fill(input)
       await page.getByRole('button', { name: 'Añadir', exact: true }).click()
       await expect(
-        page.getByRole('heading', { name: 'Guardar tu microcredencial' })
+        page.getByRole('heading', { name: 'Guardar tu credencial' })
       ).toBeVisible()
       expect(exchange.state().posts).toBe(0)
       await page
