@@ -46,7 +46,10 @@ export const landingStyles = {
     mx: 'auto',
     width: '100%',
     fontSize: { xs: '1rem', sm: '1.0625rem' },
-    whiteSpace: { xs: 'normal', sm: 'nowrap' }
+    // Upstream keeps one line from `sm` up; the Spanish text is longer and
+    // overflowed the page, so it wraps within a readable measure.
+    maxWidth: '62ch',
+    textWrap: 'balance'
   },
   link: {
     color: 'inherit'

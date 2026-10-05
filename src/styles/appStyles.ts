@@ -425,6 +425,14 @@ export const credentialCardStyles = {
     mt: 'auto',
     pt: 1
   },
+  cardFooterWithImage: {
+    mt: 'auto',
+    pt: 1,
+    display: 'flex',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 1
+  },
   badge: {
     position: 'absolute',
     bottom: 12,

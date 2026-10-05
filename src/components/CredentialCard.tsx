@@ -63,15 +63,21 @@ export const CredentialCard = memo(function CredentialCard({
           >
             {description}
           </Typography>
-          <Box sx={credentialCardStyles.cardStatusBadge}>
+          <Box
+            sx={
+              badgeImage
+                ? credentialCardStyles.cardFooterWithImage
+                : credentialCardStyles.cardStatusBadge
+            }
+          >
             <VerificationStatusBadge
               result={result}
               loading={loading}
               error={error}
             />
-          </Box>
-          <Box sx={credentialCardStyles.badge}>
-            {badgeImage ? (
+            {badgeImage && (
+              // In the footer row, beside the status, so it never covers
+              // the description.
               <Box
                 component="img"
                 src={badgeImage}
@@ -79,10 +85,13 @@ export const CredentialCard = memo(function CredentialCard({
                 loading="lazy"
                 sx={credentialCardStyles.badgeImage}
               />
-            ) : (
-              <BsAward size={28} />
             )}
           </Box>
+          {!badgeImage && (
+            <Box sx={credentialCardStyles.badge}>
+              <BsAward size={28} />
+            </Box>
+          )}
         </CardContent>
       </CardActionArea>
     </Card>
