@@ -67,7 +67,7 @@ Ed25519Signature2020. La firma de la credencial recibida es independiente.
 | `VITE_DEFAULT_LANGUAGE` | `es`              | Primer inicio, independiente del navegador. `en` también admitido; prevalece la elección guardada del usuario. |
 | `VITE_APP_THEME`        | `udg`             | Tema inicial: `udg`, `default` o `west-coast`; conserva selector.                                              |
 | `VITE_APP_NAME`         | `Cartera UDGPlus` | Nombre de interfaz, título y manifiesto generado.                                                              |
-| `VITE_APP_LOGO_URL`     | `/udg-logo.svg`   | Ruta o URL configurable; predeterminado: logo oficial blanco para el encabezado azul.                          |
+| `VITE_APP_LOGO_URL`     | `/udg-placeholder.svg` | Ruta o URL configurable; predeterminado: marcador provisional `/udg-placeholder.svg`. Los logos oficiales no están en el repositorio (ver «Marca institucional»).                          |
 | `VITE_UDG_SOURCE_URL`   | `/source.html`    | Enlace visible al código de esta versión. En Docker se pasa como `UDG_SOURCE_URL`.                             |
 | `VITE_WAS_SERVER_URL`   | sin valor         | Repositorio de Spaces WAS opcional.                                                                            |
 | `VITE_KMS_SERVER_URL`   | sin valor sin WAS | KMS opcional; no se necesita para did:key.                                                                     |
@@ -107,6 +107,15 @@ docker build --target udg-static \
 ```
 
 Sustituye el marcador del repositorio antes de construir una versión pública.
+
+### Marca institucional
+
+Los logos oficiales de UDG+ y de la Universidad de Guadalajara son marcas
+institucionales: no forman parte de este repositorio ni los cubre la AGPL.
+Antes de construir el despliegue oficial, copia `udg-logo.svg` (blanco, para el
+encabezado) y `udg-logo-color.png` a `public/` (están en `.gitignore`) y pasa
+`VITE_APP_LOGO_URL=/udg-logo.svg`. Sin ellos, la cartera usa el marcador
+`/udg-placeholder.svg`.
 El enlace visible debe llevar al código completo de esta versión y sus
 instrucciones de construcción, conservando LICENSE y avisos AGPL-3.0; el enlace
 al proyecto upstream por sí solo no identifica tus cambios. `/source.html`

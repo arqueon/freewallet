@@ -21,7 +21,7 @@ import { encryptedWalletCollectionIds } from '@interop/wallet-core/space/collect
 const env = import.meta.env
 
 export const APP_NAME = env.VITE_APP_NAME || 'Cartera UDGPlus'
-export const APP_LOGO_URL = env.VITE_APP_LOGO_URL || '/udg-logo.svg'
+export const APP_LOGO_URL = env.VITE_APP_LOGO_URL || '/udg-placeholder.svg'
 export const UDG_SOURCE_URL = env.VITE_UDG_SOURCE_URL || '/source.html'
 export const DEFAULT_UI_LANGUAGE =
   env.VITE_DEFAULT_LANGUAGE === 'en' ? 'en' : 'es'

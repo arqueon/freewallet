@@ -38,11 +38,11 @@ export async function startCertoExchange({
       res.end(JSON.stringify(statusCredential))
       return
     }
-    if (req.url === '/logo.png') {
-      res.setHeader('Content-Type', 'image/png')
+    if (req.url === '/logo.svg') {
+      res.setHeader('Content-Type', 'image/svg+xml')
       res.end(
         await readFile(
-          new URL('../../../public/udg-logo-color.png', import.meta.url)
+          new URL('../../../public/udg-placeholder.svg', import.meta.url)
         )
       )
       return
@@ -121,7 +121,7 @@ export async function startCertoExchange({
                 issuer: {
                   ...richCredential.issuer,
                   id: issuer.id,
-                  image: { id: `${base}/logo.png`, type: 'Image' }
+                  image: { id: `${base}/logo.svg`, type: 'Image' }
                 },
                 credentialSubject: {
                   ...richCredential.credentialSubject,

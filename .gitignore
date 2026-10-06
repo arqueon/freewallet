@@ -43,3 +43,9 @@ public/js/
 
 # Dev-server NDJSON log sink (@interop/logger vite plugin)
 .dev-logs/
+
+# Official UDG/UDG+ logos are not part of this repository (institutional
+# trademarks, not covered by the AGPL). They are copied into public/ at
+# build time; see docs/udg-despliegue.md.
+public/udg-logo.svg
+public/udg-logo-color.png
