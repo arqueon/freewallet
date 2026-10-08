@@ -6,6 +6,7 @@ import { LandingPage } from '@/pages/LandingPage'
 import { LobbyPage } from '@/pages/auth/LobbyPage'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { RouteFallback } from '@/components/RouteFallback'
+import { OfferHandoffListener } from '@/components/OfferHandoffListener'
 
 /**
  * `React.lazy` over a module's named export. The dynamic `import()` call stays
@@ -139,6 +140,7 @@ const NotFoundPage = lazyNamed(
 function App() {
   return (
     <Suspense fallback={<RouteFallback />}>
+      <OfferHandoffListener />
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />

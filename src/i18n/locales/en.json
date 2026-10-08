@@ -1194,6 +1194,8 @@
     "destination": "Exchange with {{origin}}",
     "invalidLink": "This link does not contain a valid VC API offer. Request a new link from the credential portal.",
     "intro": "Open the offer to check what the issuer needs. Review the domain before continuing: a link can come from any website.",
+    "handedOff": "Your wallet is already open in another tab or window, and the offer was opened there. Switch to that tab to continue; you will not need to type your passphrase again.",
+    "continueHere": "Continue in this tab instead",
     "open": "Open offer",
     "openError": "Could not open the offer, or its request is unsupported. It may have expired or already been used. Request a new link from the portal.",
     "login": "Log in to your wallet. If you do not have one, create it in another tab and return here to log in.",

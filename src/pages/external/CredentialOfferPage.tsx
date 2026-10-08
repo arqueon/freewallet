@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Box, Button, Stack, Typography } from '@mui/material'
 import { Link as RouterLink, useLocation, useNavigate } from 'react-router'
 import { useTranslation } from 'react-i18next'
@@ -15,6 +15,7 @@ import {
   openCredentialOffer,
   claimCredentialOffer
 } from '@/lib/walletRequest/credentialOffer'
+import { offerToUnlockedTab } from '@/lib/walletRequest/offerHandoff'
 import { didAuthHolderPresentable } from '@/lib/walletRequest/composeVP'
 import { queriesOf } from '@/lib/walletRequest/classify'
 import type { IVPRDetails } from '@/lib/walletRequest/types'
@@ -40,14 +41,29 @@ function CredentialOffer() {
   const inFlight = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [loginError, setLoginError] = useState<string | null>(null)
+  const rawRequest = new URLSearchParams(search).get('request') ?? ''
   let exchangeUrl: string | undefined
   try {
-    exchangeUrl = credentialOfferUrl(
-      new URLSearchParams(search).get('request') ?? ''
-    )
+    exchangeUrl = credentialOfferUrl(rawRequest)
   } catch {
     exchangeUrl = undefined
   }
+  // A link opened from outside the app is a new document, and the session
+  // lives in tab memory only: before asking for the passphrase, hand the
+  // offer to a tab of this wallet that is already unlocked.
+  const [handoff, setHandoff] = useState<'checking' | 'handed' | 'none'>(() =>
+    session || !exchangeUrl ? 'none' : 'checking'
+  )
+  const handoffAsked = useRef(false)
+  useEffect(() => {
+    if (handoff !== 'checking' || handoffAsked.current) {
+      return
+    }
+    handoffAsked.current = true
+    void offerToUnlockedTab({ request: rawRequest }).then(accepted =>
+      setHandoff(accepted ? 'handed' : 'none')
+    )
+  }, [handoff, rawRequest])
 
   async function run(action: () => Promise<void>, errorKey: string) {
     if (inFlight.current) {
@@ -120,12 +136,20 @@ function CredentialOffer() {
               {t('claim.destination', { origin: new URL(exchangeUrl).origin })}
             </Typography>
             {error && <Alert severity="error">{error}</Alert>}
-            {!request && (
+            {handoff === 'handed' && !session && (
+              <>
+                <Alert severity="info">{t('claim.handedOff')}</Alert>
+                <Button onClick={() => setHandoff('none')}>
+                  {t('claim.continueHere')}
+                </Button>
+              </>
+            )}
+            {!request && handoff !== 'handed' && (
               <>
                 <Typography>{t('claim.intro')}</Typography>
                 <Button
                   variant="contained"
-                  disabled={busy}
+                  disabled={busy || handoff === 'checking'}
                   onClick={() =>
                     void run(async () => {
                       setRequest(await openCredentialOffer(exchangeUrl))

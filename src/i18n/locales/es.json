@@ -1194,6 +1194,8 @@
     "destination": "Intercambio con {{origin}}",
     "invalidLink": "El enlace no contiene una oferta VC-API válida. Solicita otro enlace en el portal de microcredenciales.",
     "intro": "Abre la oferta para consultar qué necesita el emisor. Revisa el dominio antes de continuar: el enlace puede proceder de cualquier sitio.",
+    "handedOff": "Tu cartera ya está abierta en otra pestaña o ventana y la oferta se abrió allí. Cambia a esa pestaña para continuar; no tendrás que volver a escribir tu frase de contraseña.",
+    "continueHere": "Prefiero continuar en esta pestaña",
     "open": "Abrir oferta",
     "openError": "No se pudo abrir la oferta o la solicitud no es compatible. Puede haber caducado o haberse usado. Solicita un enlace nuevo en el portal.",
     "login": "Inicia sesión en tu cartera. Si aún no tienes una, créala en otra pestaña y vuelve aquí para iniciar sesión.",
