@@ -11,7 +11,7 @@ import {
   MdQrCodeScanner,
   MdSync
 } from 'react-icons/md'
-import { Link as RouterLink, useNavigate } from 'react-router'
+import { Link as RouterLink } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import type { FuseOptionKey } from 'fuse.js'
 import { useAuthStore } from '@/stores/authStore'
@@ -29,8 +29,7 @@ import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { SearchField } from '@/components/SearchField'
 import { ScanCredentialQrDialog } from '@/components/ScanCredentialQrDialog'
 import type { WalletInputOutcome } from '@/lib/resolveWalletInput'
-import { credentialOfferPath } from '@/lib/walletRequest/credentialOffer'
-import { externalRequestPath } from '@/lib/walletRequest/externalRequest'
+import { useWalletInputRouting } from '@/hooks/useWalletInputRouting'
 import type { StoredCredential } from '@/types/credential'
 import { createLogger } from '@/lib/log'
 import {
@@ -61,7 +60,6 @@ const CREDENTIAL_SEARCH_KEYS: FuseOptionKey<StoredCredential>[] = [
 
 export function DashboardPage() {
   const { t } = useTranslation()
-  const navigate = useNavigate()
   const session = useAuthStore(state => state.session)
   const [credentials, setCredentials] = useState<StoredCredential[]>([])
   const [syncing, setSyncing] = useState(false)
@@ -89,22 +87,13 @@ export function DashboardPage() {
     results: searchedCredentials
   } = useSearch({ items: credentials, keys: CREDENTIAL_SEARCH_KEYS })
 
+  const routeWalletInput = useWalletInputRouting()
   const handleQrResolved = useCallback(
     (outcome: WalletInputOutcome) => {
       setScanQrOpen(false)
-      if (outcome.kind === 'credential-offer') {
-        navigate(credentialOfferPath(outcome.url))
-        return
-      }
-      if (outcome.kind === 'interaction-url') {
-        navigate(externalRequestPath({ url: outcome.url }))
-        return
-      }
-      navigate('/accept-credentials', {
-        state: { credentials: outcome.credentials }
-      })
+      routeWalletInput(outcome)
     },
-    [navigate]
+    [routeWalletInput]
   )
 
   // `isStale` lets the mount effect drop a read whose effect was cleaned up;

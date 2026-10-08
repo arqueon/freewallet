@@ -276,3 +276,18 @@ test('Certo: an offer opened in a new tab goes to the unlocked tab without askin
     await exchange.close()
   }
 })
+
+test('Add credential offers the same QR scanner as the dashboard', async ({
+  page
+}) => {
+  await page.goto('/#/guest-login')
+  await page.getByRole('button', { name: 'Entrar como invitado' }).click()
+  await expect(page).toHaveURL(/#\/dashboard/)
+  await page.goto('/#/add-credential')
+  await page.getByRole('button', { name: 'Escanear QR' }).click()
+  await expect(
+    page.getByRole('dialog', { name: 'Escanear QR de credencial' })
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Cerrar' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+})
