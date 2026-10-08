@@ -3,9 +3,9 @@
  * The exchange origin is the authentication audience, never an attested
  * browser origin. No credential or storage permission is sent to the issuer.
  */
+import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import {
   beginExchange,
-  collectIssuedPresentation,
   credentialsOf,
   presentationEndpointFor,
   type FetchLike,
@@ -143,6 +143,126 @@ export async function openCredentialOffer(exchangeUrl: string) {
   return request as IVPRDetails
 }
 
+/**
+ * The issuer refused the exchange with 404 (or 410). Certo answers the same
+ * way for an expired offer, a used one and a wallet the holder refused, on
+ * purpose, so the wallet cannot tell them apart either.
+ */
+export class ExchangeUnavailableError extends Error {
+  constructor(status: number) {
+    super(`The exchange is unavailable (HTTP ${status}).`)
+    this.name = 'ExchangeUnavailableError'
+  }
+}
+
+/**
+ * The issuer rate-limited the exchange (HTTP 429).
+ */
+export class ExchangeRateLimitedError extends Error {
+  constructor() {
+    super('The exchange rate-limited this wallet (HTTP 429).')
+    this.name = 'ExchangeRateLimitedError'
+  }
+}
+
+/**
+ * The holder did not confirm the new wallet within the waiting budget.
+ */
+export class WalletApprovalTimeoutError extends Error {
+  constructor() {
+    super('The new wallet was not confirmed in time.')
+    this.name = 'WalletApprovalTimeoutError'
+  }
+}
+
+/**
+ * What one delivery of the holder proof produced: the issued credentials, or
+ * a pending state while the holder confirms this wallet in the issuer's
+ * portal (HTTP 202 with `status: 'pending-approval'`).
+ */
+export type HolderProofOutcome =
+  { kind: 'issued'; credentials: IVerifiableCredential[] } | { kind: 'pending' }
+
+async function readJson(response: Response): Promise<Record<string, unknown>> {
+  const text = await response.text()
+  if (!text) {
+    return {}
+  }
+  try {
+    return JSON.parse(text)
+  } catch (err) {
+    throw new Error('The exchange returned malformed JSON.', { cause: err })
+  }
+}
+
+/**
+ * POSTs the signed holder proof to the exchange's delivery endpoint once.
+ * The same presentation may be sent again while the answer is pending: the
+ * offer keeps its challenge until it is used or expires.
+ *
+ * @param options {object}
+ * @param options.request {IVPRDetails}
+ * @param options.exchangeUrl {string}
+ * @param options.verifiablePresentation {object}
+ * @param [options.fetch] {FetchLike}
+ * @returns {Promise<HolderProofOutcome>}
+ */
+export async function submitHolderProof({
+  request,
+  exchangeUrl,
+  verifiablePresentation,
+  fetch = exchangeFetch
+}: {
+  request: IVPRDetails
+  exchangeUrl: string
+  verifiablePresentation: unknown
+  fetch?: FetchLike
+}): Promise<HolderProofOutcome> {
+  const endpoint = safeExchangeUrl(
+    presentationEndpointFor({ request: request as SpecRequest, exchangeUrl })
+  )
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ verifiablePresentation })
+  })
+  if (response.status === 404 || response.status === 410) {
+    throw new ExchangeUnavailableError(response.status)
+  }
+  if (response.status === 429) {
+    throw new ExchangeRateLimitedError()
+  }
+  if (!response.ok) {
+    throw new Error(`The exchange answered HTTP ${response.status}.`)
+  }
+  const reply = await readJson(response)
+  if (response.status === 202) {
+    if (reply.status === 'pending-approval') {
+      return { kind: 'pending' }
+    }
+    throw new Error('The exchange accepted the proof without an answer.')
+  }
+  if (reply.verifiablePresentationRequest) {
+    throw new Error('Multi-step exchanges are not supported.')
+  }
+  const offered = reply.verifiablePresentation as
+    Parameters<typeof credentialsOf>[0] | undefined
+  const credentials = offered ? credentialsOf(offered) : []
+  if (!credentials.length) {
+    throw new Error('No credentials received')
+  }
+  return { kind: 'issued', credentials }
+}
+
+/**
+ * Signs the holder proof for the offer and delivers it once.
+ *
+ * @param options {object}
+ * @param options.request {IVPRDetails}
+ * @param options.exchangeUrl {string}
+ * @param options.session {Session}
+ * @returns {Promise<{ verifiablePresentation: object, outcome: HolderProofOutcome }>}
+ */
 export async function claimCredentialOffer({
   request,
   exchangeUrl,
@@ -165,15 +285,82 @@ export async function claimCredentialOffer({
     domain: request.domain,
     cryptosuite: negotiateCryptosuite(queries)
   })
-  const offered = await collectIssuedPresentation({
-    request: request as SpecRequest,
+  const outcome = await submitHolderProof({
+    request,
     exchangeUrl,
-    verifiablePresentation,
-    fetch: exchangeFetch
+    verifiablePresentation
   })
-  const credentials = credentialsOf(offered)
-  if (!credentials.length) {
-    throw new Error('No credentials received')
+  return { verifiablePresentation, outcome }
+}
+
+/**
+ * The issuer rate-limits its exchange endpoints per address and across
+ * offers, so the wait for a new wallet's confirmation polls sparingly: every
+ * 10 s, 30 s after a 429, for at most 4 minutes.
+ */
+export const APPROVAL_POLL = {
+  intervalMs: 10_000,
+  rateLimitedMs: 30_000,
+  budgetMs: 4 * 60_000
+}
+
+/**
+ * Re-delivers the holder proof until the holder confirms the new wallet and
+ * the issuer answers with the credentials. `wait` may resolve early (the
+ * holder's "retry now"); a 404 ends the wait at once, and a 429 lengthens the
+ * next pause. Throws {@link WalletApprovalTimeoutError} once the budget is
+ * spent.
+ *
+ * @param options {object}
+ * @param options.submit {() => Promise<HolderProofOutcome>}   one delivery
+ * @param options.wait {(ms: number) => Promise<void>}   the pause between tries
+ * @param [options.signal] {AbortSignal}   stops the wait (the page left)
+ * @param [options.now] {() => number}
+ * @param [options.intervalMs] {number}
+ * @param [options.rateLimitedMs] {number}
+ * @param [options.budgetMs] {number}
+ * @returns {Promise<IVerifiableCredential[]>}
+ */
+export async function awaitWalletApproval({
+  submit,
+  wait,
+  signal,
+  now = Date.now,
+  intervalMs = APPROVAL_POLL.intervalMs,
+  rateLimitedMs = APPROVAL_POLL.rateLimitedMs,
+  budgetMs = APPROVAL_POLL.budgetMs
+}: {
+  submit: () => Promise<HolderProofOutcome>
+  wait: (ms: number) => Promise<void>
+  signal?: AbortSignal
+  now?: () => number
+  intervalMs?: number
+  rateLimitedMs?: number
+  budgetMs?: number
+}): Promise<IVerifiableCredential[]> {
+  const deadline = now() + budgetMs
+  let delay = intervalMs
+  for (;;) {
+    const remaining = deadline - now()
+    if (remaining <= 0) {
+      throw new WalletApprovalTimeoutError()
+    }
+    await wait(Math.min(delay, remaining))
+    signal?.throwIfAborted()
+    let outcome: HolderProofOutcome
+    try {
+      outcome = await submit()
+    } catch (err) {
+      if (err instanceof ExchangeRateLimitedError) {
+        delay = rateLimitedMs
+        continue
+      }
+      throw err
+    }
+    signal?.throwIfAborted()
+    if (outcome.kind === 'issued') {
+      return outcome.credentials
+    }
+    delay = intervalMs
   }
-  return credentials
 }

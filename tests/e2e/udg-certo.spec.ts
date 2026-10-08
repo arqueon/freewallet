@@ -291,3 +291,53 @@ test('Add credential offers the same QR scanner as the dashboard', async ({
   await page.getByRole('button', { name: 'Cerrar' }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
 })
+
+for (const decision of ['approve', 'refuse'] as const) {
+  test(`Certo: a new wallet waits for the holder's confirmation (${decision})`, async ({
+    page
+  }) => {
+    const exchange = await startCertoExchange({ newWallet: true })
+    try {
+      await page.goto('/#/guest-login')
+      await page.getByRole('button', { name: 'Entrar como invitado' }).click()
+      await expect(page).toHaveURL(/#\/dashboard/)
+      const request = JSON.stringify({
+        protocols: { vcapi: exchange.exchangeUrl }
+      })
+      await page.goto(`/#/request?request=${encodeURIComponent(request)}`)
+      await page
+        .getByRole('button', { name: 'Abrir oferta', exact: true })
+        .click()
+      await page
+        .getByRole('button', { name: 'Identificarme y recibir credencial' })
+        .click()
+      await expect(
+        page.getByText(/Esta cartera es nueva para tu cuenta/)
+      ).toBeVisible()
+      const retry = page.getByRole('button', {
+        name: 'Ya lo confirmé, reintentar'
+      })
+      await expect(retry).toBeEnabled()
+      const postsWhilePending = exchange.state().posts
+      exchange[decision]()
+      await retry.click()
+      if (decision === 'approve') {
+        await expect(
+          page.getByRole('button', {
+            name: 'Guardar en mi cartera',
+            exact: true
+          })
+        ).toBeVisible({ timeout: 30000 })
+        expect(exchange.state().used).toBe(true)
+      } else {
+        await expect(page.getByText(/no se confirmó la cartera/)).toBeVisible()
+        await expect(retry).toHaveCount(0)
+        expect(exchange.state().used).toBe(false)
+      }
+      expect(exchange.state().posts).toBe(postsWhilePending + 1)
+      await expect(page.locator('input[type="password"]')).toHaveCount(0)
+    } finally {
+      await exchange.close()
+    }
+  })
+}

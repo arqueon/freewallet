@@ -1204,7 +1204,12 @@
     "claim": "Identificarme y recibir credencial",
     "guest": "Estás en modo invitado. La credencial se perderá al salir de esta sesión. Para conservarla, cancela e inicia sesión en tu propia cartera.",
     "unsupported": "Tu cartera no puede presentar uno de los tipos de identificador que pide este emisor.",
-    "exchangeError": "No se pudo recibir la credencial. La oferta puede haber caducado o haberse usado; solicita otra en el portal. No se guardó ninguna credencial.",
+    "exchangeError": "No se pudo recibir la credencial: la oferta caducó, ya se usó o no se confirmó la cartera. Solicita otra en el portal.",
+    "pendingApproval": "Esta cartera es nueva para tu cuenta. Confirma en el portal de microcredenciales que quieres agregarla; en cuanto lo hagas, la credencial llegará aquí.",
+    "waitingApproval": "Esperando la confirmación en el portal",
+    "retryNow": "Ya lo confirmé, reintentar",
+    "approvalTimeout": "No llegó la confirmación. Confírmala en el portal y vuelve a escanear el código.",
+    "rateLimited": "El portal recibió demasiadas solicitudes seguidas. Espera un minuto y vuelve a intentarlo.",
     "saveNotice": "Revisa la credencial y su verificación antes de guardarla. Un emisor que no figura en los registros consultados no está acreditado por esta cartera, aunque su firma sea válida.",
     "save": "Guardar en mi cartera",
     "saveError": "No se pudo completar el guardado. Mantén abierta esta página y vuelve a intentarlo; la credencial recibida sigue aquí."

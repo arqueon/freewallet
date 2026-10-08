@@ -46,6 +46,17 @@ challenge and domain and the accepted-method dispatch (decision 0016). Local
 mode uses did:key. `acceptedCryptosuites` negotiates eddsa-rdfc-2022; absent
 negotiation retains the upstream Ed25519Signature2020 fallback.
 
+The holder proof is delivered by `submitHolderProof`, which reads the status
+itself. A 404 or 410 is `ExchangeUnavailableError`: Certo answers an expired,
+used or refused offer the same way on purpose, so the message names all three.
+A 202 whose body says `status: "pending-approval"` means the holder must
+confirm this new wallet in the portal; any other 202 is an error. While
+pending, `awaitWalletApproval` re-sends the same signed presentation (the offer
+keeps its challenge): every 10 s, 30 s after a 429, for at most 4 minutes,
+since Certo rate-limits its exchange endpoints per address across offers. A
+"retry now" button ends the current pause early. A server that never sends 202
+never enters the wait.
+
 The received credentials render with the normal verifier and detail view.
 A second button writes through `session.storage.addCredential`, including its
 app-key refusal, CID deduplication, encrypted local storage and activity entry.
