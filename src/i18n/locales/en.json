@@ -34,7 +34,8 @@
     "rosterWrapLostRemembered": "This browser can no longer open your account's keys. It may have been disconnected from another browser. Log out, then sign in again with your passphrase or a passkey.",
     "rosterWrapLostTransient": "The sign-in method you used can no longer open your account's keys. It may have been changed or removed from another browser. Log out, then sign in with your current passphrase or passkey.",
     "sourceCode": "Source code (AGPL-3.0)",
-    "menu": "Open menu"
+    "menu": "Open menu",
+    "moreOptions": "More options"
   },
   "settings": {
     "title": "Settings",

@@ -34,7 +34,8 @@
     "rosterWrapLostRemembered": "Este navegador ya no puede abrir las claves de su cuenta. Es posible que se haya desconectado desde otro navegador. Cierre la sesión y vuelva a iniciarla con su frase de contraseña o una llave de acceso.",
     "rosterWrapLostTransient": "El método de inicio de sesión que usó ya no puede abrir las claves de su cuenta. Es posible que se haya cambiado o eliminado desde otro navegador. Cierre la sesión e iníciela con su frase de contraseña o llave de acceso actual.",
     "sourceCode": "Código fuente (AGPL-3.0)",
-    "menu": "Abrir menú"
+    "menu": "Abrir menú",
+    "moreOptions": "Más opciones"
   },
   "settings": {
     "title": "Ajustes",

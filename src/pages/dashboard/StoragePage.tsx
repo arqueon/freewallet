@@ -250,7 +250,12 @@ export const StoragePage = () => {
               {session?.storage.spaceUrl || t('storage.noRemoteSpace')}
             </Typography>
           </Stack>
-          <Stack direction="row" spacing={1.5}>
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={1.5}
+            useFlexGap
+            sx={storageStyles.connectedActions}
+          >
             <Button
               variant="contained"
               onClick={() => setBackupOpen(true)}
