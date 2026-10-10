@@ -53,15 +53,13 @@ export function DashboardLayout({
         position="sticky"
         color="default"
         elevation={1}
-        sx={{ zIndex: theme => theme.zIndex.drawer + 1 }}
+        // The permanent desktop drawer starts below the bar, so the bar must
+        // sit above it. The temporary mobile drawer is a modal at the drawer
+        // z-index too: raising the bar over it would hide the drawer's first
+        // items, so on a phone the drawer covers the bar instead.
+        sx={mobile ? undefined : { zIndex: theme => theme.zIndex.drawer + 1 }}
       >
-        <Toolbar
-          sx={{
-            flexWrap: { xs: 'wrap', md: 'nowrap' },
-            gap: 1,
-            py: { xs: 1, md: 0 }
-          }}
-        >
+        <Toolbar sx={{ gap: 1, flexWrap: 'nowrap' }}>
           {mobile && (
             <IconButton
               aria-label={t('common.menu')}
@@ -78,7 +76,8 @@ export function DashboardLayout({
           />
           <Typography
             variant="h6"
-            sx={{ flexGrow: 1, ...dashboardStyles.navBrandTitle }}
+            noWrap
+            sx={{ flexGrow: 1, minWidth: 0, ...dashboardStyles.navBrandTitle }}
           >
             {t('common.brand')}
           </Typography>

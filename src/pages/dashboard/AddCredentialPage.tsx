@@ -11,8 +11,9 @@ import { DashboardLayout } from '@/components/DashboardLayout'
 import { CredentialJsonUploadPanel } from '@/components/CredentialJsonFileUpload'
 import { resolveCredentialsFromJsonFiles } from '@/lib/resolveCredentialJsonFiles'
 import { resolveWalletInput } from '@/lib/resolveWalletInput'
-import { credentialOfferPath } from '@/lib/walletRequest/credentialOffer'
-import { externalRequestPath } from '@/lib/walletRequest/externalRequest'
+import { MdQrCodeScanner } from 'react-icons/md'
+import { ScanCredentialQrDialog } from '@/components/ScanCredentialQrDialog'
+import { useWalletInputRouting } from '@/hooks/useWalletInputRouting'
 import { resolveCredentialsInputErrorMessage } from '@/lib/resolveCredentialsInputErrorMessage'
 import { dashboardStyles } from '@/styles/appStyles'
 
@@ -22,6 +23,8 @@ export function AddCredentialPage() {
   const [input, setInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [scanQrOpen, setScanQrOpen] = useState(false)
+  const routeWalletInput = useWalletInputRouting()
 
   async function handleAdd() {
     setError(null)
@@ -34,20 +37,7 @@ export function AddCredentialPage() {
 
     setLoading(true)
     try {
-      const outcome = await resolveWalletInput(trimmed)
-      if (outcome.kind === 'credential-offer') {
-        navigate(credentialOfferPath(outcome.url))
-        return
-      }
-      if (outcome.kind === 'interaction-url') {
-        // A request arriving from outside the app: the request page opens
-        // the exchange behind it, the same page the CLI's deep link lands on.
-        navigate(externalRequestPath({ url: outcome.url }))
-        return
-      }
-      navigate('/accept-credentials', {
-        state: { credentials: outcome.credentials }
-      })
+      routeWalletInput(await resolveWalletInput(trimmed))
     } catch (err: unknown) {
       setError(resolveCredentialsInputErrorMessage(err, t, { trimmed }))
     } finally {
@@ -89,7 +79,7 @@ export function AddCredentialPage() {
           disabled={loading}
         />
 
-        <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap' }}>
+        <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           <Button
             variant="outlined"
             onClick={handleAdd}
@@ -100,6 +90,15 @@ export function AddCredentialPage() {
           </Button>
           <Button
             variant="outlined"
+            startIcon={<MdQrCodeScanner size={20} />}
+            onClick={() => setScanQrOpen(true)}
+            disabled={loading}
+            sx={dashboardStyles.addCredentialButton}
+          >
+            {t('dashboard.scanQr.button')}
+          </Button>
+          <Button
+            variant="outlined"
             onClick={() => navigate('/dashboard')}
             disabled={loading}
             sx={dashboardStyles.addCredentialButton}
@@ -107,6 +106,15 @@ export function AddCredentialPage() {
             {t('common.cancel')}
           </Button>
         </Stack>
+
+        <ScanCredentialQrDialog
+          open={scanQrOpen}
+          onClose={() => setScanQrOpen(false)}
+          onResolved={outcome => {
+            setScanQrOpen(false)
+            routeWalletInput(outcome)
+          }}
+        />
 
         <Divider>{t('addCredential.upload.orUpload')}</Divider>
 

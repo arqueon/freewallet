@@ -256,6 +256,7 @@ export const dashboardStyles = {
   walletIcon: {
     width: 52,
     height: 32,
+    flexShrink: 0,
     objectFit: 'contain'
   },
   /**
@@ -265,6 +266,11 @@ export const dashboardStyles = {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 0.75
+  },
+  // The narrow-screen overflow popover holding the same controls, stacked.
+  navOverflowPanel: {
+    p: 2,
+    minWidth: 240
   },
   navControlLabel: {
     color: 'text.secondary',
@@ -641,7 +647,7 @@ export const storageStyles = {
   },
   connectedLink: {
     fontSize: 16,
-    wordBreak: 'break-all',
+    overflowWrap: 'anywhere',
     color: 'text.secondary'
   },
 
@@ -722,7 +728,16 @@ export const storageStyles = {
     textAlign: 'left'
   },
   buttonSize: {
-    topAction: { minWidth: 132, height: 42, px: 2 }
+    // A minimum rather than a fixed height: the Spanish labels wrap to two
+    // lines on a phone, where the buttons stack full width.
+    topAction: { minWidth: 132, minHeight: 42, px: 2 }
+  },
+  // The space card's actions: one row on a wide screen, a full-width stack
+  // on a phone, where three long labels cannot share one row.
+  connectedActions: {
+    flexShrink: 0,
+    flexWrap: 'wrap',
+    '& > *': { width: { xs: '100%', sm: 'auto' }, whiteSpace: 'normal' }
   },
 
   /**
@@ -752,10 +767,14 @@ export const storageStyles = {
     mt: -0.5,
     mb: 1
   },
+  // On a phone the row wraps: the name block takes the whole first line and
+  // the count, chips, size and chevron drop to a second one, instead of the
+  // fixed-width trailing items squeezing the name to a one-letter column.
   folderCard: {
     px: 2,
     py: 1.5,
-    gap: 2,
+    gap: { xs: 1, sm: 2 },
+    flexWrap: { xs: 'wrap', sm: 'nowrap' },
     border: 1,
     borderColor: 'divider',
     borderRadius: 2
@@ -763,7 +782,8 @@ export const storageStyles = {
   systemFolderCard: {
     px: 2,
     py: 1.5,
-    gap: 2,
+    gap: { xs: 1, sm: 2 },
+    flexWrap: { xs: 'wrap', sm: 'nowrap' },
     border: 1,
     borderColor: 'divider',
     borderRadius: 2,
@@ -776,7 +796,7 @@ export const storageStyles = {
   },
   folderCardHeader: {
     alignItems: 'center',
-    flex: 1,
+    flex: { xs: '1 1 100%', sm: '1 1 0%' },
     minWidth: 0
   },
   folderCardBody: {
@@ -826,7 +846,10 @@ export const storageStyles = {
     fontWeight: 600,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap'
+    // A phone gives the name its own full-width line; let it wrap there
+    // rather than cut the collection id short.
+    whiteSpace: { xs: 'normal', sm: 'nowrap' },
+    overflowWrap: 'anywhere'
   },
   folderId: {
     fontFamily: 'monospace',

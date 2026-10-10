@@ -25,13 +25,7 @@ export function AuthPageHeader() {
       elevation={1}
       sx={{ position: 'relative', zIndex: 2 }}
     >
-      <Toolbar
-        sx={{
-          flexWrap: { xs: 'wrap', md: 'nowrap' },
-          gap: 1,
-          py: { xs: 1, md: 0 }
-        }}
-      >
+      <Toolbar sx={{ gap: 1, flexWrap: 'nowrap' }}>
         <Box
           component={RouterLink}
           to="/"
@@ -39,6 +33,7 @@ export function AuthPageHeader() {
             display: 'flex',
             alignItems: 'center',
             flexGrow: 1,
+            minWidth: 0,
             color: 'inherit',
             textDecoration: 'none',
             '&:hover': { opacity: 0.8 }
@@ -50,7 +45,7 @@ export function AuthPageHeader() {
             alt=""
             sx={dashboardStyles.walletIcon}
           />
-          <Typography variant="h6" sx={dashboardStyles.navBrandTitle}>
+          <Typography variant="h6" noWrap sx={dashboardStyles.navBrandTitle}>
             {t('common.brand')}
           </Typography>
         </Box>

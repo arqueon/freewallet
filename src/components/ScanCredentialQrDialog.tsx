@@ -22,6 +22,13 @@ import {
   scanCredentialQrVideoStyle
 } from '@/styles/scanCredentialQrStyles'
 
+// qr-scanner prefers the browser's native BarcodeDetector (Chrome on Android).
+// On some Android devices it fails mid-scan, the error reaches onDecodeError
+// and the dialog stops; Firefox has no BarcodeDetector and scans fine with the
+// library's own worker. Force that worker everywhere. The flag is private but
+// is what createQrEngine() itself checks.
+;(QrScanner as unknown as { _disableBarcodeDetector: boolean })._disableBarcodeDetector = true
+
 export function ScanCredentialQrDialog({
   open,
   onClose,

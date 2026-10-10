@@ -30,10 +30,32 @@ or omitted by the exchange transport. There is no CORS proxy for offers.
 Without a live session the page runs the same in-page passphrase login as the
 external-request page, through `completeAppLogin`. A new user can create a
 wallet in another tab and return. Existing session routing and the storage
-ready gate stay unchanged. Consent signs with `composeVP`, which preserves
+ready gate stay unchanged.
+
+The session lives in tab memory only, so every offer link opened from outside
+the app (the portal's "Abrir en Cartera UDGPlus" button, the phone camera, an
+installed app window capturing the link) is a new document without one. Before
+asking for the passphrase, a locked offer page asks the other tabs of this
+origin over a BroadcastChannel (`offerHandoff.ts`). A top-level tab with a live
+session, resting on a browsing page (dashboard, contacts, applications,
+history, a credential, add credential), takes the offer by an in-app
+navigation to the same route and answers; the locked page then says where the
+offer went and still offers to continue in place. The handoff fetches and signs
+nothing, and with no answer within 800 ms the page logs in as before. Consent signs with `composeVP`, which preserves
 challenge and domain and the accepted-method dispatch (decision 0016). Local
 mode uses did:key. `acceptedCryptosuites` negotiates eddsa-rdfc-2022; absent
 negotiation retains the upstream Ed25519Signature2020 fallback.
+
+The holder proof is delivered by `submitHolderProof`, which reads the status
+itself. A 404 or 410 is `ExchangeUnavailableError`: Certo answers an expired,
+used or refused offer the same way on purpose, so the message names all three.
+A 202 whose body says `status: "pending-approval"` means the holder must
+confirm this new wallet in the portal; any other 202 is an error. While
+pending, `awaitWalletApproval` re-sends the same signed presentation (the offer
+keeps its challenge): every 10 s, 30 s after a 429, for at most 4 minutes,
+since Certo rate-limits its exchange endpoints per address across offers. A
+"retry now" button ends the current pause early. A server that never sends 202
+never enters the wait.
 
 The received credentials render with the normal verifier and detail view.
 A second button writes through `session.storage.addCredential`, including its

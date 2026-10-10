@@ -231,3 +231,113 @@ test('Certo: the plain /request alias and a consumed offer fail without signing'
   await expect(page.locator('input[type="password"]')).toHaveCount(0)
   expect(posts).toBe(1)
 })
+
+test('Certo: an offer opened in a new tab goes to the unlocked tab without asking the passphrase again', async ({
+  context
+}) => {
+  const exchange = await startCertoExchange()
+  try {
+    const unlocked = await context.newPage()
+    await unlocked.goto('/#/guest-login')
+    await unlocked.getByRole('button', { name: 'Entrar como invitado' }).click()
+    await expect(unlocked).toHaveURL(/#\/dashboard/)
+
+    // The issuer portal's button opens a new document: no session there.
+    const fresh = await context.newPage()
+    const request = JSON.stringify({
+      protocols: { vcapi: exchange.exchangeUrl }
+    })
+    await fresh.goto(`/#/request?request=${encodeURIComponent(request)}`)
+    await expect(
+      fresh.getByText(/ya está abierta en otra pestaña/)
+    ).toBeVisible()
+    await expect(fresh.locator('input[type="password"]')).toHaveCount(0)
+
+    await expect(unlocked).toHaveURL(/#\/request\?request=/)
+    await unlocked
+      .getByRole('button', { name: 'Abrir oferta', exact: true })
+      .click()
+    await expect(
+      unlocked.getByRole('button', {
+        name: 'Identificarme y recibir credencial'
+      })
+    ).toBeEnabled()
+    await expect(unlocked.locator('input[type="password"]')).toHaveCount(0)
+
+    // The locked tab can still log in on its own.
+    await fresh
+      .getByRole('button', { name: 'Prefiero continuar en esta pestaña' })
+      .click()
+    await expect(
+      fresh.getByRole('button', { name: 'Abrir oferta', exact: true })
+    ).toBeEnabled()
+    expect(exchange.state().posts).toBe(1)
+  } finally {
+    await exchange.close()
+  }
+})
+
+test('Add credential offers the same QR scanner as the dashboard', async ({
+  page
+}) => {
+  await page.goto('/#/guest-login')
+  await page.getByRole('button', { name: 'Entrar como invitado' }).click()
+  await expect(page).toHaveURL(/#\/dashboard/)
+  await page.goto('/#/add-credential')
+  await page.getByRole('button', { name: 'Escanear QR' }).click()
+  await expect(
+    page.getByRole('dialog', { name: 'Escanear QR de credencial' })
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Cerrar' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+})
+
+for (const decision of ['approve', 'refuse'] as const) {
+  test(`Certo: a new wallet waits for the holder's confirmation (${decision})`, async ({
+    page
+  }) => {
+    const exchange = await startCertoExchange({ newWallet: true })
+    try {
+      await page.goto('/#/guest-login')
+      await page.getByRole('button', { name: 'Entrar como invitado' }).click()
+      await expect(page).toHaveURL(/#\/dashboard/)
+      const request = JSON.stringify({
+        protocols: { vcapi: exchange.exchangeUrl }
+      })
+      await page.goto(`/#/request?request=${encodeURIComponent(request)}`)
+      await page
+        .getByRole('button', { name: 'Abrir oferta', exact: true })
+        .click()
+      await page
+        .getByRole('button', { name: 'Identificarme y recibir credencial' })
+        .click()
+      await expect(
+        page.getByText(/Esta cartera es nueva para tu cuenta/)
+      ).toBeVisible()
+      const retry = page.getByRole('button', {
+        name: 'Ya lo confirmé, reintentar'
+      })
+      await expect(retry).toBeEnabled()
+      const postsWhilePending = exchange.state().posts
+      exchange[decision]()
+      await retry.click()
+      if (decision === 'approve') {
+        await expect(
+          page.getByRole('button', {
+            name: 'Guardar en mi cartera',
+            exact: true
+          })
+        ).toBeVisible({ timeout: 30000 })
+        expect(exchange.state().used).toBe(true)
+      } else {
+        await expect(page.getByText(/no se confirmó la cartera/)).toBeVisible()
+        await expect(retry).toHaveCount(0)
+        expect(exchange.state().used).toBe(false)
+      }
+      expect(exchange.state().posts).toBe(postsWhilePending + 1)
+      await expect(page.locator('input[type="password"]')).toHaveCount(0)
+    } finally {
+      await exchange.close()
+    }
+  })
+}

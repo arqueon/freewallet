@@ -13,8 +13,19 @@ import richCredential from '../../fixtures/udg-ob3.json' with { type: 'json' }
  * proof, OB3 credential and Bitstring Status List; no production service.
  */
 export async function startCertoExchange({
-  rich = false
-}: { rich?: boolean } = {}) {
+  rich = false,
+  newWallet = false
+}: {
+  rich?: boolean
+  /**
+   * Answer the holder proof with 202 pending-approval until `approve()`
+   * (Certo's new-wallet confirmation), or 404 after `refuse()`.
+   */
+  newWallet?: boolean
+} = {}) {
+  let approval: 'pending' | 'approved' | 'refused' = newWallet
+    ? 'pending'
+    : 'approved'
   const issuer = await CapabilityAgent.fromSecret({
     secret: new Uint8Array(32).fill(42),
     handle: 'certo-test'
@@ -113,6 +124,23 @@ export async function startCertoExchange({
       }
       holder = presentation.holder
       verifiedHolder = true
+      if (approval === 'refused') {
+        res.writeHead(404).end(
+          JSON.stringify({
+            error: { status: 404, message: 'Exchange unavailable' }
+          })
+        )
+        return
+      }
+      if (approval === 'pending') {
+        res.writeHead(202).end(
+          JSON.stringify({
+            status: 'pending-approval',
+            message: 'Confirm this new wallet in the microcredentials portal.'
+          })
+        )
+        return
+      }
       const credential = await issue({
         credential: {
           ...(rich
@@ -235,6 +263,12 @@ export async function startCertoExchange({
   return {
     exchangeUrl: `${base}/api/exchanges/once`,
     state: () => ({ posts, holder, verifiedHolder, used }),
+    approve: () => {
+      approval = 'approved'
+    },
+    refuse: () => {
+      approval = 'refused'
+    },
     close: () =>
       new Promise<void>((resolve, reject) =>
         server.close(err => (err ? reject(err) : resolve()))

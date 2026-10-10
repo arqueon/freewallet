@@ -34,7 +34,8 @@
     "rosterWrapLostRemembered": "This browser can no longer open your account's keys. It may have been disconnected from another browser. Log out, then sign in again with your passphrase or a passkey.",
     "rosterWrapLostTransient": "The sign-in method you used can no longer open your account's keys. It may have been changed or removed from another browser. Log out, then sign in with your current passphrase or passkey.",
     "sourceCode": "Source code (AGPL-3.0)",
-    "menu": "Open menu"
+    "menu": "Open menu",
+    "moreOptions": "More options"
   },
   "settings": {
     "title": "Settings",
@@ -1193,6 +1194,8 @@
     "destination": "Exchange with {{origin}}",
     "invalidLink": "This link does not contain a valid VC API offer. Request a new link from the credential portal.",
     "intro": "Open the offer to check what the issuer needs. Review the domain before continuing: a link can come from any website.",
+    "handedOff": "Your wallet is already open in another tab or window, and the offer was opened there. Switch to that tab to continue; you will not need to type your passphrase again.",
+    "continueHere": "Continue in this tab instead",
     "open": "Open offer",
     "openError": "Could not open the offer, or its request is unsupported. It may have expired or already been used. Request a new link from the portal.",
     "login": "Log in to your wallet. If you do not have one, create it in another tab and return here to log in.",
@@ -1201,7 +1204,12 @@
     "claim": "Identify myself and receive credential",
     "guest": "You are in guest mode. The credential will be lost when you leave this session. To keep it, cancel and log in to your own wallet.",
     "unsupported": "Your wallet cannot present a DID method accepted by this issuer.",
-    "exchangeError": "Could not receive the credential. The offer may have expired or already been used; request another from the portal. No credential was saved.",
+    "exchangeError": "Could not receive the credential: the offer expired, was already used, or the wallet was not confirmed. Request another one from the portal.",
+    "pendingApproval": "This wallet is new to your account. Confirm in the microcredentials portal that you want to add it; as soon as you do, the credential will arrive here.",
+    "waitingApproval": "Waiting for the confirmation in the portal",
+    "retryNow": "I confirmed it, try again",
+    "approvalTimeout": "The confirmation did not arrive. Confirm it in the portal and scan the code again.",
+    "rateLimited": "The portal received too many requests in a row. Wait a minute and try again.",
     "saveNotice": "Review the credential and its verification before saving. An issuer absent from the consulted registries is not accredited by this wallet, even if its signature is valid.",
     "save": "Save to my wallet",
     "saveError": "Could not finish saving. Keep this page open and try again; the received credential is still here."
