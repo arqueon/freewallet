@@ -20,7 +20,7 @@ import { encryptedWalletCollectionIds } from '@interop/wallet-core/space/collect
 
 const env = import.meta.env
 
-export const APP_NAME = env.VITE_APP_NAME || 'Cartera UDGPlus'
+export const APP_NAME = env.VITE_APP_NAME || 'Cartera UdeG'
 export const APP_LOGO_URL = env.VITE_APP_LOGO_URL || '/udg-placeholder.svg'
 export const UDG_SOURCE_URL = env.VITE_UDG_SOURCE_URL || '/source.html'
 export const DEFAULT_UI_LANGUAGE =
@@ -392,7 +392,7 @@ export const SHOW_EXTERNAL_STORAGE_OPTIONS =
   env.VITE_SHOW_EXTERNAL_STORAGE_OPTIONS === 'true'
 
 // Upstream seeds every new wallet with an English sample credential ("Your
-// First Credential"). Cartera UDGPlus starts empty unless explicitly enabled.
+// First Credential"). Cartera UdeG starts empty unless explicitly enabled.
 export const SEED_WELCOME_CREDENTIAL =
   env.VITE_SEED_WELCOME_CREDENTIAL === 'true'
 

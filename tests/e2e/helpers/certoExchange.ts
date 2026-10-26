@@ -136,7 +136,8 @@ export async function startCertoExchange({
         res.writeHead(202).end(
           JSON.stringify({
             status: 'pending-approval',
-            message: 'Confirm this new wallet in the microcredentials portal.'
+            message:
+              'Confirm this new wallet in the Digital credential verification portal.'
           })
         )
         return

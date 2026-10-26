@@ -40,7 +40,7 @@ async function mount(attribution: CreatedByAttribution) {
 }
 
 describe('ObservedCreatorAttribution', () => {
-  // Cartera UDGPlus arranca en español; estas aserciones son del texto en inglés.
+  // Cartera UdeG arranca en español; estas aserciones son del texto en inglés.
   beforeAll(async () => {
     await i18n.changeLanguage('en')
   })

@@ -1192,7 +1192,7 @@
   "claim": {
     "title": "Guardar tu credencial",
     "destination": "Intercambio con {{origin}}",
-    "invalidLink": "El enlace no contiene una oferta VC-API válida. Solicita otro enlace en el portal de microcredenciales.",
+    "invalidLink": "El enlace no contiene una oferta VC-API válida. Solicita otro enlace en el portal de Verificación de credenciales digitales.",
     "intro": "Abre la oferta para consultar qué necesita el emisor. Revisa el dominio antes de continuar: el enlace puede proceder de cualquier sitio.",
     "handedOff": "Tu cartera ya está abierta en otra pestaña o ventana y la oferta se abrió allí. Cambia a esa pestaña para continuar; no tendrás que volver a escribir tu frase de contraseña.",
     "continueHere": "Prefiero continuar en esta pestaña",
@@ -1205,7 +1205,7 @@
     "guest": "Estás en modo invitado. La credencial se perderá al salir de esta sesión. Para conservarla, cancela e inicia sesión en tu propia cartera.",
     "unsupported": "Tu cartera no puede presentar uno de los tipos de identificador que pide este emisor.",
     "exchangeError": "No se pudo recibir la credencial: la oferta caducó, ya se usó o no se confirmó la cartera. Solicita otra en el portal.",
-    "pendingApproval": "Esta cartera es nueva para tu cuenta. Confirma en el portal de microcredenciales que quieres agregarla; en cuanto lo hagas, la credencial llegará aquí.",
+    "pendingApproval": "Esta cartera es nueva para tu cuenta. Confirma en el portal de Verificación de credenciales digitales que quieres agregarla; en cuanto lo hagas, la credencial llegará aquí.",
     "waitingApproval": "Esperando la confirmación en el portal",
     "retryNow": "Ya lo confirmé, reintentar",
     "approvalTimeout": "No llegó la confirmación. Confírmala en el portal y vuelve a escanear el código.",

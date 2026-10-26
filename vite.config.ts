@@ -15,8 +15,13 @@ const appVersion =
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
-  const name = env.VITE_APP_NAME || 'Cartera UDGPlus'
+  const name = env.VITE_APP_NAME || 'Cartera UdeG'
   const logo = env.VITE_APP_LOGO_URL || '/udg-placeholder.svg'
+  // Square PNG icons (512 px) for the installed app and the browser tab. The
+  // official ones are institutional marks and stay out of the repository, like
+  // the logo; without them the manifest falls back to the logo.
+  const icon = env.VITE_APP_ICON_URL
+  const maskableIcon = env.VITE_APP_MASKABLE_ICON_URL
   const theme = ['udg', 'default', 'west-coast'].includes(env.VITE_APP_THEME)
     ? env.VITE_APP_THEME
     : 'udg'
@@ -29,7 +34,24 @@ export default defineConfig(({ mode }) => {
   )
   const manifest = JSON.parse(readFileSync('public/manifest.json', 'utf8'))
   manifest.name = manifest.short_name = name
-  manifest.icons = [{ src: logo, sizes: 'any' }]
+  manifest.icons = icon
+    ? [
+        { src: icon, sizes: '512x512', type: 'image/png', purpose: 'any' },
+        ...(maskableIcon
+          ? [
+              {
+                src: maskableIcon,
+                sizes: '512x512',
+                type: 'image/png',
+                purpose: 'maskable'
+              }
+            ]
+          : [])
+      ]
+    : [{ src: logo, sizes: 'any' }]
+  const iconLinks = icon
+    ? `<link rel="icon" type="image/png" href="${icon}"/>\n  <link rel="apple-touch-icon" href="${icon}"/>`
+    : '<link rel="icon" type="image/svg+xml" href="/favicon.ico"/>'
   return {
     define: {
       __APP_VERSION__: JSON.stringify(appVersion)
@@ -82,7 +104,11 @@ export default defineConfig(({ mode }) => {
         name: 'deployment-brand',
         transformIndexHtml(html) {
           return html
-            .replaceAll('Cartera UDGPlus', escapedName)
+            .replaceAll('Cartera UdeG', escapedName)
+            .replace(
+              '<link rel="icon" type="image/svg+xml" href="/favicon.ico"/>',
+              iconLinks
+            )
             .replace("? stored : 'udg'", `? stored : '${theme}'`)
         },
         configureServer(server) {

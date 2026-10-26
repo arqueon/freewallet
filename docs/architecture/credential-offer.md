@@ -33,7 +33,7 @@ wallet in another tab and return. Existing session routing and the storage
 ready gate stay unchanged.
 
 The session lives in tab memory only, so every offer link opened from outside
-the app (the portal's "Abrir en Cartera UDGPlus" button, the phone camera, an
+the app (the portal's "Abrir en Cartera UdeG" button, the phone camera, an
 installed app window capturing the link) is a new document without one. Before
 asking for the passphrase, a locked offer page asks the other tabs of this
 origin over a BroadcastChannel (`offerHandoff.ts`). A top-level tab with a live

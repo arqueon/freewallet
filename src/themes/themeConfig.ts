@@ -16,6 +16,7 @@ export type ThemePaletteValues = {
     paper: string
   }
   primary: ThemePrimary
+  secondary?: ThemePrimary
   warning?: ThemePrimary
 }
 
@@ -38,7 +39,7 @@ export const THEME_DEFINITIONS: Record<AppThemeId, ThemeDefinition> = {
       MuiAppBar: {
         styleOverrides: {
           root: {
-            backgroundColor: '#00427B',
+            backgroundColor: '#202945',
             backgroundImage: 'none',
             color: '#ffffff',
             '& .MuiTypography-root, & .MuiIconButton-root, & .MuiButton-root, & .MuiInputBase-root, & .MuiSelect-icon':
@@ -55,12 +56,17 @@ export const THEME_DEFINITIONS: Record<AppThemeId, ThemeDefinition> = {
     palette: {
       light: {
         background: { default: '#f4f7fa', paper: '#ffffff' },
-        primary: { main: '#00427B', contrastText: '#ffffff' },
+        // Universidad de Guadalajara palette: azul 288C; secondary is a darker
+        // shade derived from olivo 7495C (#8F993E) so white text passes AA.
+        primary: { main: '#202945', contrastText: '#ffffff' },
+        secondary: { main: '#5f6629', contrastText: '#ffffff' },
         warning: { main: '#9c4500', contrastText: '#ffffff' }
       },
       dark: {
         background: { default: '#101820', paper: '#192734' },
         primary: { main: '#9ccaff', contrastText: '#102030' },
+        // Oro 116C.
+        secondary: { main: '#fdcf85', contrastText: '#202945' },
         warning: { main: '#ffb74d', contrastText: '#102030' }
       }
     }
@@ -159,6 +165,7 @@ export function buildMuiThemeOptions({
       mode,
       background: palette.background,
       primary: palette.primary,
+      ...(palette.secondary && { secondary: palette.secondary }),
       ...(palette.warning && { warning: palette.warning })
     },
     typography: {

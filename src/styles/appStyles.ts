@@ -253,8 +253,11 @@ export const dashboardStyles = {
       bgcolor: 'action.selected'
     }
   },
+  // Natural width up to 52 px, so an upright mark (the UdeG shield) sits next
+  // to the app name without a gap.
   walletIcon: {
-    width: 52,
+    width: 'auto',
+    maxWidth: 52,
     height: 32,
     flexShrink: 0,
     objectFit: 'contain'

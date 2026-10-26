@@ -18,7 +18,7 @@ import {
   seedWelcomeContent
 } from '@/session/provisionNewWallet'
 
-// Cartera UDGPlus turns the sample credential off by default; these tests
+// Cartera UdeG turns the sample credential off by default; these tests
 // cover the upstream seeding, so they switch it on. The last one checks the
 // default.
 const config = vi.hoisted(() => ({ seedWelcome: true }))
@@ -320,7 +320,7 @@ describe('seedWelcomeContent', () => {
   })
 })
 
-describe('provisionNewWallet without the sample credential (Cartera UDGPlus)', () => {
+describe('provisionNewWallet without the sample credential (Cartera UdeG)', () => {
   it('provisions the wallet but seeds no welcome credential', async () => {
     config.seedWelcome = false
     try {

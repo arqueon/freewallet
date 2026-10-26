@@ -4,8 +4,9 @@
   <meta charset="UTF-8"/>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico"/>
   <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#202945"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Cartera UDGPlus</title>
+  <title>Cartera UdeG</title>
   <script>
     /* Keep in sync with APP_THEME_IDS / APP_THEME_STORAGE_KEY in src/themes/appTheme.ts */
     (function () {
@@ -27,8 +28,8 @@
       align-items: center;
       justify-content: center;
       gap: 1.25rem;
-      background: #f7f7f7;
-      color: #101418;
+      background: #f4f7fa;
+      color: #202945;
       font-family: "Inter Variable", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     #initial-loader .initial-loader__brand {
@@ -39,8 +40,8 @@
     #initial-loader .initial-loader__spinner {
       width: 2.5rem;
       height: 2.5rem;
-      border: 3px solid rgba(16, 20, 24, 0.15);
-      border-top-color: #1976d2;
+      border: 3px solid rgba(32, 41, 69, 0.15);
+      border-top-color: #202945;
       border-radius: 50%;
       animation: initial-loader-spin 0.8s linear infinite;
     }
@@ -49,12 +50,12 @@
     }
     @media (prefers-color-scheme: dark) {
       #initial-loader {
-        background: #101418;
+        background: #101820;
         color: #f7f7f7;
       }
       #initial-loader .initial-loader__spinner {
         border-color: rgba(247, 247, 247, 0.15);
-        border-top-color: #90caf9;
+        border-top-color: #9ccaff;
       }
     }
   </style>
@@ -62,7 +63,7 @@
 <body>
 <div id="root"></div>
 <div id="initial-loader">
-  <div class="initial-loader__brand">Cartera UDGPlus</div>
+  <div class="initial-loader__brand">Cartera UdeG</div>
   <div class="initial-loader__spinner"></div>
 </div>
 <script type="module" src="/src/main.tsx"></script>

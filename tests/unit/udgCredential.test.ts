@@ -18,16 +18,16 @@ describe('UDG OB3 projection', () => {
   it('maps decision 0023 without replacing signed facts', () => {
     const data = getUdgCredential(credential())!
     expect(data).toMatchObject({
-      recipient: 'Ana García (persona ficticia)',
+      recipient: 'Persona titular (ficticia)',
       name: 'Evaluación crítica de fuentes digitales',
       type: 'MicroCredential',
-      creator: 'Universidad de Guadalajara › UDGPlus',
+      creator: 'Universidad de Guadalajara › Instancia académica (ficticia)',
       term: '2026-B',
-      source: 'Arizona State University',
+      source: 'Institución aliada (ficticia)',
       creditsAvailable: '2',
       creditsEarned: '2',
       languages: ['es-MX'],
-      code: 'UDGP-FUENTES-001',
+      code: 'UDG-FUENTES-001',
       version: '1.0',
       criteriaUrl: 'https://example.org/fichas/fuentes/v1'
     })
@@ -96,7 +96,7 @@ it.each([
   ],
   [
     { identifier: fixture.credentialSubject.identifier },
-    'Ana García (persona ficticia)'
+    'Persona titular (ficticia)'
   ],
   [{ id: 'did:key:holder', name: 'did:key:holder' }, ''],
   [
@@ -165,14 +165,19 @@ it('translates all 31 OB3 achievement types', () => {
 describe('programOf', () => {
   it('reads the program from the subject description the console sends', () => {
     expect(
-      programOf({ description: 'Programa o evento: Curso piloto UDG–ASU.' })
-    ).toBe('Curso piloto UDG–ASU')
+      programOf({
+        description: 'Programa o evento: Curso piloto con institución aliada.'
+      })
+    ).toBe('Curso piloto con institución aliada')
   })
 
   it('prefers the subject tags when present', () => {
     expect(
-      programOf({ tag: ['Curso piloto UDG–ASU'], description: 'Otra cosa' })
-    ).toBe('Curso piloto UDG–ASU')
+      programOf({
+        tag: ['Curso piloto con institución aliada'],
+        description: 'Otra cosa'
+      })
+    ).toBe('Curso piloto con institución aliada')
   })
 
   it('is empty without a program', () => {
