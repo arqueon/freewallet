@@ -1,4 +1,5 @@
-/* UDG uses the shared neutral layout and accessible MUI palette. */
+/* UDG uses the shared neutral layout and accessible MUI palette.
+   Azul Pantone 288C, the Universidad de Guadalajara primary colour. */
 html[data-theme='udg'] {
-  --udg-blue: #00427b;
+  --udg-blue: #202945;
 }

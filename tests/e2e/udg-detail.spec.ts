@@ -136,7 +136,7 @@ for (const viewport of [
         })
         await expect(page.locator('.MuiAppBar-root')).toHaveCSS(
           'background-color',
-          'rgb(0, 66, 123)'
+          'rgb(32, 41, 69)'
         )
         await page.evaluate(async () => {
           window.scrollTo(0, 0)
