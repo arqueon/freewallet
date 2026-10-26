@@ -27,15 +27,15 @@
       {
         "type": "IdentityObject",
         "identityType": "name",
-        "identityHash": "Ana García (persona ficticia)",
+        "identityHash": "Persona titular (ficticia)",
         "hashed": false
       }
     ],
     "term": "2026-B",
     "source": {
-      "id": "https://example.org/asu",
+      "id": "https://example.org/aliada",
       "type": "Profile",
-      "name": "Arizona State University"
+      "name": "Institución aliada (ficticia)"
     },
     "creditsEarned": 2,
     "activityStartDate": "2026-08-01T00:00:00Z",
@@ -46,18 +46,18 @@
       "name": "Evaluación crítica de fuentes digitales",
       "achievementType": "MicroCredential",
       "image": { "id": "https://example.org/badge.svg", "type": "Image" },
-      "description": "Credencial ficticia para pruebas. Acredita la evaluación de fuentes digitales y la justificación de decisiones. Programa piloto UDGPlus–ASU. Modalidad: en línea. Duración: 32 horas (12 con mediación docente, 12 de trabajo independiente y 8 de evaluación). Base: 16 horas por crédito.",
+      "description": "Credencial ficticia para pruebas. Acredita la evaluación de fuentes digitales y la justificación de decisiones. Programa piloto con institución aliada. Modalidad: en línea. Duración: 32 horas (12 con mediación docente, 12 de trabajo independiente y 8 de evaluación). Base: 16 horas por crédito.",
       "creator": {
-        "id": "https://example.org/udgplus",
+        "id": "https://example.org/instancia",
         "type": "Profile",
-        "name": "UDGPlus",
+        "name": "Instancia académica (ficticia)",
         "parentOrg": {
           "id": "https://www.udg.mx",
           "type": "Profile",
           "name": "Universidad de Guadalajara"
         }
       },
-      "tag": ["Programa piloto UDGPlus–ASU", "En línea"],
+      "tag": ["Programa piloto con institución aliada", "En línea"],
       "alignment": [
         {
           "type": "Alignment",
@@ -83,7 +83,7 @@
       "creditsAvailable": 2,
       "inLanguage": "es-MX",
       "fieldOfStudy": "Bibliotecología, información y archivología (CINE-F 0322)",
-      "humanCode": "UDGP-FUENTES-001",
+      "humanCode": "UDG-FUENTES-001",
       "version": "1.0",
       "criteria": {
         "id": "https://example.org/fichas/fuentes/v1",

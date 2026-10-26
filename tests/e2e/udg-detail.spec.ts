@@ -44,14 +44,16 @@ for (const viewport of [
         const card = page.getByTestId('udg-credential')
         await expect(card).toBeVisible({ timeout: 30000 })
         await expect(
-          card.getByText('Ana García (persona ficticia)', { exact: true })
+          card.getByText('Persona titular (ficticia)', { exact: true })
         ).toBeVisible()
         await expect(
-          card.getByText('Universidad de Guadalajara › UDGPlus')
+          card.getByText(
+            'Universidad de Guadalajara › Instancia académica (ficticia)'
+          )
         ).toBeVisible()
         await expect(card.getByText('2026-B', { exact: true })).toBeVisible()
         await expect(
-          card.getByText('Arizona State University', { exact: true })
+          card.getByText('Institución aliada (ficticia)', { exact: true })
         ).toBeVisible()
         await expect(
           card.getByText('Nivel alcanzado: Avanzado', { exact: true })
