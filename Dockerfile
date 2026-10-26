@@ -16,7 +16,7 @@ RUN pnpm install --frozen-lockfile
 # Vite bakes these into the bundle at build time (see the README's
 # Environment Variables table). VITE_ALLOWED_HOST is left out: it only
 # affects the dev server.
-ARG VITE_APP_NAME="Cartera UDGPlus"
+ARG VITE_APP_NAME="Cartera UdeG"
 ARG VITE_APP_THEME=udg
 ARG VITE_DEFAULT_LANGUAGE=es
 ARG VITE_APP_LOGO_URL=/udg-placeholder.svg

@@ -100,7 +100,7 @@ test('Certo: holder proof, signed OB3, local persistence and Spanish detail', as
     await expect(page).toHaveURL(/#\/dashboard/)
     await expect(
       page.getByRole('heading', {
-        name: 'Panel de Cartera UDGPlus',
+        name: 'Panel de Cartera UdeG',
         exact: true
       })
     ).toBeVisible()

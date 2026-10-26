@@ -15,7 +15,7 @@ const appVersion =
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
-  const name = env.VITE_APP_NAME || 'Cartera UDGPlus'
+  const name = env.VITE_APP_NAME || 'Cartera UdeG'
   const logo = env.VITE_APP_LOGO_URL || '/udg-placeholder.svg'
   const theme = ['udg', 'default', 'west-coast'].includes(env.VITE_APP_THEME)
     ? env.VITE_APP_THEME
@@ -82,7 +82,7 @@ export default defineConfig(({ mode }) => {
         name: 'deployment-brand',
         transformIndexHtml(html) {
           return html
-            .replaceAll('Cartera UDGPlus', escapedName)
+            .replaceAll('Cartera UdeG', escapedName)
             .replace("? stored : 'udg'", `? stored : '${theme}'`)
         },
         configureServer(server) {

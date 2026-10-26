@@ -3,7 +3,7 @@
  * that is already unlocked.
  *
  * The session lives in tab memory only (`authStore`), so an offer link opened
- * from outside the app -- the issuer portal's "Open in Cartera UDGPlus"
+ * from outside the app -- the issuer portal's "Open in Cartera UdeG"
  * button, the phone camera, an installed app window capturing the link --
  * starts a new document with no session, and the offer page would ask for
  * the passphrase again although the wallet is unlocked in another tab. On

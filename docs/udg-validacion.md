@@ -1,4 +1,4 @@
-# Validación local de Cartera UDGPlus
+# Validación local de Cartera UdeG
 
 ## Ficha OB3 completa: 4 de octubre de 2026
 
