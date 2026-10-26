@@ -1,4 +1,4 @@
-# Cartera UDGPlus: integración y despliegue
+# Cartera UdeG: integración y despliegue
 
 Esta versión se prepara localmente en `udg/cartera-udg`. El hostname propuesto
 es `cartera-microcredenciales.arqueonautis.org`. No se ha publicado ni se ha
@@ -16,7 +16,7 @@ const walletUrl =
   encodeURIComponent(request)
 ```
 
-Texto del botón: **Abrir en Cartera UDGPlus**. El fragmento `#/request` es
+Texto del botón: **Abrir en Cartera UdeG**. El fragmento `#/request` es
 intencional: Freewallet usa HashRouter y el fragmento no llega al servidor
 estático ni a sus registros de acceso. No registres ni compartas ofertas reales.
 
@@ -66,8 +66,10 @@ Ed25519Signature2020. La firma de la credencial recibida es independiente.
 | ----------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
 | `VITE_DEFAULT_LANGUAGE` | `es`              | Primer inicio, independiente del navegador. `en` también admitido; prevalece la elección guardada del usuario. |
 | `VITE_APP_THEME`        | `udg`             | Tema inicial: `udg`, `default` o `west-coast`; conserva selector.                                              |
-| `VITE_APP_NAME`         | `Cartera UDGPlus` | Nombre de interfaz, título y manifiesto generado.                                                              |
+| `VITE_APP_NAME`         | `Cartera UdeG`    | Nombre de interfaz, título y manifiesto generado.                                                              |
 | `VITE_APP_LOGO_URL`     | `/udg-placeholder.svg` | Ruta o URL configurable; predeterminado: marcador provisional `/udg-placeholder.svg`. Los logos oficiales no están en el repositorio (ver «Marca institucional»).                          |
+| `VITE_APP_ICON_URL`     | sin valor         | Ícono cuadrado PNG de 512 px para el manifiesto, la pestaña y la pantalla de inicio (oficial: `/udg-escudo-512.png`). Sin valor, el manifiesto usa el logo. |
+| `VITE_APP_MASKABLE_ICON_URL` | sin valor    | Variante «maskable» de 512 px con margen seguro para íconos adaptativos de Android (oficial: `/udg-escudo-maskable-512.png`). |
 | `VITE_UDG_SOURCE_URL`   | `/source.html`    | Enlace visible al código de esta versión. En Docker se pasa como `UDG_SOURCE_URL`.                             |
 | `VITE_WAS_SERVER_URL`   | sin valor         | Repositorio de Spaces WAS opcional.                                                                            |
 | `VITE_KMS_SERVER_URL`   | sin valor sin WAS | KMS opcional; no se necesita para did:key.                                                                     |
@@ -75,8 +77,10 @@ Ed25519Signature2020. La firma de la credencial recibida es independiente.
 
 Todas se incorporan al JavaScript al compilar. Cambiar variables al ejecutar
 nginx no cambia la marca. Usa valores públicos, nunca secretos. El azul
-institucional `#00427B` es el primario claro; en oscuro se usa `#9CCAFF` sobre
-fondo oscuro para mantener contraste AA en texto y controles. Inter se sirve
+institucional de la Universidad de Guadalajara (Pantone 288C, `#202945`) es el
+primario claro (blanco sobre él: 14.34:1); en oscuro se usa `#9CCAFF`, tinte
+claro derivado, sobre fondo oscuro para mantener contraste AA en texto y
+controles (8.91:1 sobre `#192734`). Inter se sirve
 localmente. El usuario puede cambiar tema y modo.
 
 ## Construcción fuera de Nextcloud
@@ -99,23 +103,30 @@ Para una imagen estática sin WAS:
 docker build --target udg-static \
   --build-arg APP_VERSION=udg-local \
   --build-arg VITE_APP_THEME=udg \
-  --build-arg VITE_APP_NAME='Cartera UDGPlus' \
+  --build-arg VITE_APP_NAME='Cartera UdeG' \
   --build-arg VITE_DEFAULT_LANGUAGE=es \
-  --build-arg VITE_APP_LOGO_URL=/udg-logo.svg \
+  --build-arg VITE_APP_LOGO_URL=/udg-escudo-blanco.svg \
+  --build-arg VITE_APP_ICON_URL=/udg-escudo-512.png \
+  --build-arg VITE_APP_MASKABLE_ICON_URL=/udg-escudo-maskable-512.png \
   --build-arg UDG_SOURCE_URL='https://REPOSITORIO-POR-DEFINIR' \
-  -t cartera-udgplus:local .
+  -t cartera-udg:local .
 ```
 
 Sustituye el marcador del repositorio antes de construir una versión pública.
 
 ### Marca institucional
 
-Los logos oficiales de UDG+ y de la Universidad de Guadalajara son marcas
+El escudo y el logotipo de la Universidad de Guadalajara son marcas
 institucionales: no forman parte de este repositorio ni los cubre la AGPL.
-Antes de construir el despliegue oficial, copia `udg-logo.svg` (blanco, para el
-encabezado) y `udg-logo-color.png` a `public/` (están en `.gitignore`) y pasa
-`VITE_APP_LOGO_URL=/udg-logo.svg`. Sin ellos, la cartera usa el marcador
-`/udg-placeholder.svg`.
+Antes de construir el despliegue oficial, copia a `public/` (están en
+`.gitignore`) `udg-escudo-blanco.svg` (encabezado azul), `udg-escudo-512.png`
+y `udg-escudo-maskable-512.png` (íconos), y pasa
+`VITE_APP_LOGO_URL=/udg-escudo-blanco.svg`,
+`VITE_APP_ICON_URL=/udg-escudo-512.png` y
+`VITE_APP_MASKABLE_ICON_URL=/udg-escudo-maskable-512.png`. `udg-logo.svg` (copia
+del escudo blanco) y `udg-logo-color.png` (logotipo a color) se conservan por
+compatibilidad con compilaciones que aún pasan `VITE_APP_LOGO_URL=/udg-logo.svg`.
+Sin ellos, la cartera usa el marcador `/udg-placeholder.svg`.
 El enlace visible debe llevar al código completo de esta versión y sus
 instrucciones de construcción, conservando LICENSE y avisos AGPL-3.0; el enlace
 al proyecto upstream por sí solo no identifica tus cambios. `/source.html`
@@ -145,7 +156,7 @@ El DID `did:web:microcredenciales.arqueonautis.org`, sus contextos y su Bitstrin
 Status List deben poder resolverse desde el navegador (CORS). El verificador
 real del checkout es `@interop/verifier-core`, adaptado por `src/lib/verify.ts`;
 la descripción antigua del repo aún menciona `@digitalcredentials/verifier-core`.
-La consulta de registros no convierte automáticamente el emisor UDGPlus en
+La consulta de registros no convierte automáticamente al emisor institucional en
 conocido: se mantiene el aviso español aunque la firma sea válida.
 
 El upstream usa un proxy público de respaldo (`corsproxy.io`) cuando no hay

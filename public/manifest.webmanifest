@@ -9,6 +9,8 @@
     }
   ],
   "start_url": "/#/",
+  "theme_color": "#202945",
+  "background_color": "#ffffff",
   "display": "standalone",
   "credential_handler": {
     "url": "/wallet-worker.html",
